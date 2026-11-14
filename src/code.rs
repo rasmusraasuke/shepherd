@@ -11,11 +11,14 @@ pub struct CodeStyle {
 
 impl CodeStyle {
     pub fn new(ui: &Ui) -> Self {
-        let font = TextStyle::Monospace.resolve(ui.style());
+        Self::with_font(ui, TextStyle::Monospace.resolve(ui.style()))
+    }
+
+    pub fn with_font(ui: &Ui, font: FontId) -> Self {
         let text_color = ui.visuals().text_color();
         let digit_width = ui.painter().layout_no_wrap("0".into(), font.clone(), text_color).size().x;
         Self {
-            row_height: ui.text_style_height(&TextStyle::Monospace) + 2.0,
+            row_height: ui.fonts_mut(|fonts| fonts.row_height(&font)) + 2.0,
             weak_color: ui.visuals().weak_text_color(),
             font,
             digit_width,

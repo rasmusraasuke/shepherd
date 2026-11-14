@@ -28,8 +28,8 @@ read-only file tabs, with a file tree, quick open and a layout that survives res
 README.md describes the features.
 
 Milestone 2 is in progress. Done so far: file editing with undo, find and replace, saving on
-its own, reloading of files changed on disk, syntax highlighting and search across the
-project. Still to do, in this order: terminals, several reviews at once.
+its own, reloading of files changed on disk, syntax highlighting, search across the project
+and terminals. Still to do: several reviews at once.
 
 The review itself is still the prototype: all working-tree changes in one stream, hunks
 marked as reviewed (and unreviewed again when their content changes), a flat list of changed
@@ -190,7 +190,7 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
   disk it is reloaded; only edits typed in the last moment win over the change.
 - **Syntax trees from tree-sitter.** Highlighting is built on tree-sitter, so that the same
   trees serve selection by syntax node, outline and folding later.
-- **Terminals on alacritty_terminal.** The terminal emulation comes from Alacritty's core
-  with portable-pty for the processes; drawing is the editor's own.
+- **Terminals on alacritty_terminal.** The terminal emulation and the processes come from
+  Alacritty's core, as in Zed; drawing and keyboard handling are the editor's own.
 - **Language server first.** Code understanding comes from the Kotlin language server.
   Deeper analysis is considered only when a concrete review feature needs it.

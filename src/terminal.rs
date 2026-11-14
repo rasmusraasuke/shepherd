@@ -1,0 +1,826 @@
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+
+use alacritty_terminal::event::{Event as TermEvent, EventListener, Notify, OnResize, WindowSize};
+use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
+use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
+use alacritty_terminal::tty::{self, Shell};
+use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
+use eframe::egui::{self, Color32, Event, EventFilter, Key, Modifiers, Sense, Vec2};
+
+use crate::code::CodeStyle;
+use crate::terminal_text;
+
+/// Room around the text of a terminal.
+const PADDING: f32 = 4.0;
+
+/// Answers a program that asked for the clipboard.
+type ClipboardAnswer = Arc<dyn Fn(&str) -> String + Sync + Send>;
+
+/// The size of a terminal in cells.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Size {
+    columns: usize,
+    lines: usize,
+}
+
+impl Dimensions for Size {
+    fn total_lines(&self) -> usize {
+        self.lines
+    }
+
+    fn screen_lines(&self) -> usize {
+        self.lines
+    }
+
+    fn columns(&self) -> usize {
+        self.columns
+    }
+}
+
+/// Passes what the terminal reports on to the editor and has it drawn again.
+#[derive(Clone)]
+struct Listener {
+    events: Sender<TermEvent>,
+    ctx: egui::Context,
+}
+
+impl EventListener for Listener {
+    fn send_event(&self, event: TermEvent) {
+        let _ = self.events.send(event);
+        self.ctx.request_repaint();
+    }
+}
+
+/// The terminals open in tabs, by the id of their tab.
+pub struct Terminals {
+    root: PathBuf,
+    /// The program terminals run; the user's shell when not set.
+    shell: Option<Shell>,
+    terminals: HashMap<u64, Result<Terminal, String>>,
+    /// Terminals that take the keyboard once they are started.
+    focus_on_start: HashSet<u64>,
+    /// Reads the text on the clipboard for programs that are allowed to.
+    read_clipboard: fn() -> Option<String>,
+}
+
+fn read_clipboard() -> Option<String> {
+    arboard::Clipboard::new().ok()?.get_text().ok()
+}
+
+/// The size in cells that fits the space.
+fn size_for(rect: egui::Rect, style: &CodeStyle) -> Size {
+    Size {
+        columns: (((rect.width() - 2.0 * PADDING) / style.digit_width) as usize).max(2),
+        lines: (((rect.height() - 2.0 * PADDING) / style.row_height) as usize).max(1),
+    }
+}
+
+impl Terminals {
+    pub fn new(root: PathBuf) -> Self {
+        Self { root, shell: None, terminals: HashMap::new(), focus_on_start: HashSet::new(), read_clipboard }
+    }
+
+    /// The title the program in the terminal gave it, if any.
+    pub fn title(&self, id: u64) -> Option<String> {
+        let terminal = self.terminals.get(&id)?.as_ref().ok()?;
+        let title = terminal.title.clone().filter(|title| !title.is_empty());
+        if terminal.exited { Some(format!("{} (exited)", title.as_deref().unwrap_or("Terminal"))) } else { title }
+    }
+
+    /// Makes the terminal take the keyboard when it is shown next.
+    pub fn focus(&mut self, id: u64) {
+        match self.terminals.get_mut(&id) {
+            Some(Ok(terminal)) => terminal.focus = true,
+            _ => {
+                self.focus_on_start.insert(id);
+            }
+        }
+    }
+
+    /// Ends the program of the terminal.
+    pub fn close(&mut self, id: u64) {
+        self.terminals.remove(&id);
+    }
+
+    /// Shows the terminal, starting it the first time.
+    pub fn ui(&mut self, ui: &mut egui::Ui, id: u64) {
+        let size = egui::TextStyle::Monospace.resolve(ui.style()).size;
+        let fonts_ready = terminal_text::fonts_ready(ui.ctx());
+        let style = CodeStyle::with_font(ui, egui::FontId::new(size, terminal_text::family(fonts_ready, false, false)));
+        let size = size_for(ui.available_rect_before_wrap(), &style);
+        let focus = &mut self.focus_on_start;
+        let terminal = self.terminals.entry(id).or_insert_with(|| Terminal::spawn(&self.root, self.shell.clone(), size, &style, ui.ctx(), focus.remove(&id)));
+        match terminal {
+            Ok(terminal) => {
+                terminal.ui(ui, id, &style, fonts_ready, self.read_clipboard);
+                if terminal.restart {
+                    // the same program again, in a terminal of its own
+                    let terminal = Terminal::spawn(&self.root, self.shell.clone(), size, &style, ui.ctx(), true);
+                    self.terminals.insert(id, terminal);
+                }
+            }
+            Err(message) => {
+                ui.centered_and_justified(|ui| ui.colored_label(ui.visuals().error_fg_color, message.as_str()));
+            }
+        }
+    }
+
+    /// Has terminals run the program instead of the user's shell, for tests.
+    #[cfg(test)]
+    pub fn run(&mut self, program: &str, args: &[&str]) {
+        self.shell = Some(Shell::new(program.to_string(), args.iter().map(|arg| arg.to_string()).collect()));
+    }
+
+    #[cfg(test)]
+    pub fn is_open(&self, id: u64) -> bool {
+        self.terminals.contains_key(&id)
+    }
+
+    /// What the terminal shows, one line per row, for tests.
+    #[cfg(test)]
+    pub fn screen(&self, id: u64) -> String {
+        let terminal = self.terminals[&id].as_ref().unwrap();
+        screen_text(&terminal.term.lock())
+    }
+}
+
+struct Terminal {
+    term: Arc<FairMutex<Term<Listener>>>,
+    notifier: Notifier,
+    events: Receiver<TermEvent>,
+    title: Option<String>,
+    exited: bool,
+    size: Size,
+    /// Take the keyboard when shown next.
+    focus: bool,
+    /// Scrolling of less than a line, kept until it adds up to one.
+    scroll: f32,
+    /// A program that asked for the clipboard, waiting for the user to allow it.
+    clipboard_request: Option<ClipboardAnswer>,
+    /// The user allowed programs in this terminal to read the clipboard.
+    clipboard_allowed: bool,
+    /// For programs that asked for the mouse: the button held and the cell the mouse was in last.
+    mouse_button: Option<u8>,
+    mouse_cell: Option<(usize, usize)>,
+    /// Start the program again, after it ended.
+    restart: bool,
+}
+
+fn window_size(size: Size, style: &CodeStyle) -> WindowSize {
+    WindowSize { num_lines: size.lines as u16, num_cols: size.columns as u16, cell_width: style.digit_width as u16, cell_height: style.row_height as u16 }
+}
+
+impl Terminal {
+    fn spawn(root: &std::path::Path, shell: Option<Shell>, size: Size, style: &CodeStyle, ctx: &egui::Context, focus: bool) -> Result<Self, String> {
+        let env = HashMap::from([("TERM".to_string(), "xterm-256color".to_string()), ("COLORTERM".to_string(), "truecolor".to_string())]);
+        let options = tty::Options { shell, working_directory: Some(root.to_path_buf()), drain_on_exit: true, env, ..Default::default() };
+        let pty = tty::new(&options, window_size(size, style), 0).map_err(|e| format!("Cannot start the terminal: {e}"))?;
+        let (sender, events) = mpsc::channel();
+        let listener = Listener { events: sender, ctx: ctx.clone() };
+        // reading the clipboard is let through here and asked about in the editor
+        let config = Config { osc52: Osc52::CopyPaste, ..Default::default() };
+        let term = Arc::new(FairMutex::new(Term::new(config, &size, listener.clone())));
+        let event_loop = EventLoop::new(term.clone(), listener, pty, true, false).map_err(|e| format!("Cannot start the terminal: {e}"))?;
+        let notifier = Notifier(event_loop.channel());
+        event_loop.spawn();
+        Ok(Self {
+            term,
+            notifier,
+            events,
+            title: None,
+            exited: false,
+            size,
+            focus,
+            scroll: 0.0,
+            clipboard_request: None,
+            clipboard_allowed: false,
+            mouse_button: None,
+            mouse_cell: None,
+            restart: false,
+        })
+    }
+
+    fn write(&self, bytes: impl Into<Vec<u8>>) {
+        self.notifier.notify(bytes.into());
+    }
+
+    /// Answers what the program in the terminal asked for and takes note of what it reported.
+    fn handle_reports(&mut self, ctx: &egui::Context, style: &CodeStyle, palette: &Palette, read_clipboard: fn() -> Option<String>) {
+        for event in self.events.try_iter().collect::<Vec<_>>() {
+            match event {
+                TermEvent::Title(title) => self.title = Some(title),
+                TermEvent::ResetTitle => self.title = None,
+                TermEvent::PtyWrite(text) => self.write(text),
+                TermEvent::ClipboardStore(_, text) => ctx.copy_text(text),
+                TermEvent::ClipboardLoad(_, answer) => self.clipboard_request = Some(answer),
+                TermEvent::ColorRequest(index, answer) => {
+                    let color = palette.color(&self.term.lock(), Color::Indexed(index.min(255) as u8), index);
+                    self.write(answer(Rgb { r: color.r(), g: color.g(), b: color.b() }));
+                }
+                TermEvent::TextAreaSizeRequest(answer) => self.write(answer(window_size(self.size, style))),
+                TermEvent::Exit | TermEvent::ChildExit(_) => self.exited = true,
+                _ => {}
+            }
+        }
+        if self.clipboard_allowed && let Some(answer) = self.clipboard_request.take() {
+            self.write(answer(&read_clipboard().unwrap_or_default()));
+        }
+    }
+
+    /// Asks the user whether the program may read the clipboard, as any program could read
+    /// what was copied, also passwords, without the user knowing.
+    fn clipboard_bar(&mut self, ui: &mut egui::Ui) {
+        if self.clipboard_request.is_none() {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.label("A program in this terminal wants to read the clipboard.");
+            if ui.button("Allow").on_hover_text("Allow it for this terminal until its program ends").clicked() {
+                self.clipboard_allowed = true;
+            }
+            if ui.button("Deny").clicked() {
+                self.clipboard_request = None;
+            }
+        });
+    }
+
+    fn resize(&mut self, size: Size, style: &CodeStyle) {
+        if size != self.size {
+            self.size = size;
+            self.term.lock().resize(size);
+            self.notifier.on_resize(window_size(size, style));
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, id: u64, style: &CodeStyle, fonts_ready: bool, read_clipboard: fn() -> Option<String>) {
+        let palette = Palette::new(ui.visuals());
+        self.clipboard_bar(ui);
+        self.handle_reports(ui.ctx(), style, &palette, read_clipboard);
+        let size = size_for(ui.available_rect_before_wrap(), style);
+        self.resize(size, style);
+
+        let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+        let response = ui.interact(rect, egui::Id::unique(("terminal", id)), Sense::click_and_drag());
+        let origin = rect.min + Vec2::splat(PADDING);
+        if std::mem::take(&mut self.focus) || response.clicked() {
+            response.request_focus();
+        }
+
+        let mut term = self.term.lock();
+        response.widget_info(|| {
+            let mut info = egui::WidgetInfo::labeled(egui::Role::Terminal, true, "Terminal");
+            info.current_text_value = Some(screen_text(&term));
+            info
+        });
+
+        // the cell under the pointer on the screen, and the half of it
+        let screen_cell = |pos: egui::Pos2| {
+            let x = ((pos.x - origin.x) / style.digit_width).max(0.0);
+            let row = (((pos.y - origin.y) / style.row_height).max(0.0) as usize).min(size.lines - 1);
+            ((x as usize).min(size.columns - 1), row, if x.fract() < 0.5 { Side::Left } else { Side::Right })
+        };
+        let mode = *term.mode();
+        // programs that asked for the mouse get it, unless Shift is held to select text
+        let mouse_reports = mode.intersects(TermMode::MOUSE_MODE) && !ui.input(|i| i.modifiers.shift);
+        if mouse_reports {
+            let mut input = Vec::new();
+            for event in ui.input(|i| i.events.clone()) {
+                match event {
+                    Event::PointerButton { pos, button, pressed, modifiers } if rect.contains(pos) || (!pressed && self.mouse_button.is_some()) => {
+                        let button = match button {
+                            egui::PointerButton::Primary => 0,
+                            egui::PointerButton::Middle => 1,
+                            egui::PointerButton::Secondary => 2,
+                            _ => continue,
+                        };
+                        let (column, row, _) = screen_cell(pos);
+                        self.mouse_button = pressed.then_some(button);
+                        self.mouse_cell = Some((column, row));
+                        input.extend(mouse_bytes(button, modifiers, (column, row), pressed, mode));
+                    }
+                    Event::PointerMoved(pos) if rect.contains(pos) || self.mouse_button.is_some() => {
+                        let (column, row, _) = screen_cell(pos);
+                        let moved = self.mouse_cell != Some((column, row));
+                        let wanted = mode.contains(TermMode::MOUSE_MOTION) || (mode.contains(TermMode::MOUSE_DRAG) && self.mouse_button.is_some());
+                        if moved && wanted {
+                            self.mouse_cell = Some((column, row));
+                            // 3 is moving without a button held
+                            let modifiers = ui.input(|i| i.modifiers);
+                            input.extend(mouse_bytes(self.mouse_button.unwrap_or(3) + 32, modifiers, (column, row), true, mode));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !input.is_empty() {
+                drop(term);
+                self.write(input);
+                term = self.term.lock();
+            }
+        } else if let Some(pointer) = response.interact_pointer_pos() {
+            // selecting text
+            let (column, row, side) = screen_cell(pointer);
+            let point = Point::new(Line(row as i32 - term.grid().display_offset() as i32), Column(column));
+            if ui.input(|i| i.pointer.primary_pressed()) {
+                let kind = if response.triple_clicked() {
+                    SelectionType::Lines
+                } else if response.double_clicked() {
+                    SelectionType::Semantic
+                } else {
+                    SelectionType::Simple
+                };
+                term.selection = Some(Selection::new(kind, point, side));
+            } else if response.dragged() {
+                if let Some(selection) = &mut term.selection {
+                    selection.update(point, side);
+                }
+            }
+        }
+        if response.hovered() {
+            let delta = ui.input(|i| i.smooth_scroll_delta.y);
+            self.scroll += delta / style.row_height;
+            let lines = self.scroll.trunc() as i32;
+            self.scroll -= lines as f32;
+            if lines != 0 {
+                let bytes = if mouse_reports {
+                    // the wheel is a button for programs that asked for the mouse: 64 up, 65 down
+                    let (column, row, _) = screen_cell(ui.input(|i| i.pointer.hover_pos()).unwrap_or(origin));
+                    let modifiers = ui.input(|i| i.modifiers);
+                    Some(mouse_bytes(if lines > 0 { 64 } else { 65 }, modifiers, (column, row), true, mode))
+                } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+                    // full screen programs scroll their own content with the arrow keys
+                    key_bytes(if lines > 0 { Key::ArrowUp } else { Key::ArrowDown }, Modifiers::NONE, mode)
+                } else {
+                    term.scroll_display(Scroll::Delta(lines));
+                    None
+                };
+                if let Some(bytes) = bytes {
+                    drop(term);
+                    self.write(bytes.repeat(lines.unsigned_abs() as usize));
+                    term = self.term.lock();
+                }
+            }
+        }
+
+        if response.has_focus() {
+            // every key is for the program in the terminal, also the ones that would move the focus
+            let filter = EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true };
+            ui.memory_mut(|m| m.set_focus_lock_filter(response.id, filter));
+            let mode = *term.mode();
+            let mut input = Vec::new();
+            for event in ui.input(|i| i.events.clone()) {
+                match event {
+                    Event::Text(text) => input.extend(text.into_bytes()),
+                    Event::Paste(text) => input.extend(paste_bytes(&text, mode)),
+                    Event::Copy => {
+                        if let Some(text) = term.selection_to_string() {
+                            ui.ctx().copy_text(text);
+                        }
+                    }
+                    Event::Key { key: Key::Enter, pressed: true, .. } if self.exited => self.restart = true,
+                    Event::Key { key, pressed: true, modifiers, .. } => {
+                        if key == Key::K && modifiers.command {
+                            term.grid_mut().clear_history();
+                        } else if let Some(bytes) = key_bytes(key, modifiers, mode) {
+                            input.extend(bytes);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !input.is_empty() {
+                // typing shows the end of the output and leaves what was selected
+                term.scroll_display(Scroll::Bottom);
+                term.selection = None;
+                drop(term);
+                self.write(input);
+                term = self.term.lock();
+            }
+        }
+
+        paint(ui, &term, rect, origin, style, &palette, response.has_focus(), fonts_ready);
+        drop(term);
+        if self.exited {
+            let bottom_right = egui::pos2(rect.right() - PADDING, rect.bottom() - PADDING);
+            let place = egui::Rect::from_min_max(bottom_right - Vec2::new(320.0, 2.0 * style.row_height), bottom_right);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(place).layout(egui::Layout::right_to_left(egui::Align::Max)), |ui| {
+                self.restart |= ui.button("Restart").on_hover_text("Enter").clicked();
+                ui.weak("The process has ended");
+            });
+        }
+    }
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        // the event loop ends and ends the program with it
+        let _ = self.notifier.0.send(Msg::Shutdown);
+    }
+}
+
+/// Draws the cells of the terminal, the selection and the cursor.
+#[allow(clippy::too_many_arguments)]
+fn paint(ui: &egui::Ui, term: &Term<Listener>, rect: egui::Rect, origin: egui::Pos2, style: &CodeStyle, palette: &Palette, focused: bool, fonts_ready: bool) {
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let background = palette.color(term, Color::Named(NamedColor::Background), NamedColor::Background as usize);
+    painter.rect_filled(rect, 0.0, background);
+
+    let content = term.renderable_content();
+    let offset = content.display_offset as i32;
+    let cell_rect = |point: Point, width: usize| {
+        let top_left = origin + Vec2::new(point.column.0 as f32 * style.digit_width, (point.line.0 + offset) as f32 * style.row_height);
+        egui::Rect::from_min_size(top_left, Vec2::new(style.digit_width * width as f32, style.row_height))
+    };
+    let cursor = content.cursor;
+    let show_cursor = cursor.shape != CursorShape::Hidden && term.mode().contains(TermMode::SHOW_CURSOR);
+
+    for cell in content.display_iter {
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+            continue;
+        }
+        let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+        let rect = cell_rect(cell.point, width);
+        let mut fg = palette.cell_color(term, cell.fg, cell.flags, true);
+        let mut bg = palette.cell_color(term, cell.bg, cell.flags, false);
+        if cell.flags.contains(Flags::INVERSE) {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        if content.selection.is_some_and(|selection| selection.contains_cell(&cell, cursor.point, cursor.shape)) {
+            bg = ui.visuals().selection.bg_fill;
+        }
+        let under_cursor = show_cursor && focused && cell.point == cursor.point && cursor.shape == CursorShape::Block;
+        if under_cursor {
+            (fg, bg) = (background, palette.color(term, Color::Named(NamedColor::Cursor), NamedColor::Cursor as usize));
+        }
+        if bg != background {
+            painter.rect_filled(rect, 0.0, bg);
+        }
+        let pixel = 1.0 / ui.ctx().pixels_per_point();
+        if cell.c != ' ' && !cell.flags.contains(Flags::HIDDEN) && !terminal_text::draw(&painter, rect, cell.c, fg, pixel) {
+            let family = terminal_text::family(fonts_ready, cell.flags.contains(Flags::BOLD), cell.flags.contains(Flags::ITALIC));
+            let format = egui::TextFormat {
+                font_id: egui::FontId::new(style.font.size, family),
+                color: fg,
+                underline: if cell.flags.intersects(Flags::ALL_UNDERLINES) { egui::Stroke::new(1.0, fg) } else { egui::Stroke::NONE },
+                strikethrough: if cell.flags.contains(Flags::STRIKEOUT) { egui::Stroke::new(1.0, fg) } else { egui::Stroke::NONE },
+                ..Default::default()
+            };
+            let mut text = cell.c.to_string();
+            text.extend(cell.zerowidth().into_iter().flatten());
+            let galley = ui.fonts_mut(|fonts| fonts.layout_job(egui::text::LayoutJob::single_section(text, format)));
+            painter.galley(rect.min + Vec2::new(0.0, 1.0), galley, fg);
+        }
+    }
+
+    if show_cursor && (!focused || cursor.shape != CursorShape::Block) {
+        let rect = cell_rect(cursor.point, 1);
+        let color = palette.color(term, Color::Named(NamedColor::Cursor), NamedColor::Cursor as usize);
+        match cursor.shape {
+            CursorShape::Beam => painter.rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height())), 0.0, color),
+            CursorShape::Underline => painter.rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 2.0), rect.max), 0.0, color),
+            _ => painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside),
+        };
+    }
+}
+
+/// What the terminal shows, one line per row, without the spaces at the ends of the lines.
+fn screen_text(term: &Term<Listener>) -> String {
+    let grid = term.grid();
+    let mut lines = Vec::new();
+    for line in 0..grid.screen_lines() {
+        let row = &grid[Line(line as i32 - grid.display_offset() as i32)];
+        let text: String = (0..grid.columns()).map(|column| row[Column(column)].c).collect();
+        lines.push(text.trim_end().to_string());
+    }
+    lines.join("\n").trim_end().to_string()
+}
+
+/// The colors of the terminal: the 16 named ones are close to those of Alacritty, the others
+/// are the standard 256 colors. Programs can change them, which `Term::colors` keeps.
+struct Palette {
+    dark: bool,
+    foreground: Color32,
+    background: Color32,
+}
+
+const DARK_COLORS: [u32; 16] = [
+    0x1d1f21, 0xcc6666, 0xb5bd68, 0xf0c674, 0x81a2be, 0xb294bb, 0x8abeb7, 0xc5c8c6, 0x666666, 0xd54e53, 0xb9ca4a, 0xe7c547, 0x7aa6da, 0xc397d8, 0x70c0b1, 0xeaeaea,
+];
+const LIGHT_COLORS: [u32; 16] = [
+    0x000000, 0xc91b00, 0x00a600, 0xa08000, 0x0225c7, 0xc930c7, 0x00a5b2, 0xbfbfbf, 0x686868, 0xff6e67, 0x2fb500, 0xb59c00, 0x6871ff, 0xff77ff, 0x00b8c2, 0xffffff,
+];
+
+fn rgb(color: u32) -> Color32 {
+    Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8)
+}
+
+impl Palette {
+    fn new(visuals: &egui::Visuals) -> Self {
+        Self { dark: visuals.dark_mode, foreground: visuals.text_color(), background: visuals.panel_fill }
+    }
+
+    /// The color at an index of the palette: 0-255 are the 256 colors, the named ones such as
+    /// the foreground come after.
+    fn standard(&self, index: usize) -> Color32 {
+        let named = if self.dark { DARK_COLORS } else { LIGHT_COLORS };
+        match index {
+            0..16 => rgb(named[index]),
+            16..232 => {
+                let level = |value: usize| if value == 0 { 0 } else { (55 + value * 40) as u8 };
+                let index = index - 16;
+                Color32::from_rgb(level(index / 36), level(index / 6 % 6), level(index % 6))
+            }
+            232..256 => Color32::from_gray((8 + (index - 232) * 10) as u8),
+            _ if index == NamedColor::Background as usize => self.background,
+            _ if index == NamedColor::Cursor as usize => self.foreground,
+            _ if index == NamedColor::BrightForeground as usize => self.foreground,
+            _ if index == NamedColor::DimForeground as usize => self.foreground.gamma_multiply(0.66),
+            _ if (NamedColor::DimBlack as usize..=NamedColor::DimWhite as usize).contains(&index) => {
+                let base = self.standard(index - NamedColor::DimBlack as usize);
+                Color32::from_rgb((base.r() as f32 * 0.66) as u8, (base.g() as f32 * 0.66) as u8, (base.b() as f32 * 0.66) as u8)
+            }
+            _ => self.foreground,
+        }
+    }
+
+    /// A color as the terminal shows it: as the program set it, or from the palette.
+    fn color(&self, term: &Term<Listener>, color: Color, index: usize) -> Color32 {
+        match color {
+            Color::Spec(Rgb { r, g, b }) => Color32::from_rgb(r, g, b),
+            _ => term.colors()[index].map_or_else(|| self.standard(index), |Rgb { r, g, b }| Color32::from_rgb(r, g, b)),
+        }
+    }
+
+    /// The color of the text or of the background of a cell. Bold text in one of the eight
+    /// base colors is shown in its bright variant, and faint text is dimmed.
+    fn cell_color(&self, term: &Term<Listener>, color: Color, flags: Flags, foreground: bool) -> Color32 {
+        let index = match color {
+            Color::Named(named) => named as usize,
+            Color::Indexed(index) => index as usize,
+            Color::Spec(_) => 0,
+        };
+        let index = if foreground && flags.contains(Flags::BOLD) && index < 8 && !matches!(color, Color::Spec(_)) { index + 8 } else { index };
+        let color = self.color(term, color, index);
+        if foreground && flags.contains(Flags::DIM) { color.gamma_multiply(0.66) } else { color }
+    }
+}
+
+/// What a mouse button sends to a program that asked for the mouse, following xterm. The
+/// buttons are 0 to 2 for left, middle and right, 3 for none, 64 and 65 for the wheel, and 32
+/// more when the mouse moves. The cell is the column and the row, from 0.
+fn mouse_bytes(button: u8, modifiers: Modifiers, (column, row): (usize, usize), pressed: bool, mode: TermMode) -> Vec<u8> {
+    let modifiers = 4 * modifiers.shift as u8 + 8 * modifiers.alt as u8 + 16 * modifiers.ctrl as u8;
+    if mode.contains(TermMode::SGR_MOUSE) {
+        let end = if pressed { 'M' } else { 'm' };
+        return format!("\x1b[<{};{};{}{end}", button + modifiers, column + 1, row + 1).into_bytes();
+    }
+    // the old encoding has no release of a particular button, and no cells past 222
+    let button = if pressed { button } else { 3 };
+    if column > 222 || row > 222 {
+        return Vec::new();
+    }
+    vec![0x1b, b'[', b'M', 32 + button + modifiers, 33 + column as u8, 33 + row as u8]
+}
+
+/// What a pasted text is sent as: line breaks as Enter, and marked as pasted when the program asks for it.
+fn paste_bytes(text: &str, mode: TermMode) -> Vec<u8> {
+    let text = text.replace("\r\n", "\r").replace('\n', "\r");
+    if mode.contains(TermMode::BRACKETED_PASTE) {
+        // the end marker can't be part of the text, or the rest of it would run as commands
+        format!("\x1b[200~{}\x1b[201~", text.replace("\x1b[201~", "")).into_bytes()
+    } else {
+        text.into_bytes()
+    }
+}
+
+/// What a key sends to the program in the terminal, following xterm.
+fn key_bytes(key: Key, modifiers: Modifiers, mode: TermMode) -> Option<Vec<u8>> {
+    let mac = cfg!(target_os = "macos");
+    // the xterm number for the modifiers, as in "\x1b[1;5A" for Ctrl+Up
+    let code = 1 + modifiers.shift as u8 + 2 * modifiers.alt as u8 + 4 * modifiers.ctrl as u8;
+    let csi = |end: &str| if code > 1 { format!("\x1b[1;{code}{end}") } else { format!("\x1b[{end}") };
+    let cursor = |end: &str| if code == 1 && mode.contains(TermMode::APP_CURSOR) { format!("\x1bO{end}") } else { csi(end) };
+    let tilde = |number: u8| if code > 1 { format!("\x1b[{number};{code}~") } else { format!("\x1b[{number}~") };
+    let only_alt = modifiers.alt && !modifiers.ctrl && !modifiers.shift && !modifiers.command;
+    // Cmd on macOS goes to the ends of the line, and Option by words, as in other macOS terminals
+    let text = match key {
+        Key::ArrowLeft if mac && modifiers.mac_cmd => "\x01".to_string(),
+        Key::ArrowRight if mac && modifiers.mac_cmd => "\x05".to_string(),
+        Key::Backspace if mac && modifiers.mac_cmd => "\x15".to_string(),
+        _ if modifiers.command && !modifiers.ctrl => return None,
+        Key::ArrowLeft if only_alt => "\x1bb".to_string(),
+        Key::ArrowRight if only_alt => "\x1bf".to_string(),
+        Key::ArrowUp => cursor("A"),
+        Key::ArrowDown => cursor("B"),
+        Key::ArrowRight => cursor("C"),
+        Key::ArrowLeft => cursor("D"),
+        Key::Home => cursor("H"),
+        Key::End => cursor("F"),
+        Key::Insert => tilde(2),
+        Key::Delete => tilde(3),
+        Key::PageUp => tilde(5),
+        Key::PageDown => tilde(6),
+        Key::F1 => "\x1bOP".to_string(),
+        Key::F2 => "\x1bOQ".to_string(),
+        Key::F3 => "\x1bOR".to_string(),
+        Key::F4 => "\x1bOS".to_string(),
+        Key::F5 => tilde(15),
+        Key::F6 => tilde(17),
+        Key::F7 => tilde(18),
+        Key::F8 => tilde(19),
+        Key::F9 => tilde(20),
+        Key::F10 => tilde(21),
+        Key::F11 => tilde(23),
+        Key::F12 => tilde(24),
+        // with Shift or Option, Enter goes as Escape and Enter, which agents take as a new line
+        // instead of sending the message
+        Key::Enter if modifiers.shift || modifiers.alt => "\x1b\r".to_string(),
+        Key::Enter => "\r".to_string(),
+        Key::Tab if modifiers.shift => "\x1b[Z".to_string(),
+        Key::Tab => "\t".to_string(),
+        Key::Backspace if modifiers.ctrl => "\x08".to_string(),
+        Key::Backspace if modifiers.alt => "\x1b\x7f".to_string(),
+        Key::Backspace => "\x7f".to_string(),
+        Key::Escape => "\x1b".to_string(),
+        Key::Space if modifiers.ctrl => "\0".to_string(),
+        _ if modifiers.ctrl => {
+            // Ctrl with a letter sends its control character, Ctrl+C is 3
+            let letter = key.name().chars().next().filter(|c| key.name().len() == 1 && c.is_ascii_alphabetic())?;
+            let control = (letter.to_ascii_uppercase() as u8) & 0x1f;
+            if modifiers.alt { format!("\x1b{}", control as char) } else { (control as char).to_string() }
+        }
+        _ => return None,
+    };
+    Some(text.into_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable as _;
+
+    use super::*;
+    use crate::testing::TempDir;
+
+    fn sent(key: Key, modifiers: Modifiers) -> String {
+        String::from_utf8(key_bytes(key, modifiers, TermMode::default()).unwrap_or_default()).unwrap()
+    }
+
+    #[test]
+    fn keys_send_what_xterm_sends() {
+        assert_eq!(sent(Key::Enter, Modifiers::NONE), "\r");
+        assert_eq!(sent(Key::Enter, Modifiers::SHIFT), "\x1b\r");
+        assert_eq!(sent(Key::Backspace, Modifiers::NONE), "\x7f");
+        assert_eq!(sent(Key::Backspace, Modifiers::ALT), "\x1b\x7f");
+        assert_eq!(sent(Key::Tab, Modifiers::SHIFT), "\x1b[Z");
+        assert_eq!(sent(Key::Escape, Modifiers::NONE), "\x1b");
+        assert_eq!(sent(Key::ArrowUp, Modifiers::NONE), "\x1b[A");
+        assert_eq!(sent(Key::ArrowLeft, Modifiers::CTRL), "\x1b[1;5D");
+        assert_eq!(sent(Key::ArrowRight, Modifiers::SHIFT), "\x1b[1;2C");
+        assert_eq!(sent(Key::ArrowLeft, Modifiers::ALT), "\x1bb");
+        assert_eq!(sent(Key::Delete, Modifiers::NONE), "\x1b[3~");
+        assert_eq!(sent(Key::F5, Modifiers::NONE), "\x1b[15~");
+        assert_eq!(sent(Key::C, Modifiers::CTRL), "\x03");
+        assert_eq!(sent(Key::D, Modifiers::CTRL), "\x04");
+        assert_eq!(sent(Key::A, Modifiers::NONE), "");
+        assert_eq!(sent(Key::P, Modifiers::COMMAND), "");
+    }
+
+    #[test]
+    fn keys_follow_the_modes_the_program_asked_for() {
+        assert_eq!(key_bytes(Key::ArrowUp, Modifiers::NONE, TermMode::APP_CURSOR).unwrap(), b"\x1bOA");
+    }
+
+    #[test]
+    fn mouse_buttons_send_what_xterm_sends() {
+        let sgr = TermMode::SGR_MOUSE;
+        assert_eq!(mouse_bytes(0, Modifiers::NONE, (0, 0), true, sgr), b"\x1b[<0;1;1M");
+        assert_eq!(mouse_bytes(2, Modifiers::CTRL, (9, 4), false, sgr), b"\x1b[<18;10;5m");
+        assert_eq!(mouse_bytes(65, Modifiers::NONE, (1, 2), true, sgr), b"\x1b[<65;2;3M");
+        assert_eq!(mouse_bytes(32, Modifiers::SHIFT, (3, 3), true, TermMode::default()), [0x1b, b'[', b'M', 32 + 36, 36, 36]);
+        assert_eq!(mouse_bytes(0, Modifiers::NONE, (3, 3), false, TermMode::default()), [0x1b, b'[', b'M', 35, 36, 36]);
+        assert!(mouse_bytes(0, Modifiers::NONE, (300, 3), true, TermMode::default()).is_empty());
+    }
+
+    #[test]
+    fn pastes_line_breaks_as_enter_and_marks_the_paste_when_asked() {
+        assert_eq!(paste_bytes("a\nb\r\nc", TermMode::default()), b"a\rb\rc");
+        assert_eq!(paste_bytes("ls\x1b[201~rm", TermMode::BRACKETED_PASTE), b"\x1b[200~lsrm\x1b[201~");
+    }
+
+    #[test]
+    fn has_the_standard_256_colors() {
+        let palette = Palette { dark: true, foreground: Color32::WHITE, background: Color32::BLACK };
+        assert_eq!(palette.standard(1), rgb(DARK_COLORS[1]));
+        assert_eq!(palette.standard(16), Color32::from_rgb(0, 0, 0));
+        assert_eq!(palette.standard(21), Color32::from_rgb(0, 0, 255));
+        assert_eq!(palette.standard(196), Color32::from_rgb(255, 0, 0));
+        assert_eq!(palette.standard(232), Color32::from_gray(8));
+        assert_eq!(palette.standard(NamedColor::Background as usize), Color32::BLACK);
+    }
+
+    /// A terminal that runs the shell script in a directory of its own.
+    fn harness(name: &str, script: &str) -> (Harness<'static, Terminals>, TempDir) {
+        let dir = TempDir::new(name);
+        let mut terminals = Terminals::new(dir.path().to_path_buf());
+        terminals.run("/bin/sh", &["-c", script]);
+        // the terminal fonts take a few frames to come in
+        let harness = Harness::builder().with_size(Vec2::new(600.0, 400.0)).with_max_steps(8).build_ui_state(|ui, terminals: &mut Terminals| terminals.ui(ui, 1), terminals);
+        (harness, dir)
+    }
+
+    /// Shows the terminal until the condition holds.
+    fn wait(harness: &mut Harness<'_, Terminals>, what: &str, done: impl Fn(&Harness<'_, Terminals>) -> bool) {
+        let start = Instant::now();
+        while !done(harness) {
+            assert!(start.elapsed() < Duration::from_secs(5), "no {what} on the screen:\n{}", harness.state().screen(1));
+            harness.run();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_screen(harness: &mut Harness<'_, Terminals>, text: &str) {
+        wait(harness, text, |harness| harness.state().screen(1).contains(text));
+    }
+
+    /// Lets the program read the input byte by byte and shows what it got.
+    const SHOW_INPUT: &str = "stty -icanon -echo; dd bs=1 count=COUNT 2>/dev/null | od -An -c; sleep 5";
+
+    #[test]
+    fn runs_a_program_in_the_project_and_shows_its_output() {
+        let (mut harness, dir) = harness("terminal", "pwd; printf '\\033]0;working\\007\\033[31mred\\033[0m'; read line; echo got $line");
+        wait_for_screen(&mut harness, "red");
+        // the path is long enough to wrap
+        assert!(harness.state().screen(1).replace('\n', "").starts_with(&dir.path().canonicalize().unwrap().display().to_string()));
+        wait(&mut harness, "title", |harness| harness.state().title(1).as_deref() == Some("working"));
+
+        harness.state().terminals[&1].as_ref().unwrap().write("hello\r");
+        wait_for_screen(&mut harness, "got hello");
+        wait(&mut harness, "end", |harness| harness.state().title(1).as_deref() == Some("working (exited)"));
+    }
+
+    #[test]
+    fn restarts_the_program_after_it_ended() {
+        let (mut harness, _dir) = harness("terminal-restart", "echo started-$$");
+        wait(&mut harness, "end", |harness| harness.state().title(1).is_some_and(|title| title.ends_with("(exited)")));
+        let first = harness.state().screen(1);
+        harness.get_by_label("Restart").click();
+        wait(&mut harness, "new start", |harness| harness.state().screen(1).starts_with("started-") && harness.state().screen(1) != first);
+
+        // Enter in an ended terminal starts it again as well
+        wait(&mut harness, "end", |harness| harness.state().title(1).is_some_and(|title| title.ends_with("(exited)")));
+        let second = harness.state().screen(1);
+        harness.key_press(Key::Enter);
+        wait(&mut harness, "new start", |harness| harness.state().screen(1).starts_with("started-") && harness.state().screen(1) != second);
+    }
+
+    #[test]
+    fn programs_read_the_clipboard_only_when_allowed() {
+        let script = format!("printf '\\033]52;c;?\\007'; {}", SHOW_INPUT.replace("COUNT", "12"));
+        let (mut harness, _dir) = harness("terminal-clipboard", &script);
+        harness.state_mut().read_clipboard = || Some("hi".to_string());
+        wait(&mut harness, "question", |harness| harness.query_by_label("Allow").is_some());
+        harness.get_by_label("Allow").click();
+        // the answer has the text in base64
+        wait_for_screen(&mut harness, "a   G   k   =");
+        assert!(harness.query_by_label("Allow").is_none());
+
+        let (mut denied, _dir) = self::harness("terminal-clipboard-denied", &script);
+        wait(&mut denied, "question", |harness| harness.query_by_label("Deny").is_some());
+        denied.get_by_label("Deny").click();
+        denied.run();
+        assert!(denied.query_by_label("Deny").is_none());
+        assert_eq!(denied.state().screen(1), "");
+    }
+
+    #[test]
+    fn mouse_clicks_go_to_programs_that_asked_for_them() {
+        let script = format!("printf '\\033[?1000h\\033[?1006h'; {}", SHOW_INPUT.replace("COUNT", "18"));
+        let (mut harness, _dir) = harness("terminal-mouse", &script);
+        // the program asks for the mouse before it shows anything; give it a moment
+        let start = Instant::now();
+        while !harness.state().terminals[&1].as_ref().unwrap().term.lock().mode().contains(TermMode::SGR_MOUSE) {
+            assert!(start.elapsed() < Duration::from_secs(5), "the program didn't ask for the mouse");
+            harness.run();
+        }
+        // inside the first cell
+        let cell = harness.get_by_role(egui::Role::Terminal).rect().min + Vec2::splat(PADDING + 2.0);
+        harness.event(Event::PointerMoved(cell));
+        for pressed in [true, false] {
+            harness.event(Event::PointerButton { pos: cell, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        // the press and the release of the left button in column 1, row 1, as od shows them
+        let sent = "033[<0;1;1M033[<0;1;1m";
+        wait(&mut harness, sent, |harness| harness.state().screen(1).split_whitespace().collect::<String>().contains(sent));
+    }
+}

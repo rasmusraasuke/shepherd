@@ -12,6 +12,7 @@ use crate::git::Repo;
 use crate::quick_open::{Outcome, QuickOpen};
 use crate::review::{Review, ReviewState};
 use crate::search::{ProjectSearch, Reveal};
+use crate::terminal::Terminals;
 use crate::watcher::{Snapshot, Watcher};
 use crate::workspace::{Sidebar, Tab, Window, Workspace};
 
@@ -50,12 +51,15 @@ struct Content {
     file_tree: FileTree,
     files: Vec<String>,
     search: ProjectSearch,
+    terminals: Terminals,
     error: Option<String>,
 }
 
 enum Action {
     /// Show the tab, opening it in the given window if it isn't open yet.
     Open(Tab, usize),
+    /// Open a new terminal in a window, in the given group of tabs or next to the tab used last.
+    NewTerminal(usize, Option<TileId>),
     /// Search across the project, in the sidebar of the main window.
     Search,
     /// Open the file and select a place in it.
@@ -110,6 +114,7 @@ impl App {
             file_tree: FileTree::default(),
             files: Vec::new(),
             search: ProjectSearch::default(),
+            terminals: Terminals::new(repo.root.clone()),
             error: None,
             root: repo.root.clone(),
         };
@@ -149,7 +154,7 @@ impl App {
             ui.separator();
             ui.label(format!("{done}/{total} hunks reviewed"));
             ui.separator();
-            ui.weak("Cmd+P open file · Cmd+F find in file · Cmd+Shift+F search in files · j/k move · space mark reviewed · n next unreviewed · r refresh");
+            ui.weak("Cmd+P open file · Cmd+F find in file · Cmd+Shift+F search in files · Cmd+T terminal · j/k move · space mark reviewed · n next unreviewed · r refresh");
         });
         if let Some(error) = &self.content.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -201,6 +206,9 @@ impl App {
         // before the tabs, where Cmd+F would take it
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
             self.action = Some(Action::Search);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::T)) {
+            self.action = Some(Action::NewTerminal(index, None));
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::P)) {
             self.quick_open = Some((window_id, QuickOpen::default()));
@@ -273,6 +281,11 @@ impl App {
                 if focus {
                     self.focus(window, ctx);
                 }
+            }
+            Action::NewTerminal(window, tabs) => {
+                let id = self.workspace.open_terminal(window, tabs);
+                self.content.terminals.focus(id);
+                self.focus(window, ctx);
             }
             Action::Search => {
                 self.workspace.sidebar = Sidebar::Search;
@@ -353,12 +366,22 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                 egui::Frame::new().inner_margin(8.0).show(ui, |ui| self.content.review.ui(ui));
             }
             Tab::File(path) => self.content.open_files.ui(ui, path),
+            Tab::Terminal(id) => self.content.terminals.ui(ui, *id),
         }
         UiResponse::None
     }
 
     fn tab_title_for_pane(&mut self, tab: &Tab) -> egui::WidgetText {
-        tab.title().into()
+        match tab {
+            Tab::Terminal(id) => self.content.terminals.title(*id).unwrap_or_else(|| tab.title().to_string()).into(),
+            _ => tab.title().into(),
+        }
+    }
+
+    fn top_bar_right_ui(&mut self, _tiles: &Tiles<Tab>, ui: &mut egui::Ui, tile_id: TileId, _tabs: &egui_tiles::Tabs, _scroll_offset: &mut f32) {
+        if ui.button("+").on_hover_text("New terminal (Cmd+T)").clicked() {
+            *self.action = Some(Action::NewTerminal(self.window, Some(tile_id)));
+        }
     }
 
     fn is_tab_closable(&self, _tiles: &Tiles<Tab>, _tile_id: TileId) -> bool {
@@ -366,8 +389,10 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
     }
 
     fn on_tab_close(&mut self, tiles: &mut Tiles<Tab>, tile_id: TileId) -> bool {
-        if let Some(Tab::File(path)) = tiles.get_pane(&tile_id) {
-            self.content.open_files.close(path);
+        match tiles.get_pane(&tile_id) {
+            Some(Tab::File(path)) => self.content.open_files.close(path),
+            Some(Tab::Terminal(id)) => self.content.terminals.close(*id),
+            _ => {}
         }
         true
     }
@@ -391,8 +416,8 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
             }
         });
         match tab {
-            Tab::Review => response,
             Tab::File(path) => response.on_hover_text(path),
+            _ => response,
         }
     }
 
@@ -804,6 +829,38 @@ mod tests {
         harness.run();
         harness.state_mut().content.open_files.save_all();
         assert_eq!(fs::read_to_string(dir.path().join("src/main.rs")).unwrap(), "fn main() {\n    println!(\"bye\");\n}\n");
+    }
+
+    #[test]
+    fn runs_a_program_in_a_new_terminal_that_takes_the_keyboard() {
+        let (mut harness, _dir) = harness("terminal-tab");
+        harness.state_mut().content.terminals.run("/bin/cat", &[]);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::T);
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review, Tab::Terminal(1)]]);
+        assert!(harness.get_by_role(egui::Role::Terminal).is_focused());
+
+        // the keys of the review and of the editor go to the program instead
+        harness.event(egui::Event::Text("j hello".to_string()));
+        harness.key_press(Key::Enter);
+        let start = std::time::Instant::now();
+        // cat repeats the line after the terminal echoed it
+        while harness.state().content.terminals.screen(1) != "j hello\nj hello" {
+            assert!(start.elapsed() < Duration::from_secs(5), "{:?}", harness.state().content.terminals.screen(1));
+            harness.run();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // a second one opens next to it; closing a tab ends its program
+        harness.get_by_label("+").click();
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review, Tab::Terminal(1), Tab::Terminal(2)]]);
+        let tile = harness.state().workspace.windows[0].tree.tiles.find_pane(&Tab::Terminal(1)).unwrap();
+        let state = harness.state_mut();
+        let mut behavior = TabBehavior { content: &mut state.content, window: 0, window_count: 1, dragged_out: false, focused: &mut None, action: &mut None };
+        egui_tiles::Behavior::on_tab_close(&mut behavior, &mut state.workspace.windows[0].tree.tiles, tile);
+        assert!(!harness.state().content.terminals.is_open(1));
+        assert!(harness.state().content.terminals.is_open(2));
     }
 
     #[test]

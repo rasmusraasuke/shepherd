@@ -11,6 +11,8 @@ pub enum Tab {
     Review,
     /// A project file, by its path relative to the repository root.
     File(String),
+    /// A terminal, by an id of its own.
+    Terminal(u64),
 }
 
 impl Tab {
@@ -18,6 +20,7 @@ impl Tab {
         match self {
             Tab::Review => "Review",
             Tab::File(path) => path.rsplit('/').next().unwrap_or(path),
+            Tab::Terminal(_) => "Terminal",
         }
     }
 }
@@ -220,6 +223,15 @@ impl Workspace {
         window
     }
 
+    /// Opens a new terminal in the given group of tabs of a window, or next to the tab used
+    /// last. Returns its id.
+    pub fn open_terminal(&mut self, window: usize, tabs: Option<TileId>) -> u64 {
+        let id = self.windows.iter().flat_map(|window| window.tabs()).filter_map(|tab| if let Tab::Terminal(id) = tab { Some(*id) } else { None }).max().unwrap_or(0) + 1;
+        let window = &mut self.windows[window];
+        window.add_to(tabs.or_else(|| window.target_tabs()), Tab::Terminal(id));
+        id
+    }
+
     /// Moves a tab to another window, or pops it out into a new one when `to` is `None`.
     pub fn move_tab(&mut self, from: usize, tile: TileId, to: Option<usize>) {
         let Some(tab) = self.windows[from].remove(tile) else { return };
@@ -399,6 +411,17 @@ mod tests {
         workspace.drop_tab(1, tile, egui::pos2(900.0, 300.0));
         assert_eq!(workspace.windows.len(), 2);
         assert_eq!(tabs(&workspace.windows[1]), ["a.rs"]);
+    }
+
+    #[test]
+    fn opens_terminals_with_ids_of_their_own() {
+        let mut workspace = Workspace::default();
+        assert_eq!(workspace.open_terminal(0, None), 1);
+        let tile = tile_of(&workspace.windows[0], &Tab::Terminal(1));
+        workspace.move_tab(0, tile, None);
+        assert_eq!(workspace.open_terminal(0, None), 2);
+        assert_eq!(tabs(&workspace.windows[0]), ["Review", "Terminal"]);
+        assert!(is_active(&workspace.windows[0], &Tab::Terminal(2)));
     }
 
     #[test]

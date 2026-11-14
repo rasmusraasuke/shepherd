@@ -67,6 +67,28 @@ Without a path the current directory is opened. The path must be inside a git re
 | Cmd+Shift+F                   | Search in files                         |
 | Cmd+S                         | Save now                                |
 
+### Terminals
+
+- **Terminal tabs.** Cmd+T, or the + at the right of any tab bar, opens a terminal running
+  your shell in the project directory. Terminals are tabs like any other: split, moved and
+  popped out. The tab shows the title the shell or the program gives it.
+- **Made for agents.** Full screen programs, 256 and true colors, bracketed paste and the
+  usual xterm keys work. Text is in Menlo with the fallbacks macOS terminals use, so the
+  symbols agents draw look as they do in iTerm2; box drawing, block and braille characters
+  are drawn to fill their cells, so frames, logos and spinners join up. Shift+Enter and Option+Enter send a new line to agents such as
+  Claude Code; Option+Left/Right move by words and Cmd+Left/Right to the ends of the line,
+  as in other macOS terminals.
+- **Selecting and scrolling.** Drag to select (double click for a word, triple click for a
+  line), Cmd+C copies, Cmd+V pastes, Cmd+K clears the scrollback. The wheel scrolls back
+  through the output; typing brings back the end of it.
+- **Mouse.** Programs that ask for the mouse get its clicks, drags and wheel. Hold Shift to
+  select text in them anyway.
+- **Clipboard.** Programs can copy to the clipboard. When one wants to read it, a bar asks
+  first; *Allow* holds for that terminal until its program ends.
+- **Restarting and closing.** When the program ends, Enter or *Restart* starts it again in
+  the same tab. Closing the tab ends the program. A terminal tab that is open when the
+  editor quits comes back with a new shell on the next start.
+
 ### Review
 
 - All working-tree changes (staged, unstaged and untracked) against HEAD in one stream.

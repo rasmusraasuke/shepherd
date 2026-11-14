@@ -9,6 +9,8 @@ mod highlight;
 mod quick_open;
 mod review;
 mod search;
+mod terminal;
+mod terminal_text;
 #[cfg(test)]
 mod testing;
 mod watcher;
