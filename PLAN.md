@@ -29,11 +29,11 @@ README.md describes the features.
 
 Milestone 2 is in progress. Done so far: file editing with undo, find and replace, saving on
 its own, reloading of files changed on disk, syntax highlighting, search across the project
-and terminals. Still to do: several reviews at once.
+and terminals. Still to do: the review of one file at a time, and several reviews at once.
 
 The review itself is still the prototype: all working-tree changes in one stream, hunks
 marked as reviewed (and unreviewed again when their content changes), a flat list of changed
-files, keyboard navigation, automatic refresh.
+files, keyboard navigation, automatic refresh. It changes to one file at a time next.
 
 ## Milestones
 
@@ -60,21 +60,28 @@ All three kinds of tab become usable for real work.
 - Search across the project
 - Terminals good enough to run CLI agents, shells and build tools
 - Files changed on disk by an agent reload without fuss
-- Several reviews can be open at once (for example in different splits)
+- The review covers one file at a time:
+  - The *Changes* sidebar shows the changed files as a tree, in the same form as the project
+    file tree but with only the files that changed, each with its review progress
+  - A review tab shows the changes of one file. Clicking a file in the tree shows it in the
+    review tab that is open (the one used last when there are several), so review tabs
+    don't pile up; a new review tab is opened only on purpose
+  - By default a review shows the changed parts and a few lines around them; clicking above
+    or below a part shows more of the file, until the whole file is shown
+- Several reviews can be open at once, each on its own file (for example in different splits)
 
 Done when: an agent runs in a terminal tab, its changes appear in a review tab beside it,
 and a file can be fixed by hand in a third.
 
 ### 3. A review that is pleasant to read
 
-The stream becomes good enough to review real agent output in every day.
+The review becomes good enough to review real agent output in every day.
 
-- Changed files shown as a tree, so it is clear which directories the changes are in, with
-  review progress per file and per directory
+- Review progress per directory in the changes tree, and moving on to the next file that
+  isn't reviewed yet
 - Syntax highlighting in diffs
 - Changes within a line highlighted, not only whole lines
 - Long lines, large diffs and large repos handled without stutter
-- Expand context around a hunk; show a whole file when needed
 - Mark a file or directory as reviewed in one go
 
 Done when: reviewing an agent's change here is nicer than in IntelliJ's diff view.
@@ -99,7 +106,7 @@ without copying anything by hand.
 
 ### 5. Editing inside the diff
 
-- Edit the new side of any hunk directly in the stream
+- Edit the new side of any hunk directly in the review
 - Revert a hunk or selected lines
 - Jump from a diff line to the same place in a file tab and back
 
@@ -119,7 +126,7 @@ Done when: a normal day of commits, pushes and pulls needs no other git tool.
 
 ### 7. Merge conflicts in the same view
 
-- Conflicts appear in the review stream as a special kind of hunk, during merge, rebase,
+- Conflicts appear in the file's review as a special kind of hunk, during merge, rebase,
   pull and stash apply
 - Resolve by taking either side, both, or editing the result in place
 - Hand one conflict, or all of them, to an agent and review its resolution like any other
@@ -131,8 +138,8 @@ Done when: a conflicting pull is resolved without leaving the review.
 ### 8. Reviewing commits
 
 - History list of commits for the branch
-- Open one commit, or a range, in the same review stream with the same reviewed marks and
-  comments
+- Open one commit, or a range, in the same review, one file at a time, with the same
+  reviewed marks and comments
 - See what a commit changed in a file's history; blame for a line
 
 Done when: work an agent has already committed can be reviewed the same way as uncommitted work.
@@ -182,6 +189,9 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
 ## Decisions
 
 - **One working tree.** All agents work in the same checkout. No git worktree support.
+- **One file at a time.** A review shows the changes of one file, chosen from the tree of
+  changed files, rather than all changes in one long stream. It shows the changed parts with
+  a little context, which grows on request up to the whole file.
 - **Review comments are short-lived.** A comment disappears once the lines it is attached
   to change; the changed hunk shows up as unreviewed again. No resolved threads.
 - **Files save themselves.** As in IntelliJ, there is no unsaved state to manage: an edit is
