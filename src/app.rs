@@ -19,6 +19,9 @@ const SAVE_INTERVAL: Duration = Duration::from_secs(1);
 
 const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(1200.0, 800.0);
 
+/// Room around the title of a dragged tab for its shadow.
+const DRAG_TITLE_SHADOW: i8 = 16;
+
 pub struct App {
     watcher: Watcher,
     content: Content,
@@ -32,6 +35,8 @@ pub struct App {
     viewports: HashMap<u64, ViewportBuilder>,
     /// The quick open popup and the id of the window it is shown in.
     quick_open: Option<(u64, QuickOpen)>,
+    /// The tab that is being dragged outside of its window.
+    drag: Option<Drag>,
     /// What the user asked for during this frame; done once all windows are drawn.
     action: Option<Action>,
 }
@@ -51,7 +56,17 @@ enum Action {
     Open(Tab, usize),
     /// Move a tab to another window, or to a new one.
     Move { from: usize, tile: TileId, to: Option<usize> },
+    /// Drop a tab that was dragged out of its window.
+    Drop(Drag),
     CloseWindow(usize),
+}
+
+struct Drag {
+    /// Index of the window the tab is dragged from.
+    from: usize,
+    tile: TileId,
+    /// Where the pointer is on the screen.
+    point: egui::Pos2,
 }
 
 /// The title and placement of a window as it is first shown.
@@ -63,6 +78,18 @@ pub fn viewport(root: &Path, window: &Window) -> ViewportBuilder {
         Some(position) => builder.with_position(position),
         None => builder,
     }
+}
+
+/// The frame around the title of a dragged tab.
+fn drag_title_frame(style: &egui::Style) -> egui::Frame {
+    let mut frame = egui::Frame::popup(style).outer_margin(DRAG_TITLE_SHADOW);
+    frame.fill = frame.fill.gamma_multiply(0.5); // see-through
+    frame
+}
+
+/// The title of a dragged tab as it follows the pointer.
+fn drag_title(ui: &mut egui::Ui, title: &str) {
+    drag_title_frame(ui.style()).show(ui, |ui| ui.add(egui::Label::new(title).extend()));
 }
 
 fn viewport_id(window: &Window) -> ViewportId {
@@ -87,6 +114,7 @@ impl App {
             layout_path: repo.layout_path(),
             last_save: Instant::now(),
             quick_open: None,
+            drag: None,
             action: None,
             watcher: Watcher::spawn(repo, ctx),
         }
@@ -150,6 +178,7 @@ impl App {
         let (outer, inner, close_requested) = ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect, i.viewport().close_requested()));
         window.position = outer.map(|rect| rect.min).or(window.position);
         window.size = inner.map(|rect| rect.size()).or(window.size);
+        window.screen_rect = inner.or(window.screen_rect);
         if close_requested && index > 0 {
             self.action = Some(Action::CloseWindow(index));
         }
@@ -160,14 +189,39 @@ impl App {
             self.watcher.refresh_now();
         }
 
-        egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
+        // a tab dragged out of the window is dropped where the pointer is on the screen
+        let pointer = ctx.input(|i| i.pointer.interact_pos());
+        if let (Some(tile), Some(pointer)) = (window.tree.dragged_id(&ctx), pointer) {
+            let point = inner.map(|inner| inner.min + pointer.to_vec2()).filter(|point| inner.is_some_and(|inner| !inner.contains(*point)));
+            self.drag = point.map(|point| Drag { from: index, tile, point });
+            if ctx.input(|i| i.pointer.any_released()) && let Some(drag) = self.drag.take() {
+                self.action = Some(Action::Drop(drag));
+            } else if self.drag.is_none() && let Some(tab) = window.tree.tiles.get_pane(&tile) {
+                // not kept inside the window, so that the title leaves it together with the pointer
+                let area = egui::Area::new(egui::Id::unique("drag title")).order(egui::Order::Tooltip).interactable(false).constrain(false);
+                area.pivot(egui::Align2::CENTER_CENTER).current_pos(pointer).show(&ctx, |ui| drag_title(ui, tab.title()));
+            }
+        } else if self.drag.as_ref().is_some_and(|drag| drag.from == index) {
+            self.drag = None;
+        }
+        let dragged_out = self.drag.as_ref().is_some_and(|drag| drag.from == index);
+
+        let panel = egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
             if window.tabs().is_empty() {
                 ui.centered_and_justified(|ui| ui.weak("Cmd+P to open a file"));
                 return;
             }
-            let mut behavior = TabBehavior { content: &mut self.content, window: index, window_count, focused: &mut window.focused, action: &mut self.action };
+            let mut behavior =
+                TabBehavior { content: &mut self.content, window: index, window_count, dragged_out, focused: &mut window.focused, action: &mut self.action };
             window.tree.ui(&mut behavior, ui);
         });
+
+        // show where a tab dragged here from another window would land
+        if let Some(drag) = self.drag.as_ref().filter(|drag| self.workspace.window_at(drag.point, drag.from) == Some(index)) {
+            let rect = self.workspace.windows[index].drop_target(drag.point).map_or(panel.response.rect, |target| target.rect);
+            let stroke = ui.visuals().selection.stroke;
+            ui.painter().rect(rect, 1.0, stroke.color.gamma_multiply(0.5), stroke, egui::StrokeKind::Inside);
+        }
 
         if let Some((_, quick_open)) = self.quick_open.as_mut().filter(|(id, _)| *id == window_id) {
             match quick_open.ui(&ctx, &self.content.files) {
@@ -185,11 +239,45 @@ impl App {
         match action {
             Action::Open(tab, window) => {
                 let window = self.workspace.open(tab, window);
-                ctx.send_viewport_cmd_to(viewport_id(&self.workspace.windows[window]), ViewportCommand::Focus);
+                self.focus(window, ctx);
             }
             Action::Move { from, tile, to } => self.workspace.move_tab(from, tile, to),
+            Action::Drop(Drag { from, tile, point }) => {
+                let window = self.workspace.drop_tab(from, tile, point);
+                self.focus(window, ctx);
+            }
             Action::CloseWindow(index) => self.workspace.close_window(index),
         }
+    }
+
+    /// Brings the window to the front.
+    fn focus(&self, window: usize, ctx: &egui::Context) {
+        ctx.send_viewport_cmd_to(viewport_id(&self.workspace.windows[window]), ViewportCommand::Focus);
+    }
+
+    /// Shows the title of the tab that is dragged outside of its window at the pointer.
+    /// It is a small window of its own, as nothing can be drawn outside of a window.
+    fn drag_title(&self, ctx: &egui::Context) {
+        let Some(drag) = &self.drag else { return };
+        let Some(tab) = self.workspace.windows[drag.from].tree.tiles.get_pane(&drag.tile) else { return };
+        let style = ctx.global_style();
+        let text_size = ctx.fonts_mut(|fonts| fonts.layout_no_wrap(tab.title().to_string(), egui::TextStyle::Body.resolve(&style), egui::Color32::PLACEHOLDER)).size();
+        let size = text_size + drag_title_frame(&style).total_margin().sum();
+        let builder = ViewportBuilder::default()
+            .with_position(drag.point - size / 2.0)
+            .with_inner_size(size)
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_has_shadow(false)
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            // the window with the dragged tab keeps the pointer and the keyboard
+            .with_active(false)
+            .with_mouse_passthrough(true);
+        ctx.show_viewport_immediate(ViewportId::from_hash_of("drag title"), builder, |ui, _| {
+            egui::CentralPanel::no_frame().show(ui, |ui| drag_title(ui, tab.title()));
+        });
     }
 
     fn save_layout(&mut self) {
@@ -210,6 +298,8 @@ struct TabBehavior<'a> {
     /// Index of the window the tabs are in.
     window: usize,
     window_count: usize,
+    /// Whether a tab of the window is being dragged outside of it.
+    dragged_out: bool,
     focused: &'a mut Option<TileId>,
     action: &'a mut Option<Action>,
 }
@@ -267,6 +357,21 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         }
     }
 
+    fn drag_ui(&mut self, _tiles: &Tiles<Tab>, _ui: &mut egui::Ui, _tile_id: TileId) {
+        // the title of the dragged tab is shown by the window, also outside of it
+    }
+
+    fn paint_drag_preview(&self, visuals: &egui::Visuals, painter: &egui::Painter, parent_rect: Option<egui::Rect>, preview_rect: egui::Rect) {
+        if self.dragged_out {
+            return; // the tab isn't going to land in this window
+        }
+        let stroke = self.drag_preview_stroke(visuals);
+        if let Some(parent_rect) = parent_rect {
+            painter.rect_stroke(parent_rect, 1.0, stroke, egui::StrokeKind::Inside);
+        }
+        painter.rect(preview_rect, 1.0, self.drag_preview_color(visuals), stroke, egui::StrokeKind::Inside);
+    }
+
     fn simplification_options(&self) -> SimplificationOptions {
         SimplificationOptions { all_panes_must_have_tabs: true, ..Default::default() }
     }
@@ -289,6 +394,8 @@ impl App {
             ctx.show_viewport_immediate(viewport_id(window), builder, |ui, _| self.window_ui(ui, index));
         }
 
+        self.drag_title(&ctx);
+
         if let Some(action) = self.action.take() {
             self.perform(action, &ctx);
             ctx.request_repaint();
@@ -304,6 +411,11 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // nothing behind what is drawn, for the see-through title of a dragged tab
+        [0.0; 4]
     }
 
     fn on_exit(&mut self) {
@@ -397,6 +509,91 @@ mod tests {
         harness.state_mut().action = Some(Action::Move { from: 1, tile, to: Some(0) });
         harness.run();
         assert_eq!(open_tabs(&harness).len(), 1);
+    }
+
+    #[test]
+    fn drops_a_dragged_tab_into_the_tabs_under_the_pointer_or_into_a_new_window() {
+        let (mut harness, _dir) = harness("drop");
+        harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
+        harness.run();
+        let window = &mut harness.state_mut().workspace.windows[0];
+        let on_screen = egui::vec2(100.0, 50.0);
+        window.screen_rect = Some(egui::Rect::from_min_size(on_screen.to_pos2(), egui::vec2(1000.0, 700.0)));
+        let tile = window.tree.tiles.find_pane(&file("README.md")).unwrap();
+
+        // outside of every window
+        let point = egui::pos2(1500.0, 300.0);
+        harness.state_mut().action = Some(Action::Drop(Drag { from: 0, tile, point }));
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review], vec![file("README.md")]]);
+
+        // onto the review in the main window
+        let windows = &harness.state().workspace.windows;
+        let review = windows[0].tree.tiles.find_pane(&Tab::Review).unwrap();
+        let point = windows[0].tree.tiles.rect(review).unwrap().center() + on_screen;
+        let tile = windows[1].tree.tiles.find_pane(&file("README.md")).unwrap();
+        harness.state_mut().action = Some(Action::Drop(Drag { from: 1, tile, point }));
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md")]]);
+        let tiles = &harness.state().workspace.windows[0].tree.tiles;
+        assert_eq!(tiles.parent_of(tiles.find_pane(&file("README.md")).unwrap()), tiles.parent_of(review));
+    }
+
+    #[test]
+    fn drops_a_dragged_tab_on_the_side_of_the_tabs_under_the_pointer_as_a_split() {
+        let (mut harness, _dir) = harness("drop-split");
+        let window = &mut harness.state_mut().workspace.windows[0];
+        window.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0)));
+        for (name, towards) in [("README.md", egui::vec2(0.4, 0.0)), ("src/main.rs", egui::vec2(0.0, 0.4))] {
+            harness.state_mut().action = Some(Action::Open(file(name), 0));
+            harness.run();
+            let tile = harness.state().workspace.windows[0].tree.tiles.find_pane(&file(name)).unwrap();
+            harness.state_mut().action = Some(Action::Move { from: 0, tile, to: None });
+            harness.run();
+
+            // dropped near the right and then the bottom edge of the review
+            let windows = &harness.state().workspace.windows;
+            let review = windows[0].tree.tiles.find_pane(&Tab::Review).unwrap();
+            let rect = windows[0].tree.tiles.rect(review).unwrap();
+            let point = rect.center() + towards * rect.size();
+            let tile = windows[1].tree.tiles.find_pane(&file(name)).unwrap();
+            harness.state_mut().action = Some(Action::Drop(Drag { from: 1, tile, point }));
+            harness.run();
+        }
+
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md"), file("src/main.rs")]]);
+        let tiles = &harness.state().workspace.windows[0].tree.tiles;
+        let rect = |tab: &Tab| tiles.rect(tiles.find_pane(tab).unwrap()).unwrap();
+        let (review, readme, main) = (rect(&Tab::Review), rect(&file("README.md")), rect(&file("src/main.rs")));
+        assert!(review.right() <= readme.left() && review.top() == readme.top());
+        assert!(review.bottom() <= main.top() && review.left() == main.left() && main.right() <= readme.left());
+    }
+
+    #[test]
+    fn shows_the_title_of_a_dragged_tab_at_the_pointer() {
+        let (mut harness, _dir) = harness("drag-title");
+        harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
+        harness.run();
+        let titles = |harness: &Harness<'_, App>| harness.query_all_by_label("README.md").count();
+        let before = titles(&harness);
+
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        let tab = harness.query_all_by_label("README.md").last().unwrap().rect().center();
+        let pointer = tab + egui::vec2(100.0, 200.0);
+        harness.event(egui::Event::PointerMoved(tab));
+        harness.event(button(tab, true));
+        harness.run();
+        harness.event(egui::Event::PointerMoved(pointer));
+        harness.run();
+        assert_eq!(titles(&harness), before + 1);
+
+        // giving up the drag leaves the tab where it was
+        harness.key_press(Key::Escape);
+        harness.run();
+        assert_eq!(titles(&harness), before);
+        harness.event(button(pointer, false));
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md")]]);
     }
 
     #[test]

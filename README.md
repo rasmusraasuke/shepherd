@@ -20,9 +20,12 @@ Without a path the current directory is opened. The path must be inside a git re
 - **Splits.** Drag a tab to the edge of another tab to place them side by side or below
   each other. Drag it onto another tab bar to move it there. Drag the line between splits
   to resize them. Ctrl+Tab cycles through the tabs under the pointer.
-- **Windows.** Right-click a tab and choose *Move to new window* to pop it out. A window
-  has its own tabs and splits. The same menu moves a tab to any other window; closing a
-  popped out window brings its tabs back to the main window.
+- **Windows.** Drag a tab out of its window to pop it out into a new window where it is
+  dropped, or drop it on another window: on the middle or the titles of a group of tabs to
+  join it, towards a side of the group to make a split there. The place it is going to
+  take is highlighted, and its title follows the pointer between the windows. A window has
+  its own tabs and splits. A tab can also be moved from the menu behind a right-click on
+  it; closing a popped out window brings its tabs back to the main window.
 - **Sidebar.** Switches between *Files*, the tree of project files (everything git doesn't
   ignore), and *Changes*, the list of changed files with their review progress.
 - **Files.** Click a file in the tree to open it as a read-only tab. A file that is already
