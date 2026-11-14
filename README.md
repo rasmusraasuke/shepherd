@@ -47,6 +47,9 @@ Without a path the current directory is opened. The path must be inside a git re
 - **Find and replace.** Cmd+F finds text in the file, starting from what is selected. Letter
   case matters only when the query has capital letters. Enter and Shift+Enter go to the
   next and the previous place, Esc closes the bar.
+- **Syntax highlighting.** Kotlin, Java, Rust, JavaScript, TypeScript, Python, Go, JSON,
+  shell scripts, TOML, YAML, HTML and CSS are highlighted, in colors close to IntelliJ's.
+  Only what changed is parsed again while typing; files over 2 MB are left plain.
 
 | Key                           | Action                                  |
 |-------------------------------|-----------------------------------------|

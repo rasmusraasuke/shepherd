@@ -1,3 +1,5 @@
+use tree_sitter::{InputEdit, Point};
+
 /// A place in the text: a line and the number of characters before the place on that line.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct Pos {
@@ -57,6 +59,8 @@ pub struct Buffer {
     saved_revision: u64,
     /// Where typing continues the previous edit, so that a word is undone at once.
     typing_at: Option<Pos>,
+    /// The changes of the text since they were taken last, for the syntax tree to follow them.
+    changes: Vec<InputEdit>,
 }
 
 fn chars(line: &str) -> usize {
@@ -113,6 +117,7 @@ impl Buffer {
             last_revision: 0,
             saved_revision: 0,
             typing_at: None,
+            changes: Vec::new(),
         }
     }
 
@@ -181,8 +186,36 @@ impl Buffer {
         text
     }
 
+    /// The changes of the text since this was called last, with positions in bytes of the
+    /// lines joined by "\n".
+    pub fn take_changes(&mut self) -> Vec<InputEdit> {
+        std::mem::take(&mut self.changes)
+    }
+
+    fn point(&self, pos: Pos) -> Point {
+        Point::new(pos.line, byte(&self.lines[pos.line], pos.col))
+    }
+
+    /// The byte offset of a place in the lines joined by "\n".
+    fn offset(&self, pos: Pos) -> usize {
+        self.lines[..pos.line].iter().map(|line| line.len() + 1).sum::<usize>() + self.point(pos).column
+    }
+
     /// Replaces the text between two places without recording it. Returns what was there.
     fn splice(&mut self, start: Pos, end: Pos, text: &str) -> String {
+        let (start_byte, start_position) = (self.offset(start), self.point(start));
+        let new_end_position = match text.rsplit_once('\n') {
+            Some((before, last)) => Point::new(start.line + before.matches('\n').count() + 1, last.len()),
+            None => Point::new(start.line, start_position.column + text.len()),
+        };
+        self.changes.push(InputEdit {
+            start_byte,
+            old_end_byte: self.offset(end),
+            new_end_byte: start_byte + text.len(),
+            start_position,
+            old_end_position: self.point(end),
+            new_end_position,
+        });
         let removed = self.slice(start, end);
         let (first, last) = (&self.lines[start.line], &self.lines[end.line]);
         let replaced = format!("{}{text}{}", &first[..byte(first, start.col)], &last[byte(last, end.col)..]);

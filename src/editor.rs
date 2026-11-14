@@ -5,6 +5,7 @@ use eframe::egui::{self, Event, EventFilter, Galley, ImeEvent, Key, Modifiers, S
 
 use crate::buffer::{Buffer, Move, Pos};
 use crate::code::CodeStyle;
+use crate::highlight::{self, Highlighter};
 
 /// The text editing component: shows a buffer and changes it with the keyboard and the mouse.
 #[derive(Default)]
@@ -22,6 +23,7 @@ pub struct Editor {
     /// Whether the editor or its find bar had the keyboard when shown last.
     active: bool,
     find: Option<Find>,
+    highlighter: Option<Highlighter>,
 }
 
 /// The bar for finding and replacing text in the file.
@@ -120,6 +122,11 @@ impl Find {
 }
 
 impl Editor {
+    /// An editor that highlights the code of the file, if it is in a language the editor knows.
+    pub fn for_file(path: &std::path::Path) -> Self {
+        Self { highlighter: Highlighter::for_path(path), ..Default::default() }
+    }
+
     /// Makes the editor take the keyboard when it is shown next.
     pub fn focus(&mut self) {
         self.focus = true;
@@ -151,6 +158,7 @@ impl Editor {
             self.scroll_to_cursor |= selection != buffer.selection();
         }
         let style = CodeStyle::new(ui);
+        let dark = ui.visuals().dark_mode;
         let number_width = style.digit_width * (buffer.lines().len().to_string().len().max(3) + 1) as f32;
         let code_x = number_width + style.digit_width * 2.0;
         let width = code_x + style.digit_width * (self.longest_line(buffer) + 2) as f32;
@@ -210,8 +218,23 @@ impl Editor {
             let row_top = |line: usize| rect.top() + style.row_height * line as f32;
             let x_at = |galley: &Arc<Galley>, col: usize| code_left + galley.pos_from_cursor(CCursor::new(col)).left();
             let painter = ui.painter();
+            // after the keys of this frame were handled, so that the colors are for the text as it is now
+            let spans = match &mut self.highlighter {
+                Some(highlighter) => {
+                    highlighter.update(buffer);
+                    Some(highlighter.spans(first..last))
+                }
+                None => {
+                    buffer.take_changes();
+                    None
+                }
+            };
             for line in first..last {
-                let galley = layout(ui, &buffer.lines()[line]);
+                let text = &buffer.lines()[line];
+                let galley = match spans {
+                    Some(spans) => ui.fonts_mut(|fonts| fonts.layout_job(highlight::layout_job(text, &spans[line - first], &style.font, style.text_color, dark))),
+                    None => layout(ui, text),
+                };
                 if let Some((start, end)) = buffer.selection().filter(|(start, end)| (start.line..=end.line).contains(&line)) {
                     let left = if line == start.line { x_at(&galley, start.col) } else { code_left };
                     // a selected line break shows as a bit of selection after the line

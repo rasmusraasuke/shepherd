@@ -28,8 +28,8 @@ read-only file tabs, with a file tree, quick open and a layout that survives res
 README.md describes the features.
 
 Milestone 2 is in progress. Done so far: file editing with undo, find and replace, saving on
-its own, and reloading of files changed on disk. Still to do, in this order: syntax
-highlighting, search across the project, terminals, several reviews at once.
+its own, reloading of files changed on disk, and syntax highlighting. Still to do, in this
+order: search across the project, terminals, several reviews at once.
 
 The review itself is still the prototype: all working-tree changes in one stream, hunks
 marked as reviewed (and unreviewed again when their content changes), a flat list of changed

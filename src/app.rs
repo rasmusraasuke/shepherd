@@ -647,6 +647,23 @@ mod tests {
     }
 
     #[test]
+    fn edits_a_highlighted_file() {
+        let (mut harness, dir) = harness("edit-highlighted");
+        harness.state_mut().action = Some(Action::Open(file("src/main.rs"), 0));
+        harness.run();
+        // lines come and go while the colors of the visible ones are kept
+        for text in ["// one", "\n", "let s = \"two", "\n\n", "\";"] {
+            harness.event(egui::Event::Text(text.to_string()));
+            harness.run();
+        }
+        // the line breaks and what was typed after them are undone as one word
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        harness.state_mut().content.open_files.save_all();
+        assert_eq!(fs::read_to_string(dir.path().join("src/main.rs")).unwrap(), "// one\nlet s = \"twofn main() {}\n");
+    }
+
+    #[test]
     fn keeps_the_line_numbers_over_text_scrolled_sideways() {
         let (mut harness, dir) = harness("gutter");
         let long_line = "x".repeat(300);

@@ -5,6 +5,7 @@ mod editor;
 mod file_tree;
 mod file_view;
 mod git;
+mod highlight;
 mod quick_open;
 mod review;
 #[cfg(test)]

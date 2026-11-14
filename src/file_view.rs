@@ -102,7 +102,7 @@ impl OpenFiles {
 impl OpenFile {
     fn open(path: PathBuf) -> Self {
         let buffer = read(&path).map(|text| Buffer::new(&text));
-        Self { modified: modified(&path), buffer, editor: Editor::default(), edited: (0, Instant::now()), save_error: None, path }
+        Self { modified: modified(&path), buffer, editor: Editor::for_file(&path), edited: (0, Instant::now()), save_error: None, path }
     }
 
     fn save(&mut self) {
