@@ -1,15 +1,25 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, Align2, Sense, TextStyle, Vec2};
+use eframe::egui::{self, Align2, Color32, Sense, TextStyle, Vec2};
 
-/// The project files as a tree of directories, of which only the expanded ones show their content.
+/// Files as a tree of directories, of which only the open ones show their content.
 #[derive(Default)]
 pub struct FileTree {
     /// Paths relative to the project root, ordered the way the tree shows them.
     files: Vec<String>,
-    /// The rows currently visible, kept so that drawing costs nothing for collapsed directories.
+    /// The rows currently visible, kept so that drawing costs nothing for closed directories.
     rows: Vec<Row>,
+    /// Whether directories show their content until they are closed, rather than once opened.
+    open_by_default: bool,
+}
+
+/// How a file is shown in the tree besides its name.
+#[derive(Default)]
+pub struct FileLook {
+    pub color: Option<Color32>,
+    /// Text at the right end of the row.
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -26,14 +36,28 @@ impl Row {
 }
 
 impl FileTree {
-    pub fn set_files(&mut self, mut files: Vec<String>, expanded: &BTreeSet<String>) {
-        files.sort_by(|a, b| tree_order(a, b));
-        self.files = files;
-        self.rows = rows(&self.files, expanded);
+    pub fn open_by_default() -> Self {
+        Self { open_by_default: true, ..Self::default() }
     }
 
-    /// Shows the tree. Returns the file that was clicked, if any.
-    pub fn ui(&mut self, ui: &mut egui::Ui, expanded: &mut BTreeSet<String>) -> Option<String> {
+    /// Sets the files to show. `toggled` holds the directories that were opened, or closed
+    /// when directories are open by default.
+    pub fn set_files(&mut self, mut files: Vec<String>, toggled: &BTreeSet<String>) {
+        files.sort_by(|a, b| tree_order(a, b));
+        self.files = files;
+        self.update_rows(toggled);
+    }
+
+    fn is_open(&self, dir: &str, toggled: &BTreeSet<String>) -> bool {
+        toggled.contains(dir) != self.open_by_default
+    }
+
+    fn update_rows(&mut self, toggled: &BTreeSet<String>) {
+        self.rows = rows(&self.files, |dir| self.is_open(dir, toggled));
+    }
+
+    /// Shows the tree with the selected file highlighted. Returns the file that was clicked, if any.
+    pub fn ui(&mut self, ui: &mut egui::Ui, toggled: &mut BTreeSet<String>, selected: Option<&str>, look: impl Fn(&str) -> FileLook) -> Option<String> {
         let font = TextStyle::Body.resolve(ui.style());
         let row_height = ui.text_style_height(&TextStyle::Body) + 6.0;
         let indent = 14.0;
@@ -43,7 +67,9 @@ impl FileTree {
             for row in &self.rows[range] {
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), row.name()));
-                if response.hovered() {
+                if selected == Some(row.path.as_str()) {
+                    ui.painter().rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
+                } else if response.hovered() {
                     ui.painter().rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
                 }
                 let x = rect.left() + 4.0 + indent * row.depth as f32;
@@ -51,14 +77,19 @@ impl FileTree {
                 let painter = ui.painter().with_clip_rect(rect);
                 if row.is_dir {
                     let (center, r) = (egui::pos2(x + 5.0, y), 3.5);
-                    let arrow = if expanded.contains(&row.path) {
+                    let arrow = if self.is_open(&row.path, toggled) {
                         vec![center + egui::vec2(-r, -r / 2.0), center + egui::vec2(r, -r / 2.0), center + egui::vec2(0.0, r)]
                     } else {
                         vec![center + egui::vec2(-r / 2.0, -r), center + egui::vec2(r, 0.0), center + egui::vec2(-r / 2.0, r)]
                     };
                     painter.add(egui::Shape::convex_polygon(arrow, ui.visuals().weak_text_color(), egui::Stroke::NONE));
                 }
-                painter.text(egui::pos2(x + indent, y), Align2::LEFT_CENTER, row.name(), font.clone(), ui.visuals().text_color());
+                let look = if row.is_dir { FileLook::default() } else { look(&row.path) };
+                let color = look.color.unwrap_or(ui.visuals().text_color());
+                painter.text(egui::pos2(x + indent, y), Align2::LEFT_CENTER, row.name(), font.clone(), color);
+                if let Some(detail) = look.detail {
+                    painter.text(egui::pos2(rect.right() - 6.0, y), Align2::RIGHT_CENTER, detail, font.clone(), ui.visuals().weak_text_color());
+                }
                 if response.clicked() {
                     clicked = Some((row.path.clone(), row.is_dir));
                 }
@@ -66,10 +97,10 @@ impl FileTree {
         });
         match clicked {
             Some((path, true)) => {
-                if !expanded.remove(&path) {
-                    expanded.insert(path);
+                if !toggled.remove(&path) {
+                    toggled.insert(path);
                 }
-                self.rows = rows(&self.files, expanded);
+                self.update_rows(toggled);
                 None
             }
             Some((path, false)) => Some(path),
@@ -92,7 +123,7 @@ fn tree_order(a: &str, b: &str) -> Ordering {
 }
 
 /// The visible rows for files given in tree order.
-fn rows(files: &[String], expanded: &BTreeSet<String>) -> Vec<Row> {
+fn rows(files: &[String], is_open: impl Fn(&str) -> bool) -> Vec<Row> {
     fn dirs(path: &str) -> impl Iterator<Item = &str> {
         path.rsplit_once('/').into_iter().flat_map(|(dir, _)| dir.split('/'))
     }
@@ -110,7 +141,7 @@ fn rows(files: &[String], expanded: &BTreeSet<String>) -> Vec<Row> {
             if visible {
                 rows.push(Row { depth: open.len(), path: path.to_string(), is_dir: true });
             }
-            open.push(visible && expanded.contains(path));
+            open.push(visible && is_open(path));
         }
         if open.last().copied().unwrap_or(true) {
             rows.push(Row { depth: open.len(), path: file.clone(), is_dir: false });
@@ -125,9 +156,12 @@ mod tests {
     use super::*;
 
     fn visible(files: &[&str], expanded: &[&str]) -> Vec<String> {
-        let mut tree = FileTree::default();
-        let expanded = expanded.iter().map(|s| s.to_string()).collect();
-        tree.set_files(files.iter().map(|s| s.to_string()).collect(), &expanded);
+        shown(FileTree::default(), files, expanded)
+    }
+
+    fn shown(mut tree: FileTree, files: &[&str], toggled: &[&str]) -> Vec<String> {
+        let toggled = toggled.iter().map(|s| s.to_string()).collect();
+        tree.set_files(files.iter().map(|s| s.to_string()).collect(), &toggled);
         tree.rows.iter().map(|row| format!("{}{}{}", "  ".repeat(row.depth), row.name(), if row.is_dir { "/" } else { "" })).collect()
     }
 
@@ -155,5 +189,10 @@ mod tests {
     #[test]
     fn directories_with_the_same_name_in_different_parents_are_separate() {
         assert_eq!(visible(&["a/x/1", "b/x/2"], &["a", "b", "b/x"]), ["a/", "  x/", "b/", "  x/", "    2"]);
+    }
+
+    #[test]
+    fn tree_open_by_default_shows_everything_but_closed_directories() {
+        assert_eq!(shown(FileTree::open_by_default(), &["src/ui/tabs.rs", "src/app.rs", "README.md"], &["src/ui"]), ["src/", "  ui/", "  app.rs", "README.md"]);
     }
 }

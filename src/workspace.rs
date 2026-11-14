@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Tab {
-    Review,
+    /// The review of the changes of one file, by its path; none until a file is chosen.
+    Review(Option<String>),
     /// A project file, by its path relative to the repository root.
     File(String),
     /// A terminal, by an id of its own.
@@ -16,11 +17,22 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub fn title(&self) -> &str {
+    pub fn title(&self) -> String {
+        let name = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
         match self {
-            Tab::Review => "Review",
-            Tab::File(path) => path.rsplit('/').next().unwrap_or(path),
-            Tab::Terminal(_) => "Terminal",
+            Tab::Review(None) => "Review".to_string(),
+            Tab::Review(Some(path)) => format!("Review: {}", name(path)),
+            Tab::File(path) => name(path),
+            Tab::Terminal(_) => "Terminal".to_string(),
+        }
+    }
+
+    /// The project file the tab is about.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Tab::Review(path) => path.as_deref(),
+            Tab::File(path) => Some(path),
+            Tab::Terminal(_) => None,
         }
     }
 }
@@ -151,6 +163,15 @@ impl Window {
         self.focused = Some(tile);
     }
 
+    /// Shows another tab in place of the one in the given tile.
+    fn replace(&mut self, tile: TileId, tab: Tab) {
+        if let Some(Tile::Pane(pane)) = self.tree.tiles.get_mut(tile) {
+            *pane = tab;
+        }
+        self.tree.make_active(|id, _| id == tile);
+        self.focused = Some(tile);
+    }
+
     fn add(&mut self, tab: Tab) {
         self.add_to(self.target_tabs(), tab);
     }
@@ -192,11 +213,22 @@ pub struct Workspace {
     pub windows: Vec<Window>,
     pub sidebar: Sidebar,
     pub expanded_dirs: BTreeSet<String>,
+    /// The directories closed in the tree of changed files, where they are open by default.
+    pub collapsed_changes: BTreeSet<String>,
+    /// The review tab used last, where the changes of a file chosen in the tree are shown.
+    #[serde(skip)]
+    pub last_review: Option<Tab>,
 }
 
 impl Default for Workspace {
     fn default() -> Self {
-        Self { windows: vec![Window::new(0, vec![Tab::Review])], sidebar: Sidebar::default(), expanded_dirs: BTreeSet::new() }
+        Self {
+            windows: vec![Window::new(0, vec![Tab::Review(None)])],
+            sidebar: Sidebar::default(),
+            expanded_dirs: BTreeSet::new(),
+            collapsed_changes: BTreeSet::new(),
+            last_review: None,
+        }
     }
 }
 
@@ -223,13 +255,58 @@ impl Workspace {
         window
     }
 
+    /// Adds a tab to the given group of tabs of a window, or next to the tab used last.
+    pub fn add_tab(&mut self, window: usize, tabs: Option<TileId>, tab: Tab) {
+        let window = &mut self.windows[window];
+        window.add_to(tabs.or_else(|| window.target_tabs()), tab);
+    }
+
     /// Opens a new terminal in the given group of tabs of a window, or next to the tab used
     /// last. Returns its id.
     pub fn open_terminal(&mut self, window: usize, tabs: Option<TileId>) -> u64 {
         let id = self.windows.iter().flat_map(|window| window.tabs()).filter_map(|tab| if let Tab::Terminal(id) = tab { Some(*id) } else { None }).max().unwrap_or(0) + 1;
-        let window = &mut self.windows[window];
-        window.add_to(tabs.or_else(|| window.target_tabs()), Tab::Terminal(id));
+        self.add_tab(window, tabs, Tab::Terminal(id));
         id
+    }
+
+    /// The window and the tile a tab is in.
+    fn find(&self, tab: &Tab) -> Option<(usize, TileId)> {
+        self.windows.iter().enumerate().find_map(|(index, window)| Some((index, window.tree.tiles.find_pane(tab)?)))
+    }
+
+    /// The review tab used last, otherwise the review tab opened first.
+    fn review_tab(&self) -> Option<(usize, TileId)> {
+        let first = || {
+            self.windows.iter().enumerate().find_map(|(index, window)| {
+                let tiles = window.tree.tiles.iter().filter(|(_, tile)| matches!(tile, Tile::Pane(Tab::Review(_))));
+                Some((index, *tiles.map(|(id, _)| id).min_by_key(|id| id.0)?))
+            })
+        };
+        self.last_review.as_ref().and_then(|tab| self.find(tab)).or_else(first)
+    }
+
+    /// Shows the changes of a file: in the review tab that shows them already, otherwise in
+    /// the review tab used last, or in a new one when `new_tab` is set or there is none.
+    /// Returns the index of the window the review is in.
+    pub fn show_review(&mut self, path: &str, new_tab: bool) -> usize {
+        let tab = Tab::Review(Some(path.to_string()));
+        let window = match self.find(&tab) {
+            Some((window, _)) => self.open(tab.clone(), window),
+            None => match self.review_tab() {
+                Some((window, tile)) if !new_tab => {
+                    self.windows[window].replace(tile, tab.clone());
+                    window
+                }
+                Some((window, tile)) => {
+                    let tabs = self.windows[window].tree.tiles.parent_of(tile);
+                    self.add_tab(window, tabs, tab.clone());
+                    window
+                }
+                None => self.open(tab.clone(), 0),
+            },
+        };
+        self.last_review = Some(tab);
+        window
     }
 
     /// Moves a tab to another window, or pops it out into a new one when `to` is `None`.
@@ -309,8 +386,8 @@ mod tests {
         Tab::File(name.to_string())
     }
 
-    fn tabs(window: &Window) -> Vec<&str> {
-        let mut titles: Vec<&str> = window.tabs().into_iter().map(Tab::title).collect();
+    fn tabs(window: &Window) -> Vec<String> {
+        let mut titles: Vec<String> = window.tabs().into_iter().map(Tab::title).collect();
         titles.sort();
         titles
     }
@@ -346,7 +423,7 @@ mod tests {
     #[test]
     fn opens_into_an_empty_window() {
         let mut workspace = Workspace::default();
-        let review = tile_of(&workspace.windows[0], &Tab::Review);
+        let review = tile_of(&workspace.windows[0], &Tab::Review(None));
         workspace.windows[0].remove(review);
         workspace.windows[0].tree.simplify(&Default::default());
         workspace.open(file("a.rs"), 0);
@@ -427,7 +504,7 @@ mod tests {
     #[test]
     fn closing_a_window_brings_its_tabs_back() {
         let mut workspace = Workspace::default();
-        let review = tile_of(&workspace.windows[0], &Tab::Review);
+        let review = tile_of(&workspace.windows[0], &Tab::Review(None));
         workspace.move_tab(0, review, None);
         workspace.open(file("a.rs"), 1);
         workspace.close_window(1);
@@ -438,14 +515,14 @@ mod tests {
     #[test]
     fn prunes_empty_windows_except_the_main_one() {
         let mut workspace = Workspace::default();
-        let review = tile_of(&workspace.windows[0], &Tab::Review);
+        let review = tile_of(&workspace.windows[0], &Tab::Review(None));
         workspace.move_tab(0, review, None);
-        let review = tile_of(&workspace.windows[1], &Tab::Review);
+        let review = tile_of(&workspace.windows[1], &Tab::Review(None));
         workspace.move_tab(1, review, None);
         assert_eq!(workspace.windows.len(), 3);
         workspace.prune();
         assert_eq!(workspace.windows.len(), 2);
-        assert_eq!(tabs(&workspace.windows[0]), [] as [&str; 0]);
+        assert!(tabs(&workspace.windows[0]).is_empty());
         assert_eq!(tabs(&workspace.windows[1]), ["Review"]);
     }
 
@@ -491,5 +568,45 @@ mod tests {
         assert!(Workspace::from_json(r#"{"windows":[]}"#).is_none());
         let workspace = Workspace::load(Path::new("/nonexistent/layout.json"));
         assert_eq!(tabs(&workspace.windows[0]), ["Review"]);
+    }
+
+    fn review(path: &str) -> Tab {
+        Tab::Review(Some(path.to_string()))
+    }
+
+    #[test]
+    fn shows_the_changes_of_a_file_in_the_review_tab_used_last() {
+        let mut workspace = Workspace::default();
+        workspace.show_review("src/a.rs", false);
+        assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs"]);
+
+        // a second review tab, on purpose, next to the first one
+        workspace.show_review("src/b.rs", true);
+        assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs", "Review: b.rs"]);
+        let first = tile_of(&workspace.windows[0], &review("src/a.rs"));
+        let second = tile_of(&workspace.windows[0], &review("src/b.rs"));
+        assert_eq!(workspace.windows[0].tree.tiles.parent_of(first), workspace.windows[0].tree.tiles.parent_of(second));
+
+        // the file goes to the tab used last
+        workspace.show_review("src/c.rs", false);
+        assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs", "Review: c.rs"]);
+        assert!(is_active(&workspace.windows[0], &review("src/c.rs")));
+
+        // a file shown in a review tab already is shown there, wherever the tab is
+        workspace.move_tab(0, first, None);
+        assert_eq!(workspace.show_review("src/a.rs", false), 1);
+        assert_eq!(workspace.last_review, Some(review("src/a.rs")));
+        assert_eq!(tabs(&workspace.windows[0]), ["Review: c.rs"]);
+    }
+
+    #[test]
+    fn shows_the_changes_of_a_file_in_a_new_review_tab_when_there_is_none() {
+        let mut workspace = Workspace::default();
+        let tile = tile_of(&workspace.windows[0], &Tab::Review(None));
+        workspace.windows[0].remove(tile);
+        workspace.open(file("a.rs"), 0);
+        workspace.last_review = Some(review("gone.rs"));
+        workspace.show_review("b.rs", false);
+        assert_eq!(tabs(&workspace.windows[0]), ["Review: b.rs", "a.rs"]);
     }
 }

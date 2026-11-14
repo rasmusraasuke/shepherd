@@ -60,6 +60,10 @@ enum Action {
     Open(Tab, usize),
     /// Open a new terminal in a window, in the given group of tabs or next to the tab used last.
     NewTerminal(usize, Option<TileId>),
+    /// Open a new review tab in a window, in the given group of tabs or next to the tab used last.
+    NewReview(usize, Option<TileId>),
+    /// Show the changes of a file in a review tab, in a new one when `new_tab` is set.
+    Review { path: String, new_tab: bool },
     /// Search across the project, in the sidebar of the main window.
     Search,
     /// Open the file and select a place in it.
@@ -109,7 +113,7 @@ fn viewport_id(window: &Window) -> ViewportId {
 impl App {
     pub fn new(repo: Repo, workspace: Workspace, ctx: egui::Context) -> Self {
         let content = Content {
-            review: Review::new(ReviewState::load(repo.review_state_path())),
+            review: Review::new(ReviewState::load(repo.review_state_path()), repo.root.clone()),
             open_files: OpenFiles::new(repo.root.clone()),
             file_tree: FileTree::default(),
             files: Vec::new(),
@@ -137,7 +141,7 @@ impl App {
         match snapshot {
             Ok(snapshot) => {
                 content.error = None;
-                content.review.set_diff(&snapshot.diff);
+                content.review.set_diff(&snapshot.diff, &self.workspace.collapsed_changes);
                 content.file_tree.set_files(snapshot.files.clone(), &self.workspace.expanded_dirs);
                 content.files = snapshot.files;
                 content.open_files.reload_changed();
@@ -154,7 +158,7 @@ impl App {
             ui.separator();
             ui.label(format!("{done}/{total} hunks reviewed"));
             ui.separator();
-            ui.weak("Cmd+P open file · Cmd+F find in file · Cmd+Shift+F search in files · Cmd+T terminal · j/k move · space mark reviewed · n next unreviewed · r refresh");
+            ui.weak("Cmd+P open file · Cmd+F find in file · Cmd+Shift+F search in files · Cmd+T terminal · Cmd+click a change for a new review · j/k move · space mark reviewed · n next unreviewed · r refresh");
         });
         if let Some(error) = &self.content.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -172,13 +176,15 @@ impl App {
         ui.separator();
         match self.workspace.sidebar {
             Sidebar::Files => {
-                if let Some(path) = self.content.file_tree.ui(ui, &mut self.workspace.expanded_dirs) {
+                if let Some(path) = self.content.file_tree.ui(ui, &mut self.workspace.expanded_dirs, None, |_| Default::default()) {
                     self.action = Some(Action::Open(Tab::File(path), 0));
                 }
             }
             Sidebar::Changes => {
-                if self.content.review.file_list(ui) {
-                    self.action = Some(Action::Open(Tab::Review, 0));
+                let selected = self.workspace.last_review.as_ref().and_then(Tab::path);
+                if let Some(path) = self.content.review.tree_ui(ui, &mut self.workspace.collapsed_changes, selected) {
+                    let new_tab = ui.input(|i| i.modifiers.command);
+                    self.action = Some(Action::Review { path, new_tab });
                 }
             }
             Sidebar::Search => {
@@ -230,7 +236,7 @@ impl App {
             } else if self.drag.is_none() && let Some(tab) = window.tree.tiles.get_pane(&tile) {
                 // not kept inside the window, so that the title leaves it together with the pointer
                 let area = egui::Area::new(egui::Id::unique("drag title")).order(egui::Order::Tooltip).interactable(false).constrain(false);
-                area.pivot(egui::Align2::CENTER_CENTER).current_pos(pointer).show(&ctx, |ui| drag_title(ui, tab.title()));
+                area.pivot(egui::Align2::CENTER_CENTER).current_pos(pointer).show(&ctx, |ui| drag_title(ui, &tab.title()));
             }
         } else if self.drag.as_ref().is_some_and(|drag| drag.from == index) {
             self.drag = None;
@@ -242,8 +248,15 @@ impl App {
                 ui.centered_and_justified(|ui| ui.weak("Cmd+P to open a file"));
                 return;
             }
-            let mut behavior =
-                TabBehavior { content: &mut self.content, window: index, window_count, dragged_out, focused: &mut window.focused, action: &mut self.action };
+            let mut behavior = TabBehavior {
+                content: &mut self.content,
+                window: index,
+                window_count,
+                dragged_out,
+                focused: &mut window.focused,
+                last_review: &mut self.workspace.last_review,
+                action: &mut self.action,
+            };
             window.tree.ui(&mut behavior, ui);
         });
 
@@ -287,6 +300,15 @@ impl App {
                 self.content.terminals.focus(id);
                 self.focus(window, ctx);
             }
+            Action::NewReview(window, tabs) => {
+                self.workspace.add_tab(window, tabs, Tab::Review(None));
+                self.workspace.last_review = Some(Tab::Review(None));
+                self.focus(window, ctx);
+            }
+            Action::Review { path, new_tab } => {
+                let window = self.workspace.show_review(&path, new_tab);
+                self.focus(window, ctx);
+            }
             Action::Search => {
                 self.workspace.sidebar = Sidebar::Search;
                 let selected = self.content.open_files.selected_text();
@@ -313,7 +335,7 @@ impl App {
         let Some(drag) = &self.drag else { return };
         let Some(tab) = self.workspace.windows[drag.from].tree.tiles.get_pane(&drag.tile) else { return };
         let style = ctx.global_style();
-        let text_size = ctx.fonts_mut(|fonts| fonts.layout_no_wrap(tab.title().to_string(), egui::TextStyle::Body.resolve(&style), egui::Color32::PLACEHOLDER)).size();
+        let text_size = ctx.fonts_mut(|fonts| fonts.layout_no_wrap(tab.title(), egui::TextStyle::Body.resolve(&style), egui::Color32::PLACEHOLDER)).size();
         let size = text_size + drag_title_frame(&style).total_margin().sum();
         let builder = ViewportBuilder::default()
             .with_position(drag.point - size / 2.0)
@@ -328,7 +350,7 @@ impl App {
             .with_active(false)
             .with_mouse_passthrough(true);
         ctx.show_viewport_immediate(ViewportId::from_hash_of("drag title"), builder, |ui, _| {
-            egui::CentralPanel::no_frame().show(ui, |ui| drag_title(ui, tab.title()));
+            egui::CentralPanel::no_frame().show(ui, |ui| drag_title(ui, &tab.title()));
         });
     }
 
@@ -353,6 +375,7 @@ struct TabBehavior<'a> {
     /// Whether a tab of the window is being dragged outside of it.
     dragged_out: bool,
     focused: &'a mut Option<TileId>,
+    last_review: &'a mut Option<Tab>,
     action: &'a mut Option<Action>,
 }
 
@@ -360,10 +383,15 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
     fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, tab: &mut Tab) -> UiResponse {
         if ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.pointer.any_pressed()) {
             *self.focused = Some(tile_id);
+            if matches!(tab, Tab::Review(_)) {
+                *self.last_review = Some(tab.clone());
+            }
         }
+        // the review keys go to the review tab used last
+        let active = self.last_review.as_ref().is_none_or(|last| last == tab);
         match tab {
-            Tab::Review => {
-                egui::Frame::new().inner_margin(8.0).show(ui, |ui| self.content.review.ui(ui));
+            Tab::Review(path) => {
+                egui::Frame::new().inner_margin(8.0).show(ui, |ui| self.content.review.ui(ui, path.as_deref(), active));
             }
             Tab::File(path) => self.content.open_files.ui(ui, path),
             Tab::Terminal(id) => self.content.terminals.ui(ui, *id),
@@ -379,9 +407,14 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
     }
 
     fn top_bar_right_ui(&mut self, _tiles: &Tiles<Tab>, ui: &mut egui::Ui, tile_id: TileId, _tabs: &egui_tiles::Tabs, _scroll_offset: &mut f32) {
-        if ui.button("+").on_hover_text("New terminal (Cmd+T)").clicked() {
-            *self.action = Some(Action::NewTerminal(self.window, Some(tile_id)));
-        }
+        ui.menu_button("+", |ui| {
+            if ui.button("New terminal (Cmd+T)").clicked() {
+                *self.action = Some(Action::NewTerminal(self.window, Some(tile_id)));
+            }
+            if ui.button("New review").clicked() {
+                *self.action = Some(Action::NewReview(self.window, Some(tile_id)));
+            }
+        });
     }
 
     fn is_tab_closable(&self, _tiles: &Tiles<Tab>, _tile_id: TileId) -> bool {
@@ -401,6 +434,9 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         let Some(tab) = tiles.get_pane(&tile_id) else { return response };
         if response.clicked() {
             *self.focused = Some(tile_id);
+            if matches!(tab, Tab::Review(_)) {
+                *self.last_review = Some(tab.clone());
+            }
         }
         response.context_menu(|ui| {
             let mut move_to = |ui: &mut egui::Ui, label: String, to: Option<usize>| {
@@ -415,9 +451,9 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                 move_to(ui, label, Some(to));
             }
         });
-        match tab {
-            Tab::File(path) => response.on_hover_text(path),
-            _ => response,
+        match tab.path() {
+            Some(path) => response.on_hover_text(path),
+            None => response,
         }
     }
 
@@ -538,7 +574,7 @@ mod tests {
         harness.get_by_label("main.rs").click();
         harness.run();
 
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("src/main.rs")]]);
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("src/main.rs")]]);
         // once in the tree and once as the title of the tab
         assert_eq!(harness.query_all_by_label("main.rs").count(), 2);
     }
@@ -553,21 +589,58 @@ mod tests {
         harness.key_press(Key::Enter);
         harness.run();
 
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md")]]);
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("README.md")]]);
         assert!(harness.state().quick_open.is_none());
     }
 
+    fn review(path: &str) -> Tab {
+        Tab::Review(Some(path.to_string()))
+    }
+
     #[test]
-    fn shows_changed_files_in_the_sidebar_and_opens_the_review_from_there() {
+    fn shows_the_changes_of_a_file_chosen_in_the_tree_of_changes_in_the_review_tab() {
         let (mut harness, _dir) = harness("changes");
-        let review = harness.state().workspace.windows[0].tree.tiles.find_pane(&Tab::Review).unwrap();
-        harness.state_mut().workspace.windows[0].tree.remove_recursively(review);
         harness.get_by_label("Changes").click();
         harness.run();
-        harness.get_by_label_contains("README.md").click();
+        // changed directories are open
+        harness.get_by_label("main.rs").click();
         harness.run();
+        assert_eq!(open_tabs(&harness), [vec![review("src/main.rs")]]);
+        harness.get_by_label("Review: main.rs");
 
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review]]);
+        harness.get_by_label("README.md").click();
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![review("README.md")]]);
+
+        // with Cmd in a new review tab
+        harness.state_mut().action = None;
+        harness.get_by_label("main.rs").click_modifiers(Modifiers::COMMAND);
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![review("README.md"), review("src/main.rs")]]);
+
+        // a new empty review tab takes the next file chosen
+        harness.state_mut().action = Some(Action::NewReview(0, None));
+        harness.run();
+        harness.get_by_label("Choose a file under Changes to review it");
+        harness.get_by_label("README.md").click();
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![review("README.md"), review("src/main.rs"), Tab::Review(None)]]);
+    }
+
+    #[test]
+    fn shows_more_of_a_changed_file_than_its_changes_when_asked() {
+        let (mut harness, dir) = harness("review-context");
+        let lines: Vec<String> = (1..=60).map(|n| format!("line {n}")).collect();
+        fs::write(dir.path().join("README.md"), lines.join("\n") + "\n").unwrap();
+        crate::git::tests::commit_all(&Repo::open(dir.path()).unwrap());
+        fs::write(dir.path().join("README.md"), lines.join("\n").replace("line 30\n", "changed\n") + "\n").unwrap();
+        harness.state_mut().action = Some(Action::Review { path: "README.md".to_string(), new_tab: false });
+        harness.state().watcher.refresh_now();
+        wait_for(&mut harness, "Expand up");
+        harness.get_by_label("Review: README.md");
+        harness.get_by_label("Expand up").click();
+        harness.run();
+        harness.get_by_label("Expand all 6 lines");
     }
 
     #[test]
@@ -579,7 +652,7 @@ mod tests {
         harness.state_mut().action = Some(Action::Move { from: 0, tile, to: None });
         harness.run();
 
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review], vec![file("README.md")]]);
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None)], vec![file("README.md")]]);
         // both windows are drawn: the file is in the tree and is the title of a tab in the new window
         harness.get_by_label("Review");
         assert_eq!(harness.query_all_by_role_and_label(egui::Role::Button, "README.md").count(), 2);
@@ -604,16 +677,16 @@ mod tests {
         let point = egui::pos2(1500.0, 300.0);
         harness.state_mut().action = Some(Action::Drop(Drag { from: 0, tile, point }));
         harness.run();
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review], vec![file("README.md")]]);
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None)], vec![file("README.md")]]);
 
         // onto the review in the main window
         let windows = &harness.state().workspace.windows;
-        let review = windows[0].tree.tiles.find_pane(&Tab::Review).unwrap();
+        let review = windows[0].tree.tiles.find_pane(&Tab::Review(None)).unwrap();
         let point = windows[0].tree.tiles.rect(review).unwrap().center() + on_screen;
         let tile = windows[1].tree.tiles.find_pane(&file("README.md")).unwrap();
         harness.state_mut().action = Some(Action::Drop(Drag { from: 1, tile, point }));
         harness.run();
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md")]]);
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("README.md")]]);
         let tiles = &harness.state().workspace.windows[0].tree.tiles;
         assert_eq!(tiles.parent_of(tiles.find_pane(&file("README.md")).unwrap()), tiles.parent_of(review));
     }
@@ -632,7 +705,7 @@ mod tests {
 
             // dropped near the right and then the bottom edge of the review
             let windows = &harness.state().workspace.windows;
-            let review = windows[0].tree.tiles.find_pane(&Tab::Review).unwrap();
+            let review = windows[0].tree.tiles.find_pane(&Tab::Review(None)).unwrap();
             let rect = windows[0].tree.tiles.rect(review).unwrap();
             let point = rect.center() + towards * rect.size();
             let tile = windows[1].tree.tiles.find_pane(&file(name)).unwrap();
@@ -640,10 +713,10 @@ mod tests {
             harness.run();
         }
 
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md"), file("src/main.rs")]]);
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("README.md"), file("src/main.rs")]]);
         let tiles = &harness.state().workspace.windows[0].tree.tiles;
         let rect = |tab: &Tab| tiles.rect(tiles.find_pane(tab).unwrap()).unwrap();
-        let (review, readme, main) = (rect(&Tab::Review), rect(&file("README.md")), rect(&file("src/main.rs")));
+        let (review, readme, main) = (rect(&Tab::Review(None)), rect(&file("README.md")), rect(&file("src/main.rs")));
         assert!(review.right() <= readme.left() && review.top() == readme.top());
         assert!(review.bottom() <= main.top() && review.left() == main.left() && main.right() <= readme.left());
     }
@@ -672,7 +745,7 @@ mod tests {
         assert_eq!(titles(&harness), before);
         harness.event(button(pointer, false));
         harness.run();
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md")]]);
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("README.md")]]);
     }
 
     #[test]
@@ -819,7 +892,7 @@ mod tests {
         // Down shows the place in its file while the keyboard stays in the search, Enter goes there
         harness.key_press(Key::ArrowDown);
         harness.run();
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md"), file("src/main.rs")]]);
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("README.md"), file("src/main.rs")]]);
         assert!(harness.get_by_role(egui::Role::TextInput).is_focused());
         harness.key_press(Key::Enter);
         harness.run();
@@ -837,7 +910,7 @@ mod tests {
         harness.state_mut().content.terminals.run("/bin/cat", &[]);
         harness.key_press_modifiers(Modifiers::COMMAND, Key::T);
         harness.run();
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review, Tab::Terminal(1)]]);
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), Tab::Terminal(1)]]);
         assert!(harness.get_by_role(egui::Role::Terminal).is_focused());
 
         // the keys of the review and of the editor go to the program instead
@@ -854,10 +927,12 @@ mod tests {
         // a second one opens next to it; closing a tab ends its program
         harness.get_by_label("+").click();
         harness.run();
-        assert_eq!(open_tabs(&harness), [vec![Tab::Review, Tab::Terminal(1), Tab::Terminal(2)]]);
+        harness.get_by_label("New terminal (Cmd+T)").click();
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), Tab::Terminal(1), Tab::Terminal(2)]]);
         let tile = harness.state().workspace.windows[0].tree.tiles.find_pane(&Tab::Terminal(1)).unwrap();
         let state = harness.state_mut();
-        let mut behavior = TabBehavior { content: &mut state.content, window: 0, window_count: 1, dragged_out: false, focused: &mut None, action: &mut None };
+        let mut behavior = TabBehavior { content: &mut state.content, window: 0, window_count: 1, dragged_out: false, focused: &mut None, last_review: &mut None, action: &mut None };
         egui_tiles::Behavior::on_tab_close(&mut behavior, &mut state.workspace.windows[0].tree.tiles, tile);
         assert!(!harness.state().content.terminals.is_open(1));
         assert!(harness.state().content.terminals.is_open(2));

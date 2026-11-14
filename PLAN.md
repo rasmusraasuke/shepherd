@@ -23,17 +23,13 @@ around that loop.
 
 ## Where we are
 
-Milestone 1 is done: the review lives in a workspace of tabs, splits and windows next to
-read-only file tabs, with a file tree, quick open and a layout that survives restarts.
-README.md describes the features.
+Milestones 1 and 2 are done: a workspace of tabs, splits and windows that survives
+restarts, with file editing (undo, find and replace, syntax highlighting, saving on its own,
+reloading of files changed on disk), search across the project, terminals good enough for
+CLI agents, and a review of one file at a time, chosen from the tree of changed files, with
+context shown on request. README.md describes the features.
 
-Milestone 2 is in progress. Done so far: file editing with undo, find and replace, saving on
-its own, reloading of files changed on disk, syntax highlighting, search across the project
-and terminals. Still to do: the review of one file at a time, and several reviews at once.
-
-The review itself is still the prototype: all working-tree changes in one stream, hunks
-marked as reviewed (and unreviewed again when their content changes), a flat list of changed
-files, keyboard navigation, automatic refresh. It changes to one file at a time next.
+Next is milestone 3: making the review pleasant to read.
 
 ## Milestones
 
@@ -51,7 +47,7 @@ The foundation everything else lives in.
 
 Done when: a review and a few files can be arranged next to each other across two windows.
 
-### 2. Files and terminals as real tabs
+### 2. Files and terminals as real tabs (completed)
 
 All three kinds of tab become usable for real work.
 

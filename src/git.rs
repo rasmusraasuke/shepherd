@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -73,17 +74,6 @@ pub enum FileStatus {
     Renamed,
 }
 
-impl FileStatus {
-    pub fn letter(self) -> char {
-        match self {
-            FileStatus::Modified => 'M',
-            FileStatus::Added => 'A',
-            FileStatus::Deleted => 'D',
-            FileStatus::Renamed => 'R',
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LineKind {
     Context,
@@ -102,10 +92,25 @@ pub struct DiffLine {
 #[derive(Debug)]
 pub struct Hunk {
     pub header: String,
+    /// The first old and new line numbers, as the header gives them.
+    pub old_start: u32,
+    pub new_start: u32,
     pub lines: Vec<DiffLine>,
 }
 
 impl Hunk {
+    /// The old and the new lines the hunk covers, numbered from 1. A hunk without lines on
+    /// one side sits right after the line its header gives for that side.
+    pub fn ranges(&self) -> (Range<u32>, Range<u32>) {
+        let range = |start: u32, count: usize| {
+            let count = count as u32;
+            if count == 0 { start + 1..start + 1 } else { start..start + count }
+        };
+        let old = self.lines.iter().filter(|line| line.old_no.is_some()).count();
+        let new = self.lines.iter().filter(|line| line.new_no.is_some()).count();
+        (range(self.old_start, old), range(self.new_start, new))
+    }
+
     /// Identifies the hunk by its content, so any change to the code makes it unreviewed again.
     /// Line numbers are left out, so edits elsewhere in the file don't reset it.
     pub fn fingerprint(&self, path: &str) -> String {
@@ -202,7 +207,7 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
             file.binary = true;
         } else if line.starts_with("@@") {
             (old_no, new_no) = parse_hunk_start(line);
-            file.hunks.push(Hunk { header: line.to_string(), lines: Vec::new() });
+            file.hunks.push(Hunk { header: line.to_string(), old_start: old_no, new_start: new_no, lines: Vec::new() });
             in_hunk = true;
         }
     }
@@ -255,6 +260,12 @@ pub mod tests {
         }
         git(dir.path(), &["init", "--quiet"]).unwrap();
         (Repo::open(dir.path()).unwrap(), dir)
+    }
+
+    /// Commits everything in the working tree.
+    pub fn commit_all(repo: &Repo) {
+        git(&repo.root, &["add", "--all"]).unwrap();
+        git(&repo.root, &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "test"]).unwrap();
     }
 
     #[test]
@@ -311,6 +322,10 @@ deleted file mode 100644
         let old = &files[2];
         assert_eq!((old.path.as_str(), old.status), ("old.txt", FileStatus::Deleted));
         assert_eq!(old.hunks[0].lines[0].text, "bye");
+
+        assert_eq!(main.hunks[0].ranges(), (1..4, 1..5));
+        assert_eq!(new.hunks[0].ranges(), (1..1, 1..2));
+        assert_eq!(old.hunks[0].ranges(), (1..2, 1..1));
     }
 
     #[test]

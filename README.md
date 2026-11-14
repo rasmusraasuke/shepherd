@@ -15,7 +15,7 @@ Without a path the current directory is opened. The path must be inside a git re
 
 ### Workspace
 
-- **Tabs.** The review and files open as tabs in the main space. A tab closes with its ×
+- **Tabs.** Reviews, files and terminals open as tabs in the main space. A tab closes with its ×
   or a middle click.
 - **Splits.** Drag a tab to the edge of another tab to place them side by side or below
   each other. Drag it onto another tab bar to move it there. Drag the line between splits
@@ -27,7 +27,7 @@ Without a path the current directory is opened. The path must be inside a git re
   its own tabs and splits. A tab can also be moved from the menu behind a right-click on
   it; closing a popped out window brings its tabs back to the main window.
 - **Sidebar.** Switches between *Files*, the tree of project files (everything git doesn't
-  ignore), *Changes*, the list of changed files with their review progress, and *Search*.
+  ignore), *Changes*, the tree of changed files with their review progress, and *Search*.
 - **Files.** Click a file in the tree to open it as a tab. A file that is already open is
   brought to the front instead, in whichever window it is.
 - **Quick open.** Cmd+P (Ctrl+P outside macOS) finds a file by name: type a few characters,
@@ -69,9 +69,9 @@ Without a path the current directory is opened. The path must be inside a git re
 
 ### Terminals
 
-- **Terminal tabs.** Cmd+T, or the + at the right of any tab bar, opens a terminal running
-  your shell in the project directory. Terminals are tabs like any other: split, moved and
-  popped out. The tab shows the title the shell or the program gives it.
+- **Terminal tabs.** Cmd+T, or *New terminal* from the + at the right of any tab bar, opens a
+  terminal running your shell in the project directory. Terminals are tabs like any other:
+  split, moved and popped out. The tab shows the title the shell or the program gives it.
 - **Made for agents.** Full screen programs, 256 and true colors, bracketed paste and the
   usual xterm keys work. Text is in Menlo with the fallbacks macOS terminals use, so the
   symbols agents draw look as they do in iTerm2; box drawing, block and braille characters
@@ -91,21 +91,33 @@ Without a path the current directory is opened. The path must be inside a git re
 
 ### Review
 
-- All working-tree changes (staged, unstaged and untracked) against HEAD in one stream.
-- Hunks are marked as reviewed with the checkbox or Space and collapse to their header.
-  A hunk becomes unreviewed again when its content changes. Reviewed marks are kept in
-  `.git/editor-review`.
-- Click a file under *Changes* to jump to its first hunk; this also reopens the review tab
-  if it was closed.
+- **One file at a time.** The review covers all working-tree changes (staged, unstaged and
+  untracked) against HEAD. *Changes* in the sidebar shows the changed files as a tree, like
+  the project tree but with only the files that changed. Next to each file is the number of
+  its hunks that are reviewed; added files are green, deleted ones red, and fully reviewed
+  ones dimmed. Directories are open until closed.
+- **Review tabs.** Click a file under *Changes* to see its changes in the review tab used
+  last, so review tabs don't pile up. A file already shown in a review tab is brought to
+  the front there. Cmd+click a file, or choose *New review* from the + of a tab bar, to open
+  another review tab, for example in another split or window. Several reviews can be open
+  at once, each on its own file.
+- **Context on request.** A review shows the changed parts with three lines around them.
+  Between the parts, *Expand up* and *Expand down* show 20 more lines above or below a part,
+  and *Expand all* the rest of the lines in between, until the whole file is shown.
+- **Reviewed marks.** Hunks are marked as reviewed with the checkbox or Space and collapse
+  to their header. A hunk becomes unreviewed again when its content changes. Reviewed marks
+  are kept in `.git/editor-review`.
 - The working tree is watched in the background, so changes made by an agent show up on
   their own.
 
-| Key   | Action                          |
-|-------|---------------------------------|
-| j / k | Next / previous hunk            |
-| Space | Mark the hunk reviewed (or not) |
-| n     | Next unreviewed hunk            |
-| r     | Refresh now                     |
+The keys work in the review tab used last, while no text field or terminal has the keyboard.
+
+| Key   | Action                           |
+|-------|----------------------------------|
+| j / k | Next / previous hunk             |
+| Space | Mark the hunk reviewed (or not)  |
+| n     | Next unreviewed hunk in the file |
+| r     | Refresh now                      |
 
 ## Development
 
