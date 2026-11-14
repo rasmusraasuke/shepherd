@@ -25,8 +25,16 @@ fn main() -> eframe::Result {
     };
     let workspace = Workspace::load(&repo.layout_path());
 
-    // windows can be see-through only when the main one is: the title of a dragged tab needs it
+    // Windows can be see-through only when the main one is created so: the title of a dragged
+    // tab needs it. The main window itself is made solid again, or its title bar is see-through.
     let viewport = app::viewport(&repo.root, &workspace.windows[0]).with_transparent(true);
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("editor", options, Box::new(|cc| Ok(Box::new(app::App::new(repo, workspace, cc.egui_ctx.clone())))))
+    eframe::run_native(
+        "editor",
+        options,
+        Box::new(|cc| {
+            cc.egui_ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Transparent(false));
+            Ok(Box::new(app::App::new(repo, workspace, cc.egui_ctx.clone())))
+        }),
+    )
 }
