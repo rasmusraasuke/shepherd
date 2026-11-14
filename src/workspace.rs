@@ -27,6 +27,7 @@ pub enum Sidebar {
     #[default]
     Files,
     Changes,
+    Search,
 }
 
 /// Where the pointer holds a window that was created by dragging a tab out, from its top left corner.

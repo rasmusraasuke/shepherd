@@ -8,6 +8,7 @@ mod git;
 mod highlight;
 mod quick_open;
 mod review;
+mod search;
 #[cfg(test)]
 mod testing;
 mod watcher;

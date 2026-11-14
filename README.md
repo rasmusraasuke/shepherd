@@ -27,7 +27,7 @@ Without a path the current directory is opened. The path must be inside a git re
   its own tabs and splits. A tab can also be moved from the menu behind a right-click on
   it; closing a popped out window brings its tabs back to the main window.
 - **Sidebar.** Switches between *Files*, the tree of project files (everything git doesn't
-  ignore), and *Changes*, the list of changed files with their review progress.
+  ignore), *Changes*, the list of changed files with their review progress, and *Search*.
 - **Files.** Click a file in the tree to open it as a tab. A file that is already open is
   brought to the front instead, in whichever window it is.
 - **Quick open.** Cmd+P (Ctrl+P outside macOS) finds a file by name: type a few characters,
@@ -47,6 +47,11 @@ Without a path the current directory is opened. The path must be inside a git re
 - **Find and replace.** Cmd+F finds text in the file, starting from what is selected. Letter
   case matters only when the query has capital letters. Enter and Shift+Enter go to the
   next and the previous place, Esc closes the bar.
+- **Search in files.** Cmd+Shift+F searches all project files from the sidebar, starting
+  from the text selected in the editor. As in the file, letter case matters only when the
+  query has capital letters. Up and Down go through the places found and show each in its
+  file while typing stays in the search; Enter or a click goes to the place. Results follow
+  changes on disk; binary and very large files are left out, and up to 2000 places are shown.
 - **Syntax highlighting.** Kotlin, Java, Rust, JavaScript, TypeScript, Python, Go, JSON,
   shell scripts, TOML, YAML, HTML and CSS are highlighted, in colors close to IntelliJ's.
   Only what changed is parsed again while typing; files over 2 MB are left plain.
@@ -59,6 +64,7 @@ Without a path the current directory is opened. The path must be inside a git re
 | Alt+Backspace / Cmd+Backspace | Delete the word / the line before the cursor |
 | Cmd+Z / Cmd+Shift+Z           | Undo / redo                             |
 | Cmd+F                         | Find and replace                        |
+| Cmd+Shift+F                   | Search in files                         |
 | Cmd+S                         | Save now                                |
 
 ### Review

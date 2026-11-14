@@ -5,7 +5,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 
-use crate::buffer::Buffer;
+use crate::buffer::{Buffer, Pos};
 use crate::editor::Editor;
 
 /// Files larger than this aren't shown, to keep the editor responsive.
@@ -45,6 +45,22 @@ impl OpenFiles {
     /// Makes the editor of the file take the keyboard when it is shown next.
     pub fn focus(&mut self, path: &str) {
         self.file(path).editor.focus();
+    }
+
+    /// The text selected on one line in the editor that has the keyboard.
+    pub fn selected_text(&self) -> Option<String> {
+        let file = self.files.values().find(|file| file.editor.is_active())?;
+        file.buffer.as_ref().ok()?.selected_text().filter(|text| !text.contains('\n'))
+    }
+
+    /// Selects a place in the file and shows it in the middle of the editor, which takes the
+    /// keyboard when `focus` is set.
+    pub fn reveal(&mut self, path: &str, start: Pos, end: Pos, focus: bool) {
+        let file = self.file(path);
+        if let Ok(buffer) = &mut file.buffer {
+            buffer.select(start, end);
+            file.editor.reveal(focus);
+        }
     }
 
     /// Takes over what changed on disk, for example when an agent edited an open file.
@@ -141,7 +157,8 @@ impl OpenFile {
     }
 }
 
-fn read(path: &Path) -> Result<String, String> {
+/// The text of a file, unless it is binary or too large to show.
+pub fn read(path: &Path) -> Result<String, String> {
     let size = fs::metadata(path).map_err(|e| format!("Cannot open file: {e}"))?.len();
     if size > MAX_SIZE {
         return Err("File is too large to show".to_string());

@@ -11,6 +11,7 @@ use crate::file_view::OpenFiles;
 use crate::git::Repo;
 use crate::quick_open::{Outcome, QuickOpen};
 use crate::review::{Review, ReviewState};
+use crate::search::{ProjectSearch, Reveal};
 use crate::watcher::{Snapshot, Watcher};
 use crate::workspace::{Sidebar, Tab, Window, Workspace};
 
@@ -48,12 +49,17 @@ struct Content {
     open_files: OpenFiles,
     file_tree: FileTree,
     files: Vec<String>,
+    search: ProjectSearch,
     error: Option<String>,
 }
 
 enum Action {
     /// Show the tab, opening it in the given window if it isn't open yet.
     Open(Tab, usize),
+    /// Search across the project, in the sidebar of the main window.
+    Search,
+    /// Open the file and select a place in it.
+    Reveal(Reveal),
     /// Move a tab to another window, or to a new one.
     Move { from: usize, tile: TileId, to: Option<usize> },
     /// Drop a tab that was dragged out of its window.
@@ -103,6 +109,7 @@ impl App {
             open_files: OpenFiles::new(repo.root.clone()),
             file_tree: FileTree::default(),
             files: Vec::new(),
+            search: ProjectSearch::default(),
             error: None,
             root: repo.root.clone(),
         };
@@ -129,6 +136,7 @@ impl App {
                 content.file_tree.set_files(snapshot.files.clone(), &self.workspace.expanded_dirs);
                 content.files = snapshot.files;
                 content.open_files.reload_changed();
+                content.search.files_changed();
             }
             Err(error) => content.error = Some(error),
         }
@@ -141,7 +149,7 @@ impl App {
             ui.separator();
             ui.label(format!("{done}/{total} hunks reviewed"));
             ui.separator();
-            ui.weak("Cmd+P open file · Cmd+F find in file · j/k move · space mark reviewed · n next unreviewed · r refresh");
+            ui.weak("Cmd+P open file · Cmd+F find in file · Cmd+Shift+F search in files · j/k move · space mark reviewed · n next unreviewed · r refresh");
         });
         if let Some(error) = &self.content.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -152,6 +160,9 @@ impl App {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.workspace.sidebar, Sidebar::Files, "Files");
             ui.selectable_value(&mut self.workspace.sidebar, Sidebar::Changes, "Changes");
+            if ui.selectable_value(&mut self.workspace.sidebar, Sidebar::Search, "Search").clicked() {
+                self.content.search.focus(None);
+            }
         });
         ui.separator();
         match self.workspace.sidebar {
@@ -163,6 +174,11 @@ impl App {
             Sidebar::Changes => {
                 if self.content.review.file_list(ui) {
                     self.action = Some(Action::Open(Tab::Review, 0));
+                }
+            }
+            Sidebar::Search => {
+                if let Some(reveal) = self.content.search.ui(ui, &self.content.root, &self.content.files) {
+                    self.action = Some(Action::Reveal(reveal));
                 }
             }
         }
@@ -181,6 +197,10 @@ impl App {
         window.screen_rect = inner.or(window.screen_rect);
         if close_requested && index > 0 {
             self.action = Some(Action::CloseWindow(index));
+        }
+        // before the tabs, where Cmd+F would take it
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
+            self.action = Some(Action::Search);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::P)) {
             self.quick_open = Some((window_id, QuickOpen::default()));
@@ -246,6 +266,19 @@ impl App {
                 }
                 let window = self.workspace.open(tab, window);
                 self.focus(window, ctx);
+            }
+            Action::Reveal(Reveal { path, start, end, focus }) => {
+                self.content.open_files.reveal(&path, start, end, focus);
+                let window = self.workspace.open(Tab::File(path), 0);
+                if focus {
+                    self.focus(window, ctx);
+                }
+            }
+            Action::Search => {
+                self.workspace.sidebar = Sidebar::Search;
+                let selected = self.content.open_files.selected_text();
+                self.content.search.focus(selected);
+                self.focus(0, ctx);
             }
             Action::Move { from, tile, to } => self.workspace.move_tab(from, tile, to),
             Action::Drop(Drag { from, tile, point }) => {
@@ -437,6 +470,7 @@ mod tests {
     use egui_kittest::kittest::Queryable as _;
 
     use super::*;
+    use crate::buffer::Pos;
     use crate::git::tests::temp_repo;
     use crate::testing::TempDir;
 
@@ -452,6 +486,18 @@ mod tests {
 
     fn open_tabs(harness: &Harness<'_, App>) -> Vec<Vec<Tab>> {
         harness.state().workspace.windows.iter().map(|window| window.tabs().into_iter().cloned().collect()).collect()
+    }
+
+    /// Runs frames until a label shows up, for what is done in the background.
+    fn wait_for(harness: &mut Harness<'_, App>, label: &str) {
+        for _ in 0..200 {
+            harness.run();
+            if harness.query_by_label(label).is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("{label:?} didn't show up");
     }
 
     fn file(path: &str) -> Tab {
@@ -722,6 +768,42 @@ mod tests {
         harness.run();
         harness.state_mut().content.open_files.save_all();
         assert_eq!(fs::read_to_string(dir.path().join("README.md")).unwrap(), "one 3\n2 one\n");
+    }
+
+    #[test]
+    fn searches_the_project_and_opens_a_place_found() {
+        let (mut harness, dir) = harness("project-search");
+        fs::write(dir.path().join("src/main.rs"), "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+        // from the word selected in a file
+        let readme = Reveal { path: "README.md".to_string(), start: Pos::new(0, 2), end: Pos::new(0, 8), focus: true };
+        harness.state_mut().action = Some(Action::Reveal(readme));
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
+        harness.run();
+        assert_eq!(harness.get_by_role(egui::Role::TextInput).value().as_deref(), Some("Readme"));
+        wait_for(&mut harness, "1 found in 1 files");
+
+        // a query of its own; capitals make the letter case matter
+        let search_for = |harness: &mut Harness<'_, App>, query: &str, expected: &str| {
+            harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+            harness.event(egui::Event::Text(query.to_string()));
+            wait_for(harness, expected);
+        };
+        search_for(&mut harness, "HELLO", "0 found in 0 files");
+        search_for(&mut harness, "hello", "1 found in 1 files");
+        // Down shows the place in its file while the keyboard stays in the search, Enter goes there
+        harness.key_press(Key::ArrowDown);
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md"), file("src/main.rs")]]);
+        assert!(harness.get_by_role(egui::Role::TextInput).is_focused());
+        harness.key_press(Key::Enter);
+        harness.run();
+
+        // the place found is selected: typing replaces it
+        harness.event(egui::Event::Text("bye".to_string()));
+        harness.run();
+        harness.state_mut().content.open_files.save_all();
+        assert_eq!(fs::read_to_string(dir.path().join("src/main.rs")).unwrap(), "fn main() {\n    println!(\"bye\");\n}\n");
     }
 
     #[test]

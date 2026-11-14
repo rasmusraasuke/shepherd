@@ -14,6 +14,8 @@ pub struct Editor {
     focus: bool,
     /// Bring the cursor into view when shown next.
     scroll_to_cursor: bool,
+    /// Bring the cursor to the middle of the view when shown next.
+    center_cursor: bool,
     /// Length of the longest line and the revision of the text it was measured for; it gives
     /// the width of the horizontal scroll.
     longest_line: Option<(u64, usize)>,
@@ -130,6 +132,17 @@ impl Editor {
     /// Makes the editor take the keyboard when it is shown next.
     pub fn focus(&mut self) {
         self.focus = true;
+    }
+
+    /// Whether the editor or its find bar has the keyboard.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Shows the cursor in the middle of the editor when shown next, and takes the keyboard if `focus` is set.
+    pub fn reveal(&mut self, focus: bool) {
+        self.focus |= focus;
+        self.center_cursor = true;
     }
 
     fn longest_line(&mut self, buffer: &Buffer) -> usize {
@@ -274,6 +287,10 @@ impl Editor {
                 style.number(painter, gutter_left + number_width, row_top(line) + 1.0, Some(line as u32 + 1));
             }
 
+            if std::mem::take(&mut self.center_cursor) {
+                self.scroll_to_cursor = false;
+                ui.scroll_to_rect(cursor_rect, Some(egui::Align::Center));
+            }
             if std::mem::take(&mut self.scroll_to_cursor) {
                 // room on the left for the line numbers, so that the cursor doesn't end up under them
                 let around = egui::Rect::from_min_max(cursor_rect.min - Vec2::new(code_x + style.digit_width * 4.0, style.row_height), cursor_rect.max + Vec2::new(style.digit_width * 4.0, style.row_height));

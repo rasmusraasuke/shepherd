@@ -80,6 +80,29 @@ fn end_of(start: Pos, text: &str) -> Pos {
     }
 }
 
+/// The columns of every place the query is found in the line. Letter case matters only when
+/// the query has capital letters.
+pub fn find_in_line(line: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    if query.is_empty() || line.len() < query.len() {
+        return Vec::new();
+    }
+    let exact = query.chars().any(char::is_uppercase);
+    let same = |a: &char, b: &char| if exact { a == b } else { a.to_lowercase().eq(b.to_lowercase()) };
+    let query: Vec<char> = query.chars().collect();
+    let line: Vec<char> = line.chars().collect();
+    let mut found = Vec::new();
+    let mut col = 0;
+    while col + query.len() <= line.len() {
+        if line[col..col + query.len()].iter().zip(&query).all(|(a, b)| same(a, b)) {
+            found.push(col..col + query.len());
+            col += query.len();
+        } else {
+            col += 1;
+        }
+    }
+    found
+}
+
 fn indent_of(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
 }
@@ -449,23 +472,8 @@ impl Buffer {
     /// Every place the query is found, in the order of the text. Letter case matters only
     /// when the query has capital letters.
     pub fn find(&self, query: &str) -> Vec<(Pos, Pos)> {
-        let exact = query.chars().any(char::is_uppercase);
-        let same = |a: &char, b: &char| if exact { a == b } else { a.to_lowercase().eq(b.to_lowercase()) };
-        let query: Vec<char> = query.chars().collect();
-        let mut found = Vec::new();
-        for (index, line) in self.lines.iter().enumerate().filter(|(_, line)| !query.is_empty() && line.len() >= query.len()) {
-            let line: Vec<char> = line.chars().collect();
-            let mut col = 0;
-            while col + query.len() <= line.len() {
-                if line[col..col + query.len()].iter().zip(&query).all(|(a, b)| same(a, b)) {
-                    found.push((Pos::new(index, col), Pos::new(index, col + query.len())));
-                    col += query.len();
-                } else {
-                    col += 1;
-                }
-            }
-        }
-        found
+        let found = self.lines.iter().enumerate().flat_map(|(index, line)| find_in_line(line, query).into_iter().map(move |cols| (index, cols)));
+        found.map(|(index, cols)| (Pos::new(index, cols.start), Pos::new(index, cols.end))).collect()
     }
 
     /// Replaces everything the query finds, as one edit. Returns how many places were replaced.
