@@ -28,13 +28,35 @@ Without a path the current directory is opened. The path must be inside a git re
   it; closing a popped out window brings its tabs back to the main window.
 - **Sidebar.** Switches between *Files*, the tree of project files (everything git doesn't
   ignore), and *Changes*, the list of changed files with their review progress.
-- **Files.** Click a file in the tree to open it as a read-only tab. A file that is already
-  open is brought to the front instead, in whichever window it is. Files changed on disk
-  are reloaded.
+- **Files.** Click a file in the tree to open it as a tab. A file that is already open is
+  brought to the front instead, in whichever window it is.
 - **Quick open.** Cmd+P (Ctrl+P outside macOS) finds a file by name: type a few characters,
   pick with the arrow keys, open with Enter. The file opens in the window the popup is in.
 - **Restored on restart.** Windows with their position and size, splits, open tabs, the
   sidebar and the expanded directories are saved per repository in `.git/editor-layout.json`.
+
+### Editing
+
+- **Text editing.** Files are edited in their tabs: typing, selecting with Shift and the
+  mouse (double click for a word, triple click for a line), copy, cut and paste, undo and
+  redo. Enter keeps the indentation; Tab and Shift+Tab indent and outdent the selected lines.
+- **Saved on their own.** An edit is written to disk a second after typing stops, and when
+  the tab or the editor is closed; Cmd+S saves right away. There is nothing to save by hand.
+- **Reloaded on their own.** A file changed on disk, for example by an agent, shows its new
+  content without asking. Undo brings the previous content back.
+- **Find and replace.** Cmd+F finds text in the file, starting from what is selected. Letter
+  case matters only when the query has capital letters. Enter and Shift+Enter go to the
+  next and the previous place, Esc closes the bar.
+
+| Key                           | Action                                  |
+|-------------------------------|-----------------------------------------|
+| Alt+Left / Alt+Right          | Previous / next word (Ctrl outside macOS) |
+| Cmd+Left / Cmd+Right          | Start / end of the line                 |
+| Cmd+Up / Cmd+Down             | Start / end of the file                 |
+| Alt+Backspace / Cmd+Backspace | Delete the word / the line before the cursor |
+| Cmd+Z / Cmd+Shift+Z           | Undo / redo                             |
+| Cmd+F                         | Find and replace                        |
+| Cmd+S                         | Save now                                |
 
 ### Review
 

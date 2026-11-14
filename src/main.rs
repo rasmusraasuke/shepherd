@@ -1,5 +1,7 @@
 mod app;
+mod buffer;
 mod code;
+mod editor;
 mod file_tree;
 mod file_view;
 mod git;

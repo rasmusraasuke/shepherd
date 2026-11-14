@@ -27,6 +27,10 @@ Milestone 1 is done: the review lives in a workspace of tabs, splits and windows
 read-only file tabs, with a file tree, quick open and a layout that survives restarts.
 README.md describes the features.
 
+Milestone 2 is in progress. Done so far: file editing with undo, find and replace, saving on
+its own, and reloading of files changed on disk. Still to do, in this order: syntax
+highlighting, search across the project, terminals, several reviews at once.
+
 The review itself is still the prototype: all working-tree changes in one stream, hunks
 marked as reviewed (and unreviewed again when their content changes), a flat list of changed
 files, keyboard navigation, automatic refresh.
@@ -180,5 +184,13 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
 - **One working tree.** All agents work in the same checkout. No git worktree support.
 - **Review comments are short-lived.** A comment disappears once the lines it is attached
   to change; the changed hunk shows up as unreviewed again. No resolved threads.
+- **Files save themselves.** As in IntelliJ, there is no unsaved state to manage: an edit is
+  written to disk a moment after typing stops, and when a tab or the editor is closed.
+  Agents and build tools always see what the editor shows. When an open file changes on
+  disk it is reloaded; only edits typed in the last moment win over the change.
+- **Syntax trees from tree-sitter.** Highlighting is built on tree-sitter, so that the same
+  trees serve selection by syntax node, outline and folding later.
+- **Terminals on alacritty_terminal.** The terminal emulation comes from Alacritty's core
+  with portable-pty for the processes; drawing is the editor's own.
 - **Language server first.** Code understanding comes from the Kotlin language server.
   Deeper analysis is considered only when a concrete review feature needs it.

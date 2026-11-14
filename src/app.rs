@@ -128,7 +128,7 @@ impl App {
                 content.review.set_diff(&snapshot.diff);
                 content.file_tree.set_files(snapshot.files.clone(), &self.workspace.expanded_dirs);
                 content.files = snapshot.files;
-                content.open_files.drop_changed();
+                content.open_files.reload_changed();
             }
             Err(error) => content.error = Some(error),
         }
@@ -141,7 +141,7 @@ impl App {
             ui.separator();
             ui.label(format!("{done}/{total} hunks reviewed"));
             ui.separator();
-            ui.weak("Cmd+P open file · j/k move · space mark reviewed · n next unreviewed · r refresh");
+            ui.weak("Cmd+P open file · Cmd+F find in file · j/k move · space mark reviewed · n next unreviewed · r refresh");
         });
         if let Some(error) = &self.content.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -184,6 +184,9 @@ impl App {
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::P)) {
             self.quick_open = Some((window_id, QuickOpen::default()));
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
+            self.content.open_files.save_all();
         }
         if ctx.memory(|m| m.focused().is_none()) && ctx.input(|i| i.modifiers.is_none() && i.key_pressed(Key::R)) {
             self.watcher.refresh_now();
@@ -238,6 +241,9 @@ impl App {
     fn perform(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::Open(tab, window) => {
+                if let Tab::File(path) = &tab {
+                    self.content.open_files.focus(path);
+                }
                 let window = self.workspace.open(tab, window);
                 self.focus(window, ctx);
             }
@@ -395,6 +401,7 @@ impl App {
         }
 
         self.drag_title(&ctx);
+        self.content.open_files.save_edited(&ctx);
 
         if let Some(action) = self.action.take() {
             self.perform(action, &ctx);
@@ -419,6 +426,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.content.open_files.save_all();
         self.save_layout();
     }
 }
@@ -594,6 +602,109 @@ mod tests {
         harness.event(button(pointer, false));
         harness.run();
         assert_eq!(open_tabs(&harness), [vec![Tab::Review, file("README.md")]]);
+    }
+
+    #[test]
+    fn edits_an_opened_file_with_the_keyboard_and_saves_it() {
+        let (mut harness, dir) = harness("edit");
+        let on_disk = || fs::read_to_string(dir.path().join("README.md")).unwrap();
+        harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
+        harness.run();
+        harness.event(egui::Event::Text("Hello".to_string()));
+        harness.key_press(Key::Enter);
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+        harness.run();
+        assert_eq!(on_disk(), "Hello\n# Readme\n");
+
+        // the keys of the review don't reach it while a file is edited
+        harness.event(egui::Event::Text("j".to_string()));
+        harness.key_press(Key::J);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        harness.state_mut().content.open_files.save_all();
+        assert_eq!(on_disk(), "Hello# Readme\n");
+    }
+
+    #[test]
+    fn places_the_cursor_with_the_mouse() {
+        let (mut harness, dir) = harness("edit-mouse");
+        harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
+        harness.run();
+        let editor = harness.get_by_role(egui::Role::MultilineTextInput).rect();
+        // far to the right of the first line: the cursor goes to its end
+        let end_of_line = egui::pos2(editor.right() - 20.0, editor.top() + 5.0);
+        harness.event(egui::Event::PointerMoved(end_of_line));
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos: end_of_line, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        harness.run();
+        harness.event(egui::Event::Text("!".to_string()));
+        harness.run();
+        harness.state_mut().content.open_files.save_all();
+        assert_eq!(fs::read_to_string(dir.path().join("README.md")).unwrap(), "# Readme!\n");
+    }
+
+    #[test]
+    fn keeps_the_line_numbers_over_text_scrolled_sideways() {
+        let (mut harness, dir) = harness("gutter");
+        let long_line = "x".repeat(300);
+        fs::write(dir.path().join("README.md"), &long_line).unwrap();
+        harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
+        harness.run();
+        // to the end of the line, which scrolls the text to the left
+        harness.key_press(Key::End);
+        harness.run();
+
+        // a click on the line numbers goes to the first character that can be seen, not under them
+        // the editor itself now starts outside of the window; the tabs start where its pane does
+        let pane_left = harness.get_by_role_and_label(egui::Role::Button, "Review").rect().left();
+        let editor = harness.get_by_role(egui::Role::MultilineTextInput).rect();
+        let gutter = egui::pos2(pane_left + 10.0, editor.top() + 5.0);
+        harness.event(egui::Event::PointerMoved(gutter));
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos: gutter, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        harness.run();
+        harness.event(egui::Event::Text("!".to_string()));
+        harness.run();
+        harness.state_mut().content.open_files.save_all();
+        let saved = fs::read_to_string(dir.path().join("README.md")).unwrap();
+        let at = saved.find('!').unwrap();
+        assert!(at > 100 && at < 300, "typed at {at}");
+    }
+
+    #[test]
+    fn finds_and_replaces_text_in_a_file() {
+        let (mut harness, dir) = harness("find");
+        fs::write(dir.path().join("README.md"), "one two\nTwo one\n").unwrap();
+        harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        harness.run();
+        harness.event(egui::Event::Text("two".to_string()));
+        harness.run();
+        harness.get_by_label("1/2");
+        harness.key_press(Key::Enter);
+        harness.run();
+        harness.get_by_label("2/2");
+
+        harness.query_all_by_role(egui::Role::TextInput).last().unwrap().click();
+        harness.run();
+        harness.event(egui::Event::Text("2".to_string()));
+        harness.run();
+        harness.get_by_label("Replace").click();
+        harness.run();
+        harness.get_by_label("1/1");
+
+        // closing the bar gives the keyboard back to the text, where the last found place is selected
+        harness.key_press(Key::Escape);
+        harness.run();
+        harness.event(egui::Event::Text("3".to_string()));
+        harness.run();
+        harness.state_mut().content.open_files.save_all();
+        assert_eq!(fs::read_to_string(dir.path().join("README.md")).unwrap(), "one 3\n2 one\n");
     }
 
     #[test]
