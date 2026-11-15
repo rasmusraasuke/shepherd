@@ -13,6 +13,8 @@ use crate::file_view;
 
 const MAX_FOUND: usize = 2000;
 
+type Results = (Vec<FileFound>, bool);
+
 #[derive(Debug, PartialEq)]
 pub struct FileFound {
     pub path: String,
@@ -26,12 +28,7 @@ pub struct Found {
     pub text: String,
 }
 
-pub fn search(
-    root: &Path,
-    files: &[String],
-    query: &str,
-    cancel: &AtomicBool,
-) -> (Vec<FileFound>, bool) {
+pub fn search(root: &Path, files: &[String], query: &str, cancel: &AtomicBool) -> Results {
     let mut results = Vec::new();
     let mut count = 0;
     for path in files {
@@ -87,11 +84,11 @@ enum Row {
 pub struct ProjectSearch {
     query: String,
     stale: bool,
-    results: (Vec<FileFound>, bool),
+    results: Results,
     rows: Vec<Row>,
     selected: Option<usize>,
     scroll_to_selected: bool,
-    running: Option<(Receiver<(Vec<FileFound>, bool)>, Arc<AtomicBool>)>,
+    running: Option<(Receiver<Results>, Arc<AtomicBool>)>,
 }
 
 impl ProjectSearch {
@@ -130,7 +127,7 @@ impl ProjectSearch {
         self.running = Some((receiver, cancel));
     }
 
-    fn set_results(&mut self, results: (Vec<FileFound>, bool)) {
+    fn set_results(&mut self, results: Results) {
         let selected = self.selected.and_then(|row| self.place(row));
         self.rows = results
             .0
@@ -490,7 +487,7 @@ mod tests {
         assert_eq!(chosen(&search), None);
     }
 
-    fn search_for(dir: &TempDir, files: &[String], query: &str) -> (Vec<FileFound>, bool) {
+    fn search_for(dir: &TempDir, files: &[String], query: &str) -> Results {
         search(dir.path(), files, query, &AtomicBool::new(false))
     }
 

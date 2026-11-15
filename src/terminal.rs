@@ -300,7 +300,6 @@ impl Terminal {
             working_directory: Some(root.to_path_buf()),
             drain_on_exit: true,
             env,
-            ..Default::default()
         };
         let pty = tty::new(&options, window_size(size, style), 0)
             .map_err(|e| format!("Cannot start the terminal: {e}"))?;
@@ -542,10 +541,10 @@ impl Terminal {
                     SelectionType::Simple
                 };
                 term.selection = Some(Selection::new(kind, point, side));
-            } else if response.dragged() {
-                if let Some(selection) = &mut term.selection {
-                    selection.update(point, side);
-                }
+            } else if response.dragged()
+                && let Some(selection) = &mut term.selection
+            {
+                selection.update(point, side);
             }
         }
         if response.hovered() {

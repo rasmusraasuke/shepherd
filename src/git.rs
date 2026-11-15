@@ -582,10 +582,10 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
                 file.path = path.to_string();
             }
         } else if let Some(from) = line.strip_prefix("--- ") {
-            if file.status == FileStatus::Deleted {
-                if let Some(path) = from.strip_prefix("a/") {
-                    file.path = path.to_string();
-                }
+            if file.status == FileStatus::Deleted
+                && let Some(path) = from.strip_prefix("a/")
+            {
+                file.path = path.to_string();
             }
         } else if line.starts_with("Binary files ") {
             file.binary = true;
