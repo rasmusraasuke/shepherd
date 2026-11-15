@@ -10,7 +10,7 @@ use crate::file_tree::FileTree;
 use crate::file_view::OpenFiles;
 use crate::git::Repo;
 use crate::quick_open::{Outcome, QuickOpen};
-use crate::review::{Review, ReviewState};
+use crate::review::Review;
 use crate::search::{ProjectSearch, Reveal};
 use crate::terminal::Terminals;
 use crate::watcher::{Snapshot, Watcher};
@@ -113,7 +113,7 @@ fn viewport_id(window: &Window) -> ViewportId {
 impl App {
     pub fn new(repo: Repo, workspace: Workspace, ctx: egui::Context) -> Self {
         let content = Content {
-            review: Review::new(ReviewState::load(repo.review_state_path()), repo.root.clone()),
+            review: Review::new(repo.clone()),
             open_files: OpenFiles::new(repo.root.clone()),
             file_tree: FileTree::default(),
             files: Vec::new(),
@@ -141,7 +141,7 @@ impl App {
         match snapshot {
             Ok(snapshot) => {
                 content.error = None;
-                content.review.set_diff(&snapshot.diff, &self.workspace.collapsed_changes);
+                content.review.set_changes(&snapshot.changes, &self.workspace.collapsed_changes);
                 content.file_tree.set_files(snapshot.files.clone(), &self.workspace.expanded_dirs);
                 content.files = snapshot.files;
                 content.open_files.reload_changed();
@@ -156,7 +156,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new(self.content.root.display().to_string()).strong());
             ui.separator();
-            ui.label(format!("{done}/{total} hunks reviewed"));
+            ui.label(format!("{done}/{total} lines reviewed"));
             ui.separator();
             ui.weak("Cmd+P open file · Cmd+F find in file · Cmd+Shift+F search in files · Cmd+T terminal · Cmd+click a change for a new review · j/k move · space mark reviewed · n next unreviewed · r refresh");
         });
@@ -498,6 +498,9 @@ impl App {
         }
 
         self.drag_title(&ctx);
+        if self.content.review.take_staged_changed() {
+            self.watcher.refresh_now();
+        }
         self.content.open_files.save_edited(&ctx);
 
         if let Some(action) = self.action.take() {

@@ -23,14 +23,15 @@ around that loop.
 
 ## Where we are
 
-Milestones 1 to 3 are done: a workspace of tabs, splits and windows that survives
+Milestones 1 to 4 are done: a workspace of tabs, splits and windows that survives
 restarts, with file editing (undo, find and replace, syntax highlighting, saving on its own,
 reloading of files changed on disk), search across the project, terminals good enough for
 CLI agents, and a review of one file at a time, chosen from the tree of changed files, with
 context shown on request, highlighted diffs with changes within lines, progress per
-directory and moving on to the next file to review. README.md describes the features.
+directory and moving on to the next file to review, and review marks that are git's staging
+area, line by line. README.md describes the features.
 
-Next is milestone 4: reviewed means staged.
+Next is milestone 5: agents in the loop.
 
 ## Milestones
 
@@ -83,7 +84,7 @@ The review becomes good enough to review real agent output in every day.
 
 Done when: reviewing an agent's change here is nicer than in IntelliJ's diff view.
 
-### 4. Reviewed means staged
+### 4. Reviewed means staged (completed)
 
 The review marks become git's staging area, and work line by line.
 

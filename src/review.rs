@@ -1,77 +1,25 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fs;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use eframe::egui::{self, Align, Color32, Key, RichText, Sense, Stroke, Vec2};
 
 use crate::code::{CodeStyle, expand_tabs};
 use crate::file_tree::{FileLook, FileTree};
 use crate::file_view;
-use crate::git::{self, DiffLine, FileDiff, FileStatus, Hunk, LineKind};
+use crate::git::{self, Changes, DiffLine, FileDiff, FileStatus, Hunk, LineKind, Repo, Staged};
 use crate::highlight::{self, Highlighter, Spans};
 use crate::word_diff::{self, Ranges};
+
+/// How many unchanged lines are shown around each hunk.
+const CONTEXT: usize = 3;
 
 /// Longer lines are cut to this many characters, as drawing very long lines takes long.
 const MAX_LINE_CHARS: usize = 500;
 
-/// Fingerprints of reviewed hunks, persisted as one fingerprint per line.
-pub struct ReviewState {
-    path: PathBuf,
-    reviewed: HashSet<String>,
-}
-
-impl ReviewState {
-    pub fn load(path: PathBuf) -> Self {
-        let reviewed = fs::read_to_string(&path)
-            .map(|s| s.lines().map(str::to_string).collect())
-            .unwrap_or_default();
-        Self { path, reviewed }
-    }
-
-    pub fn is_reviewed(&self, fingerprint: &str) -> bool {
-        self.reviewed.contains(fingerprint)
-    }
-
-    pub fn toggle(&mut self, fingerprint: &str) {
-        let reviewed = !self.is_reviewed(fingerprint);
-        self.set([fingerprint], reviewed);
-    }
-
-    pub fn set<'a>(&mut self, fingerprints: impl IntoIterator<Item = &'a str>, reviewed: bool) {
-        for fingerprint in fingerprints {
-            if reviewed {
-                self.reviewed.insert(fingerprint.to_string());
-            } else {
-                self.reviewed.remove(fingerprint);
-            }
-        }
-        self.save();
-    }
-
-    /// Forgets hunks that are no longer part of the diff, so the file doesn't grow forever.
-    pub fn retain_only<'a>(&mut self, current: impl IntoIterator<Item = &'a str>) {
-        let current: HashSet<&str> = current.into_iter().collect();
-        let before = self.reviewed.len();
-        self.reviewed.retain(|fp| current.contains(fp.as_str()));
-        if self.reviewed.len() != before {
-            self.save();
-        }
-    }
-
-    fn save(&self) {
-        let mut lines: Vec<&str> = self.reviewed.iter().map(String::as_str).collect();
-        lines.sort();
-        if let Err(e) = fs::write(&self.path, lines.join("\n")) {
-            eprintln!("failed to save review state to {}: {e}", self.path.display());
-        }
-    }
-}
-
 /// The working-tree changes, reviewed one file at a time.
 pub struct Review {
-    root: PathBuf,
-    state: ReviewState,
+    repo: Repo,
     files: Vec<FileReview>,
     by_path: HashMap<String, usize>,
     /// The changed files, in the same form as the project file tree.
@@ -80,15 +28,48 @@ pub struct Review {
     views: HashMap<String, View>,
     /// The lines of the files shown, ready to be drawn.
     texts: HashMap<String, FileText>,
-    /// The number of reviewed hunks and of all hunks of every file and directory, and of all
-    /// files together under "".
+    /// The number of reviewed lines and of all changed lines of every file and directory, and
+    /// of all files together under "". A file without lines counts as one.
     progress: HashMap<String, (usize, usize)>,
+    /// Why what is staged couldn't be changed the last time.
+    error: Option<String>,
+    /// Whether what is staged changed since the working tree was looked at.
+    staged_changed: bool,
 }
 
+/// A changed file. Its changes are reviewed when they are staged.
 struct FileReview {
     diff: FileDiff,
-    /// The fingerprint of each hunk.
-    fingerprints: Vec<String>,
+    /// For each line of each hunk, whether it is staged. Unchanged lines count as staged.
+    staged: Vec<Vec<bool>>,
+    /// Whether the whole file is staged, for changes without lines such as of a binary file.
+    file_staged: bool,
+}
+
+impl FileReview {
+    /// The number of staged lines and of all changed lines of the hunks given.
+    fn lines_progress(&self, hunks: Range<usize>) -> (usize, usize) {
+        let lines = hunks.flat_map(|h| self.diff.hunks[h].lines.iter().zip(&self.staged[h]));
+        let changed = lines.filter(|(line, _)| line.kind != LineKind::Context);
+        changed.fold((0, 0), |(done, total), (_, staged)| (done + *staged as usize, total + 1))
+    }
+
+    fn progress(&self) -> (usize, usize) {
+        match self.diff.hunks.len() {
+            0 => (self.file_staged as usize, 1),
+            hunks => self.lines_progress(0..hunks),
+        }
+    }
+
+    /// The number of staged lines and of all changed lines of a hunk.
+    fn hunk_progress(&self, hunk: usize) -> (usize, usize) {
+        self.lines_progress(hunk..hunk + 1)
+    }
+
+    fn is_reviewed(&self, hunk: usize) -> bool {
+        let (done, total) = self.hunk_progress(hunk);
+        done == total
+    }
 }
 
 #[derive(Default)]
@@ -126,28 +107,33 @@ struct Side {
 }
 
 impl Review {
-    pub fn new(state: ReviewState, root: PathBuf) -> Self {
+    pub fn new(repo: Repo) -> Self {
         Self {
-            root,
-            state,
+            repo,
             files: Vec::new(),
             by_path: HashMap::new(),
             tree: FileTree::open_by_default(),
             views: HashMap::new(),
             texts: HashMap::new(),
             progress: HashMap::new(),
+            error: None,
+            staged_changed: false,
         }
     }
 
-    pub fn set_diff(&mut self, raw: &str, collapsed: &BTreeSet<String>) {
-        self.files = git::parse_diff(raw)
+    pub fn set_changes(&mut self, changes: &Changes, collapsed: &BTreeSet<String>) {
+        let staged = Staged::new(changes);
+        self.files = git::parse_diff(&changes.diff)
             .into_iter()
-            .map(|diff| FileReview { fingerprints: diff.hunks.iter().map(|hunk| hunk.fingerprint(&diff.path)).collect(), diff })
+            .map(|diff| {
+                let lines = diff.hunks.iter().map(|hunk| hunk.lines.iter().map(|line| staged.is_staged(&diff.path, line)).collect()).collect();
+                FileReview { staged: lines, file_staged: staged.is_file_staged(&diff.path), diff }
+            })
             .collect();
         self.by_path = self.files.iter().enumerate().map(|(index, file)| (file.diff.path.clone(), index)).collect();
-        self.state.retain_only(self.files.iter().flat_map(|file| file.fingerprints.iter().map(String::as_str)));
         self.tree.set_files(self.files.iter().map(|file| file.diff.path.clone()).collect(), collapsed);
         self.texts.clear();
+        self.error = None;
         self.update_progress();
         let (files, by_path) = (&self.files, &self.by_path);
         self.views.retain(|path, view| {
@@ -161,10 +147,15 @@ impl Review {
         });
     }
 
+    /// Whether what is staged changed since the last call, so the working tree should be looked at again.
+    pub fn take_staged_changed(&mut self) -> bool {
+        std::mem::take(&mut self.staged_changed)
+    }
+
     fn update_progress(&mut self) {
         self.progress.clear();
         for file in &self.files {
-            let (done, total) = file_progress(&self.state, file);
+            let (done, total) = file.progress();
             let path = file.diff.path.as_str();
             let dirs = path.match_indices('/').map(|(end, _)| &path[..end]);
             for key in ["", path].into_iter().chain(dirs) {
@@ -174,20 +165,20 @@ impl Review {
         }
     }
 
-    /// The number of reviewed hunks and of all hunks.
+    /// The number of reviewed lines and of all changed lines.
     pub fn progress(&self) -> (usize, usize) {
         self.progress_of("")
     }
 
-    /// The number of reviewed hunks and of all hunks of a file, or of the files in a directory.
+    /// The number of reviewed lines and of all changed lines of a file, or of the files in a directory.
     fn progress_of(&self, path: &str) -> (usize, usize) {
         self.progress.get(path).copied().unwrap_or_default()
     }
 
     fn next_unreviewed(&self, file: usize, from: usize) -> Option<usize> {
-        let fingerprints = &self.files[file].fingerprints;
-        let n = fingerprints.len();
-        (1..=n).map(|i| (from + i) % n).find(|&i| !self.state.is_reviewed(&fingerprints[i]))
+        let file = &self.files[file];
+        let n = file.diff.hunks.len();
+        (1..=n).map(|i| (from + i) % n).find(|&i| !file.is_reviewed(i))
     }
 
     fn view(&mut self, file: usize) -> &mut View {
@@ -215,28 +206,73 @@ impl Review {
             done < total
         })?;
         let (next, index) = (next.clone(), self.by_path[next]);
-        let first = self.next_unreviewed(index, self.files[index].fingerprints.len() - 1).unwrap_or(0);
+        let first = self.next_unreviewed(index, self.files[index].diff.hunks.len().saturating_sub(1)).unwrap_or(0);
         self.select(index, first);
         Some(next)
     }
 
-    /// Marks a hunk as reviewed or not; moving on to the next one when it is reviewed, which
-    /// may be in another file that is returned then.
-    fn toggle_reviewed(&mut self, file: usize, hunk: usize) -> Option<String> {
-        let fingerprint = &self.files[file].fingerprints[hunk];
-        self.state.toggle(fingerprint);
-        let reviewed = self.state.is_reviewed(fingerprint);
-        self.update_progress();
-        self.view(file).current = hunk;
-        if reviewed { self.next(file) } else { None }
+    /// Stages the changed lines of a file that are `chosen`, by the index of their hunk and their
+    /// index in it, and unstages the others.
+    fn stage(&mut self, file: usize, chosen: impl Fn(usize, usize) -> bool) {
+        let FileReview { diff, staged, .. } = &mut self.files[file];
+        let result = self.repo.stage_lines(diff, &chosen);
+        if result.is_ok() {
+            for (h, (hunk, staged)) in diff.hunks.iter().zip(staged).enumerate() {
+                for (i, (line, staged)) in hunk.lines.iter().zip(staged).enumerate() {
+                    *staged = line.kind == LineKind::Context || chosen(h, i);
+                }
+            }
+        }
+        self.staging_done(result);
     }
 
-    /// Marks all hunks of a file, or of the files in a directory, as reviewed or not.
+    /// Stages or unstages all of a file without changed lines.
+    fn stage_file(&mut self, file: usize, staged: bool) {
+        let result = self.repo.stage_file(&self.files[file].diff.path, staged);
+        if result.is_ok() {
+            self.files[file].file_staged = staged;
+        }
+        self.staging_done(result);
+    }
+
+    fn staging_done(&mut self, result: Result<(), String>) {
+        self.error = result.err();
+        self.staged_changed = true;
+        self.update_progress();
+    }
+
+    /// Marks a hunk as reviewed, or not when it is; moving on to the next one when it is
+    /// reviewed, which may be in another file that is returned then.
+    fn toggle_reviewed(&mut self, file: usize, hunk: usize) -> Option<String> {
+        let reviewed = !self.files[file].is_reviewed(hunk);
+        let staged = self.files[file].staged.clone();
+        self.stage(file, |h, i| if h == hunk { reviewed } else { staged[h][i] });
+        self.view(file).current = hunk;
+        if reviewed && self.files[file].is_reviewed(hunk) { self.next(file) } else { None }
+    }
+
+    /// Marks one changed line of a hunk as reviewed, or not when it is.
+    fn toggle_line(&mut self, file: usize, hunk: usize, line: usize) {
+        let staged = self.files[file].staged.clone();
+        self.stage(file, |h, i| staged[h][i] != ((h, i) == (hunk, line)));
+        self.view(file).current = hunk;
+    }
+
+    /// Marks all changes of a file, or of the files in a directory, as reviewed or not.
     fn set_reviewed(&mut self, path: &str, reviewed: bool) {
         let inside = |file: &str| file.strip_prefix(path).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
-        let fingerprints = self.files.iter().filter(|file| inside(&file.diff.path)).flat_map(|file| file.fingerprints.iter().map(String::as_str));
-        self.state.set(fingerprints, reviewed);
-        self.update_progress();
+        let files: Vec<usize> = (0..self.files.len()).filter(|&index| inside(&self.files[index].diff.path)).collect();
+        for file in files {
+            let (done, total) = self.files[file].progress();
+            if done == if reviewed { total } else { 0 } {
+                continue;
+            }
+            if self.files[file].diff.hunks.is_empty() {
+                self.stage_file(file, reviewed);
+            } else {
+                self.stage(file, |_, _| reviewed);
+            }
+        }
     }
 
     /// Handles the review keys. Returns the file to show next, when moving on to another one.
@@ -250,6 +286,11 @@ impl Review {
         }
         let count = self.files[file].diff.hunks.len();
         if count == 0 {
+            let reviewed = !self.files[file].file_staged;
+            if pressed(Key::Space) {
+                self.stage_file(file, reviewed);
+                return if reviewed { self.next(file) } else { None };
+            }
             return None;
         }
         let current = self.view(file).current;
@@ -315,9 +356,9 @@ impl Review {
         };
         let mut next = if active { self.handle_keys(ui.ctx(), index) } else { None };
         let (done, total) = self.progress_of(path);
-        let Self { root, state, files, views, texts, .. } = self;
+        let Self { repo, files, views, texts, error, .. } = self;
         let file = &files[index];
-        let text = texts.entry(path.to_string()).or_insert_with(|| FileText::new(root, &file.diff));
+        let text = texts.entry(path.to_string()).or_insert_with(|| FileText::new(&repo.root, &file.diff));
         let view = views.entry(path.to_string()).or_default();
         let gaps = gaps(&file.diff.hunks, text.new.lines.len());
         view.expanded.resize(gaps.len(), false);
@@ -333,20 +374,25 @@ impl Review {
                 mark_file = Some(false);
             }
         });
+        if let Some(error) = error {
+            ui.colored_label(ui.visuals().error_fg_color, error.as_str());
+        }
         ui.add_space(4.0);
-        let toggled = egui::ScrollArea::both()
+        let clicked = egui::ScrollArea::both()
             .id_salt(path)
             .auto_shrink(false)
             .show(ui, |ui| {
                 if file.diff.binary {
                     ui.weak("Binary file");
                 }
-                rows_ui(ui, file, text, &gaps, state, view)
+                rows_ui(ui, file, text, &gaps, view)
             })
             .inner;
         view.scroll_to_current = false;
-        if let Some(hunk) = toggled {
-            next = self.toggle_reviewed(index, hunk);
+        match clicked {
+            Some(Mark::Hunk(hunk)) => next = self.toggle_reviewed(index, hunk),
+            Some(Mark::Line(hunk, line)) => self.toggle_line(index, hunk, line),
+            None => {}
         }
         if let Some(reviewed) = mark_file {
             self.set_reviewed(path, reviewed);
@@ -356,10 +402,6 @@ impl Review {
         }
         next
     }
-}
-
-fn file_progress(state: &ReviewState, file: &FileReview) -> (usize, usize) {
-    (file.fingerprints.iter().filter(|fp| state.is_reviewed(fp)).count(), file.fingerprints.len())
 }
 
 /// The colors of the names of added and deleted files.
@@ -486,21 +528,28 @@ fn gaps(hunks: &[Hunk], line_count: usize) -> Vec<Gap> {
 enum Row {
     /// An unchanged line between the hunks: the index of its gap and its number in the new file.
     Unchanged(usize, usize),
-    /// The lines of a gap that are folded away.
-    Folded(usize),
+    /// Lines of a gap that are folded away: the index of the gap and how many lines.
+    Folded(usize, usize),
     /// A line of a hunk: the index of the hunk and of the line in it.
     Hunk(usize, usize),
 }
 
-/// The rows of a file, and the first row of each hunk. A gap that is not expanded is folded
-/// into a row of its own, unless it is just one line.
+/// The rows of a file, and the first row of each hunk. Of a gap that is not expanded only the
+/// lines next to the hunks are shown, the others are folded into a row of their own, unless
+/// that would be just one line.
 fn rows(gaps: &[Gap], hunks: &[Hunk], expanded: &[bool]) -> (Vec<Row>, Vec<usize>) {
     let (mut rows, mut starts) = (Vec::new(), Vec::new());
     for (index, gap) in gaps.iter().enumerate() {
-        if expanded[index] || gap.lines.len() <= 1 {
-            rows.extend(gap.lines.clone().map(|number| Row::Unchanged(index, number)));
+        let unchanged = |lines: Range<usize>| lines.map(move |number| Row::Unchanged(index, number));
+        let start = if index > 0 { CONTEXT } else { 0 };
+        let end = if index < hunks.len() { CONTEXT } else { 0 };
+        let (lines, count) = (gap.lines.clone(), gap.lines.len());
+        if expanded[index] || count <= start + end + 1 {
+            rows.extend(unchanged(lines));
         } else {
-            rows.push(Row::Folded(index));
+            rows.extend(unchanged(lines.start..lines.start + start));
+            rows.push(Row::Folded(index, count - start - end));
+            rows.extend(unchanged(lines.end - end..lines.end));
         }
         if let Some(hunk) = hunks.get(index) {
             starts.push(rows.len());
@@ -522,11 +571,18 @@ struct Line<'a> {
 }
 
 /// The width of the reviewed marks, the line numbers and the sign in front of the code, in digits.
-const GUTTER_DIGITS: usize = 17;
+const GUTTER_DIGITS: usize = 19;
+
+/// A reviewed mark that was clicked.
+enum Mark {
+    Hunk(usize),
+    /// A changed line, by the index of its hunk and its index in it.
+    Line(usize, usize),
+}
 
 /// Shows the rows of a file as one piece of code, drawing only the ones in sight. Returns the
-/// hunk whose reviewed mark was clicked.
-fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], state: &ReviewState, view: &mut View) -> Option<usize> {
+/// reviewed mark that was clicked.
+fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], view: &mut View) -> Option<Mark> {
     let hunks = &file.diff.hunks;
     let (rows, starts) = rows(gaps, hunks, &view.expanded);
     let style = CodeStyle::new(ui);
@@ -550,13 +606,14 @@ fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], 
     let last = (((clip.bottom() - rect.top()) / row_height).ceil().max(0.0) as usize).min(rows.len());
     // the gutter stays at the left edge when the code scrolls sideways, and covers it
     let gutter_left = rect.left().max(clip.left());
-    let mut toggled = None;
+    let hovered = ui.input(|i| i.pointer.hover_pos()).filter(|pointer| rect.contains(*pointer) && clip.contains(*pointer)).map(|pointer| ((pointer.y - rect.top()) / row_height) as usize);
+    let mut clicked = None;
     for (index, row) in rows.iter().enumerate().take(last).skip(first) {
         let row_rect = row_at(index);
         match *row {
-            Row::Folded(gap) => {
+            Row::Folded(gap, hidden) => {
                 let visible = egui::Rect::from_x_y_ranges(gutter_left..=clip.right(), row_rect.y_range());
-                if fold_ui(ui, visible, gaps[gap].lines.len(), response.id.with(("fold", gap))) {
+                if fold_ui(ui, visible, hidden, response.id.with(("fold", gap))) {
                     view.expanded[gap] = true;
                 }
             }
@@ -567,20 +624,31 @@ fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], 
                 line_ui(ui, &style, row_rect, gutter_left, &line, false);
             }
             Row::Hunk(hunk, at) => {
-                let reviewed = state.is_reviewed(&file.fingerprints[hunk]);
-                line_ui(ui, &style, row_rect, gutter_left, &text.row(&hunks[hunk].lines[at], &text.changed[hunk][at]), reviewed);
+                let line = &hunks[hunk].lines[at];
+                let staged = file.staged[hunk][at];
+                line_ui(ui, &style, row_rect, gutter_left, &text.row(line, &text.changed[hunk][at]), staged);
                 if hunk == view.current {
                     let bar = egui::Rect::from_min_size(egui::pos2(gutter_left, row_rect.top()), Vec2::new(3.0, row_height));
                     ui.painter().rect_filled(bar, 0.0, ui.visuals().selection.stroke.color);
                 }
-                let mark = egui::Rect::from_min_size(egui::pos2(gutter_left + style.digit_width * 0.5, row_rect.top()), Vec2::splat(row_height));
-                if at == 0 && reviewed_mark_ui(ui, mark, reviewed, response.id.with(("reviewed", hunk))) {
-                    toggled = Some(hunk);
+                let column = |digits: f32| egui::Rect::from_min_size(egui::pos2(gutter_left + style.digit_width * digits, row_rect.top()), Vec2::splat(row_height));
+                let (done, total) = file.hunk_progress(hunk);
+                if at == 0 {
+                    let state = if done == total { Some(true) } else if done == 0 { Some(false) } else { None };
+                    if reviewed_mark_ui(ui, column(0.5), 0.0, state, "Reviewed", response.id.with(("hunk", hunk))) {
+                        clicked = Some(Mark::Hunk(hunk));
+                    }
+                }
+                // the marks of single lines show up under the pointer, or when they differ within the hunk
+                let partly = done > 0 && done < total;
+                let shown = (hovered == Some(index) || partly) && line.kind != LineKind::Context;
+                if shown && reviewed_mark_ui(ui, column(2.7), 2.0, Some(staged), "Reviewed line", response.id.with(("line", hunk, at))) {
+                    clicked = Some(Mark::Line(hunk, at));
                 }
             }
         }
     }
-    toggled
+    clicked
 }
 
 /// Draws a line of code with its gutter of line numbers at `gutter_left`. The colors of a
@@ -605,14 +673,14 @@ fn line_ui(ui: &egui::Ui, style: &CodeStyle, row: egui::Rect, gutter_left: f32, 
         painter.rect_filled(gutter, 0.0, bg);
     }
     let y = row.top() + 1.0;
-    style.number(painter, gutter_left + digit * 8.0, y, line.old_no);
-    style.number(painter, gutter_left + digit * 13.0, y, line.new_no);
+    style.number(painter, gutter_left + digit * 10.0, y, line.old_no);
+    style.number(painter, gutter_left + digit * 15.0, y, line.new_no);
     let sign = match line.kind {
         LineKind::Context => " ",
         LineKind::Added => "+",
         LineKind::Removed => "-",
     };
-    style.text(painter, gutter_left + digit * 14.5, y, sign, style.weak_color);
+    style.text(painter, gutter_left + digit * 16.5, y, sign, style.weak_color);
 }
 
 /// A wavy line in place of unchanged lines that are folded away. Returns true when clicked,
@@ -633,18 +701,21 @@ fn fold_ui(ui: &egui::Ui, rect: egui::Rect, hidden: usize, id: egui::Id) -> bool
     response.on_hover_text(label).clicked()
 }
 
-/// The reviewed mark of a hunk, in the gutter of its first line. Returns true when clicked.
-fn reviewed_mark_ui(ui: &egui::Ui, rect: egui::Rect, reviewed: bool, id: egui::Id) -> bool {
+/// A reviewed mark: ticked, empty, or with a dash when `reviewed` is `None` as only some of
+/// the lines it is for are reviewed. It is made smaller by `shrink`. Returns true when clicked.
+fn reviewed_mark_ui(ui: &egui::Ui, rect: egui::Rect, shrink: f32, reviewed: Option<bool>, label: &str, id: egui::Id) -> bool {
     let response = ui.interact(rect, id, Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), reviewed, "Reviewed"));
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), reviewed == Some(true), label));
     let visuals = ui.style().interact(&response);
-    let mark = egui::Rect::from_center_size(rect.center(), Vec2::splat(rect.height() - 5.0));
+    let mark = egui::Rect::from_center_size(rect.center(), Vec2::splat(rect.height() - 5.0 - shrink));
     ui.painter().rect(mark, 2.0, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
-    if reviewed {
-        let (left, right) = (mark.left() + mark.width() * 0.2, mark.right() - mark.width() * 0.2);
-        let check = vec![egui::pos2(left, mark.center().y), egui::pos2(mark.center().x - mark.width() * 0.05, mark.bottom() - mark.height() * 0.25), egui::pos2(right, mark.top() + mark.height() * 0.25)];
-        ui.painter().add(egui::Shape::line(check, visuals.fg_stroke));
-    }
+    let at = |x: f32, y: f32| egui::pos2(mark.left() + mark.width() * x, mark.top() + mark.height() * y);
+    let sign = match reviewed {
+        Some(true) => vec![at(0.2, 0.5), at(0.45, 0.75), at(0.8, 0.25)],
+        Some(false) => return response.clicked(),
+        None => vec![at(0.25, 0.5), at(0.75, 0.5)],
+    };
+    ui.painter().add(egui::Shape::line(sign, visuals.fg_stroke));
     response.clicked()
 }
 
@@ -653,7 +724,10 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
+    use std::process::Command;
+
     use super::*;
+    use crate::git::tests::{commit_all, temp_repo};
     use crate::testing::TempDir;
 
     const DIFF: &str = "\
@@ -674,62 +748,118 @@ diff --git a/b.txt b/b.txt
 +six
 ";
 
-    fn review(dir: &TempDir) -> Review {
-        Review::new(ReviewState::load(dir.path().join("reviewed")), dir.path().to_path_buf())
+    /// A review of the files changed from their first version, which is committed, to the second.
+    fn review(name: &str, files: &[(&str, &str, &str)]) -> (Review, TempDir) {
+        let (repo, dir) = temp_repo(name, &files.iter().map(|(path, old, _)| (*path, *old)).collect::<Vec<_>>());
+        commit_all(&repo);
+        for (path, _, new) in files {
+            dir.write(path, new);
+        }
+        let mut review = Review::new(repo);
+        refresh(&mut review);
+        (review, dir)
+    }
+
+    /// Takes over the changes in the working tree and the index, as the editor does when they change.
+    fn refresh(review: &mut Review) {
+        let changes = review.repo.changes().unwrap();
+        review.set_changes(&changes, &BTreeSet::new());
+    }
+
+    const TEN: &str = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n";
+    /// Two hunks in a.txt, one in b.txt.
+    const TWO_FILES: &[(&str, &str, &str)] = &[("a.txt", TEN, "one\n2\n3\n4\n5\n6\n7\n8\nnine\n10\n"), ("b.txt", "x\n", "y\n")];
+
+    #[test]
+    fn marking_a_hunk_reviewed_stages_it_and_moves_on_to_the_next_unreviewed_one() {
+        let (mut review, dir) = review("moves-on", TWO_FILES);
+        assert_eq!(review.progress(), (0, 6));
+        assert_eq!(review.toggle_reviewed(0, 0), None);
+        assert_eq!((review.progress(), review.view(0).current), ((2, 6), 1));
+        // the last hunk of a file moves on to the next file
+        assert_eq!(review.toggle_reviewed(0, 1), Some("b.txt".to_string()));
+        assert_eq!((review.progress_of("a.txt"), review.view(0).current), ((4, 4), 1));
+        assert!(review.take_staged_changed());
+
+        // what is staged is what is reviewed
+        refresh(&mut review);
+        assert_eq!(review.progress(), (4, 6));
+        let in_index = Command::new("git").args(["show", ":a.txt"]).current_dir(dir.path()).output().unwrap().stdout;
+        assert_eq!(String::from_utf8(in_index).unwrap(), TWO_FILES[0].2);
+        review.toggle_reviewed(0, 1);
+        refresh(&mut review);
+        assert_eq!(review.progress(), (2, 6));
     }
 
     #[test]
-    fn marking_a_hunk_reviewed_moves_on_to_the_next_unreviewed_one() {
-        let mut review = review(&TempDir::new("moves-on"));
-        review.set_diff(DIFF, &BTreeSet::new());
-        assert_eq!(review.progress(), (0, 3));
-        assert_eq!(review.toggle_reviewed(0, 0), None);
-        assert_eq!((review.progress(), review.view(0).current), ((1, 3), 1));
-        // the last hunk of a file moves on to the next file
-        assert_eq!(review.toggle_reviewed(0, 1), Some("b.txt".to_string()));
-        assert_eq!((review.progress_of("a.txt"), review.view(0).current), ((2, 2), 1));
+    fn marks_single_lines_of_a_hunk_reviewed() {
+        let (mut review, _dir) = review("lines", TWO_FILES);
+        // only the removal of the replaced line
+        review.toggle_line(0, 0, 0);
+        refresh(&mut review);
+        assert_eq!((review.progress_of("a.txt"), review.files[0].hunk_progress(0)), ((1, 4), (1, 2)));
+        assert!(!review.files[0].is_reviewed(0));
+        // the whole hunk once the rest of it is marked too
+        review.toggle_reviewed(0, 0);
+        refresh(&mut review);
+        assert!(review.files[0].is_reviewed(0));
+        review.toggle_line(0, 0, 1);
+        refresh(&mut review);
+        assert_eq!(review.files[0].staged[0][..2], [true, false]);
     }
 
-    const TREE_DIFF: &str = "\
-diff --git a/src/a.txt b/src/a.txt
---- a/src/a.txt
-+++ b/src/a.txt
-@@ -1 +1 @@
--one
-+two
-@@ -9 +9 @@
--three
-+four
-diff --git a/src/ui/b.txt b/src/ui/b.txt
---- a/src/ui/b.txt
-+++ b/src/ui/b.txt
-@@ -1 +1 @@
--five
-+six
-diff --git a/srcs.txt b/srcs.txt
---- a/srcs.txt
-+++ b/srcs.txt
-@@ -1 +1 @@
--seven
-+eight
-";
+    #[test]
+    fn each_run_of_changed_lines_is_a_hunk_with_marks_for_single_lines_under_the_pointer() {
+        let (mut review, _dir) = review("runs", &[("a.txt", TEN, "1\ntwo\n3\nfour\n5\n6\n7\n8\n9\n10\n")]);
+        assert_eq!(review.files[0].diff.hunks.len(), 2);
+        review.toggle_line(0, 1, 0);
+        let mut harness = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(|ui, review: &mut Review| { review.ui(ui, Some("a.txt"), true); }, review);
+        harness.run();
+        // a hunk with only some of its lines reviewed shows the marks of its lines
+        assert_eq!(harness.query_all_by_label("Reviewed").count(), 2);
+        assert_eq!(harness.query_all_by_label("Reviewed line").count(), 2);
+        harness.get_all_by_label("Reviewed").next().unwrap().hover();
+        harness.run();
+        assert_eq!(harness.query_all_by_label("Reviewed line").count(), 3);
+    }
+
+    #[test]
+    fn a_change_made_after_the_review_is_not_reviewed() {
+        let (mut review, dir) = review("changed-after", TWO_FILES);
+        review.set_reviewed("b.txt", true);
+        dir.write("b.txt", "z\n");
+        refresh(&mut review);
+        // the removal is still reviewed, the new line is not
+        assert_eq!(review.progress_of("b.txt"), (1, 2));
+    }
+
+    #[test]
+    fn marks_files_without_lines_reviewed_as_a_whole() {
+        let (mut review, _dir) = review("binary", &[("image.bin", "\0a", "\0b")]);
+        assert_eq!(review.progress(), (0, 1));
+        review.set_reviewed("image.bin", true);
+        refresh(&mut review);
+        assert_eq!(review.progress(), (1, 1));
+    }
+
+    /// Two changed lines in each file, two hunks in src/a.txt.
+    const TREE: &[(&str, &str, &str)] = &[("src/a.txt", TEN, "one\n2\n3\n4\n5\n6\n7\n8\nnine\n10\n"), ("src/ui/b.txt", "x\n", "y\n"), ("srcs.txt", "x\n", "y\n")];
 
     #[test]
     fn marks_files_and_directories_reviewed_and_counts_their_progress() {
-        let mut review = review(&TempDir::new("directories"));
-        review.set_diff(TREE_DIFF, &BTreeSet::new());
+        let (mut review, _dir) = review("directories", TREE);
         review.toggle_reviewed(review.by_path["src/a.txt"], 0);
-        assert_eq!([review.progress_of("src"), review.progress_of("src/ui"), review.progress_of("")], [(1, 3), (0, 1), (1, 4)]);
+        assert_eq!([review.progress_of("src"), review.progress_of("src/ui"), review.progress_of("")], [(2, 6), (0, 2), (2, 8)]);
         review.set_reviewed("src", true);
-        assert_eq!([review.progress_of("src"), review.progress_of("srcs.txt"), review.progress_of("")], [(3, 3), (0, 1), (3, 4)]);
+        assert_eq!([review.progress_of("src"), review.progress_of("srcs.txt"), review.progress_of("")], [(6, 6), (0, 2), (6, 8)]);
         review.set_reviewed("src/ui/b.txt", false);
-        assert_eq!([review.progress_of("src"), review.progress_of("src/ui")], [(2, 3), (0, 1)]);
+        refresh(&mut review);
+        assert_eq!([review.progress_of("src"), review.progress_of("src/ui")], [(4, 6), (0, 2)]);
     }
 
     #[test]
     fn moves_on_to_the_next_file_to_review_in_the_order_of_the_tree() {
-        let mut review = review(&TempDir::new("next-file"));
-        review.set_diff(TREE_DIFF, &BTreeSet::new());
+        let (mut review, _dir) = review("next-file", TREE);
         let a = review.by_path["src/a.txt"];
         // the next hunk of the file first
         assert_eq!((review.next(a), review.view(a).current), (None, 1));
@@ -745,8 +875,7 @@ diff --git a/srcs.txt b/srcs.txt
 
     #[test]
     fn marks_a_directory_reviewed_from_its_menu_in_the_tree() {
-        let mut review = review(&TempDir::new("tree-menu"));
-        review.set_diff(TREE_DIFF, &BTreeSet::new());
+        let (review, _dir) = review("tree-menu", TREE);
         let mut harness = Harness::new_ui_state(|ui, review: &mut Review| { review.tree_ui(ui, &mut BTreeSet::new(), None); }, review);
         harness.run();
         harness.get_by_label("ui").click_secondary();
@@ -754,7 +883,7 @@ diff --git a/srcs.txt b/srcs.txt
         assert!(harness.query_by_label("Mark as not reviewed").is_none());
         harness.get_by_label("Mark as reviewed").click();
         harness.run();
-        assert_eq!(harness.state().progress_of("src"), (1, 3));
+        assert_eq!(harness.state().progress_of("src"), (2, 6));
     }
 
     #[test]
@@ -783,42 +912,22 @@ diff --git a/srcs.txt b/srcs.txt
 
     #[test]
     fn draws_only_the_hunks_in_sight() {
-        let dir = TempDir::new("many-hunks");
         let lines: Vec<String> = (1..=1000).map(|n| format!("line {n}")).collect();
-        dir.write("a.txt", lines.join("\n") + "\n");
-        let hunks: String = (0..100).map(|k| format!("@@ -{0} +{0} @@\n-old\n+line {0}\n", k * 10 + 1)).collect();
-        let mut review = review(&dir);
-        review.set_diff(&format!("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n{hunks}"), &BTreeSet::new());
+        let changed: Vec<String> = (1..=1000).map(|n| if n % 10 == 1 { format!("new {n}") } else { format!("line {n}") }).collect();
+        let (review, _dir) = review("many-hunks", &[("a.txt", &(lines.join("\n") + "\n"), &(changed.join("\n") + "\n"))]);
         let mut harness = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(|ui, review: &mut Review| { review.ui(ui, Some("a.txt"), true); }, review);
         harness.run();
         let drawn = harness.query_all_by_label("Reviewed").count();
         assert!(drawn > 0 && drawn < 20, "{drawn} hunks drawn");
         // moving far down shows the hunks there, of which one is reviewed
         let is_reviewed = |harness: &Harness<'_, Review>| harness.query_all_by_label("Reviewed").any(|node| node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True));
-        let fingerprint = harness.state().files[0].fingerprints[90].clone();
-        harness.state_mut().state.toggle(&fingerprint);
+        harness.state_mut().stage(0, |hunk, _| hunk == 90);
         harness.run();
         assert!(!is_reviewed(&harness));
         harness.state_mut().select(0, 90);
         harness.run();
         harness.run();
         assert!(is_reviewed(&harness));
-    }
-
-    #[test]
-    fn keeps_reviewed_marks_until_a_hunk_changes() {
-        let dir = TempDir::new("keeps-marks");
-        let mut review = review(&dir);
-        review.set_diff(DIFF, &BTreeSet::new());
-        review.toggle_reviewed(1, 0);
-
-        // the first file is no longer changed, the second one is untouched
-        review.set_diff(&DIFF[DIFF.find("diff --git a/b.txt").unwrap()..], &BTreeSet::new());
-        assert_eq!(review.progress(), (1, 1));
-
-        // a changed hunk needs to be reviewed again
-        review.set_diff(&DIFF.replace("six", "seven"), &BTreeSet::new());
-        assert_eq!(review.progress(), (0, 3));
     }
 
     #[test]
@@ -832,23 +941,32 @@ diff --git a/srcs.txt b/srcs.txt
     }
 
     #[test]
-    fn folds_away_the_unchanged_lines_between_the_hunks_unless_expanded() {
+    fn folds_away_the_unchanged_lines_away_from_the_hunks_unless_expanded() {
         let hunks = &git::parse_diff(DIFF)[0].hunks;
-        let gaps = gaps(hunks, 10);
-        // one line before the second hunk is shown as it is
-        let gaps = [Gap { lines: 8..9, old_offset: 0 }, gaps[1].clone(), gaps[2].clone()];
-        assert_eq!(rows(&gaps, hunks, &[false; 3]), (vec![Row::Unchanged(0, 8), Row::Hunk(0, 0), Row::Hunk(0, 1), Row::Folded(1), Row::Hunk(1, 0), Row::Hunk(1, 1), Row::Unchanged(2, 10)], vec![1, 4]));
-        assert_eq!(rows(&gaps, hunks, &[false, true, false]).0[3..10], [Row::Unchanged(1, 2), Row::Unchanged(1, 3), Row::Unchanged(1, 4), Row::Unchanged(1, 5), Row::Unchanged(1, 6), Row::Unchanged(1, 7), Row::Unchanged(1, 8)]);
+        let gaps = [Gap { lines: 8..9, old_offset: 0 }, Gap { lines: 2..12, old_offset: 0 }, Gap { lines: 13..30, old_offset: 0 }];
+        let unchanged = |gap: usize, lines: Range<usize>| lines.map(move |number| Row::Unchanged(gap, number));
+        let expected: Vec<Row> = [
+            // just one line before the first hunk is shown as it is
+            vec![Row::Unchanged(0, 8), Row::Hunk(0, 0), Row::Hunk(0, 1)],
+            unchanged(1, 2..5).collect(),
+            vec![Row::Folded(1, 4)],
+            unchanged(1, 9..12).collect(),
+            vec![Row::Hunk(1, 0), Row::Hunk(1, 1)],
+            unchanged(2, 13..16).collect(),
+            vec![Row::Folded(2, 14)],
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        assert_eq!(rows(&gaps, hunks, &[false; 3]), (expected, vec![1, 10]));
+        assert_eq!(rows(&gaps, hunks, &[false, true, false]).0[3..13], unchanged(1, 2..12).collect::<Vec<_>>());
     }
 
     #[test]
     fn shows_folded_lines_when_clicked() {
-        let dir = TempDir::new("more-lines");
         let lines: Vec<String> = (1..=100).map(|n| format!("line {n}")).collect();
-        dir.write("a.txt", lines.join("\n") + "\n");
-        let diff = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -47,7 +47,7 @@\n line 47\n line 48\n line 49\n-old 50\n+line 50\n line 51\n line 52\n line 53\n";
-        let mut review = review(&dir);
-        review.set_diff(diff, &BTreeSet::new());
+        let text = lines.join("\n") + "\n";
+        let (review, _dir) = review("more-lines", &[("a.txt", &text, &text.replace("line 50\n", "new 50\n"))]);
         let mut harness = Harness::builder().with_size(egui::vec2(800.0, 3000.0)).build_ui_state(|ui, review: &mut Review| { review.ui(ui, Some("a.txt"), true); }, review);
         harness.run();
         // 46 lines above the hunk and 47 below it
@@ -861,9 +979,9 @@ diff --git a/srcs.txt b/srcs.txt
 
     #[test]
     fn a_review_without_a_file_or_changes_says_so() {
-        let dir = TempDir::new("no-file");
         for (path, label) in [(None, "Choose a file under Changes to review it"), (Some("gone.txt"), "No changes in gone.txt")] {
-            let mut harness = Harness::new_ui_state(move |ui, review: &mut Review| { review.ui(ui, path, true); }, review(&dir));
+            let (review, _dir) = review("no-file", &[("a.txt", "x\n", "x\n")]);
+            let mut harness = Harness::new_ui_state(move |ui, review: &mut Review| { review.ui(ui, path, true); }, review);
             harness.run();
             harness.get_by_label(label);
         }

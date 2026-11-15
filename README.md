@@ -94,26 +94,39 @@ Without a path the current directory is opened. The path must be inside a git re
 - **One file at a time.** The review covers all working-tree changes (staged, unstaged and
   untracked) against HEAD. *Changes* in the sidebar shows the changed files as a tree, like
   the project tree but with only the files that changed. Next to each file and directory is
-  the number of its hunks that are reviewed; added files are green, deleted ones red, and
-  fully reviewed files and directories dimmed. Directories are open until closed.
+  the number of its changed lines that are reviewed; added files are green, deleted ones red,
+  and fully reviewed files and directories dimmed. Directories are open until closed. A
+  renamed file shows as a deleted and an added one.
 - **Review tabs.** Click a file under *Changes* to see its changes in the review tab used
   last, so review tabs don't pile up. A file already shown in a review tab is brought to
   the front there. Cmd+click a file, or choose *New review* from the + of a tab bar, to open
   another review tab, for example in another split or window. Several reviews can be open
   at once, each on its own file.
 - **One piece of code.** A review reads like the file itself: the changed parts with three
-  lines around them, and a thin wavy line where unchanged lines are left out. A click on the
+  lines around them, and a thin wavy line where unchanged lines are left out. Each run of
+  changed lines is a hunk of its own, however close it is to the next one. A click on the
   wavy line shows those lines. The current hunk has a bar at its left edge; a click on a hunk
   makes it the current one.
 - **Easy to read.** Both sides of a diff are highlighted like the file itself, and where a
   line was changed rather than replaced, the words that changed stand out. Long lines scroll
   sideways under the line numbers; lines over 500 characters are cut. Files with many hunks
   scroll smoothly, as only the hunks in sight are drawn.
-- **Reviewed marks.** Hunks are marked as reviewed with the checkbox next to their first line
-  or with Space, and their colors fade. *Mark file reviewed* at the top of a review marks the whole file, and a
-  right click on a file or directory under *Changes* marks all of it, reviewed or not. A hunk
-  becomes unreviewed again when its content changes. Reviewed marks are kept in
-  `.git/editor-review`.
+- **Reviewed means staged.** Marking a change as reviewed stages it in git, and taking the
+  mark away unstages it; what is staged counts as reviewed, also when it was staged
+  elsewhere. The editor keeps no review state of its own, and committing what is staged
+  commits what was reviewed.
+- **Reviewed marks.** A hunk is marked as reviewed with the checkbox next to its first line
+  or with Space; its colors fade. Under the pointer a changed line shows a smaller checkbox
+  of its own, so that only some lines of a hunk are staged: for example only the removed half
+  of a changed line, which stages just the removal. A hunk with only some of its lines
+  reviewed shows a dash, and the checkboxes of all its lines.
+  *Mark file reviewed* at the top of a review marks the whole file, and a right click on a
+  file or directory under *Changes* marks all of it, reviewed or not. Files without lines,
+  such as binary ones, are marked as a whole.
+- **Changes after the review.** When a reviewed line is changed again, for example by an
+  agent, the new version shows as not reviewed, while the staged one stays as it was. A
+  file is only staged when it is as the review shows it; otherwise the review asks to try
+  again once it has caught up.
 - **Moving on.** Once the last hunk of a file is marked, the review moves on to the next file
   in the tree that has hunks left to review; so does n when nothing is left in the file.
 - The working tree is watched in the background, so changes made by an agent show up on
@@ -124,7 +137,7 @@ The keys work in the review tab used last, while no text field or terminal has t
 | Key   | Action                           |
 |-------|----------------------------------|
 | j / k | Next / previous hunk             |
-| Space | Mark the hunk reviewed (or not)  |
+| Space | Mark the hunk reviewed (or not), staging it |
 | n     | Next unreviewed hunk, in the next file once the file is done |
 | r     | Refresh now                      |
 
