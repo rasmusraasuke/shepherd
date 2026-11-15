@@ -36,9 +36,9 @@ impl Tab {
 #[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub enum Sidebar {
     #[default]
+    #[serde(alias = "Search")]
     Files,
     Changes,
-    Search,
 }
 
 const NEW_WINDOW_GRIP: egui::Vec2 = egui::vec2(60.0, 40.0);
@@ -241,6 +241,7 @@ impl Window {
 pub struct Workspace {
     pub windows: Vec<Window>,
     pub sidebar: Sidebar,
+    pub sidebar_open: bool,
     pub expanded_dirs: BTreeSet<String>,
     pub collapsed_changes: BTreeSet<String>,
     #[serde(skip)]
@@ -252,6 +253,7 @@ impl Default for Workspace {
         Self {
             windows: vec![Window::new(0, vec![Tab::Review(None)])],
             sidebar: Sidebar::default(),
+            sidebar_open: true,
             expanded_dirs: BTreeSet::new(),
             collapsed_changes: BTreeSet::new(),
             last_review: None,
@@ -275,6 +277,11 @@ impl Workspace {
 
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
+    }
+
+    pub fn toggle_sidebar(&mut self, sidebar: Sidebar) {
+        self.sidebar_open = !(self.sidebar_open && self.sidebar == sidebar);
+        self.sidebar = sidebar;
     }
 
     pub fn open(&mut self, tab: Tab, window: usize) -> usize {
@@ -598,7 +605,7 @@ mod tests {
         workspace.move_tab(0, tile, None);
         workspace.windows[1].position = Some(egui::pos2(10.0, 20.0));
         workspace.windows[1].size = Some(egui::vec2(300.0, 400.0));
-        workspace.sidebar = Sidebar::Changes;
+        workspace.toggle_sidebar(Sidebar::Changes);
         workspace.expanded_dirs.insert("src".to_string());
 
         let restored = Workspace::from_json(&workspace.to_json()).unwrap();
@@ -613,6 +620,32 @@ mod tests {
         assert_eq!(tabs(&restored.windows[1]), ["b.rs"]);
         assert_eq!(restored.windows[1].position, Some(egui::pos2(10.0, 20.0)));
         assert_eq!(restored.sidebar, Sidebar::Changes);
+        assert!(restored.sidebar_open);
+    }
+
+    #[test]
+    fn opens_the_sidebar_chosen_and_closes_it_when_chosen_again() {
+        let mut workspace = Workspace::default();
+        assert!(workspace.sidebar_open);
+        workspace.toggle_sidebar(Sidebar::Files);
+        assert!(!workspace.sidebar_open);
+        workspace.toggle_sidebar(Sidebar::Changes);
+        assert!(workspace.sidebar_open);
+        assert_eq!(workspace.sidebar, Sidebar::Changes);
+        workspace.toggle_sidebar(Sidebar::Files);
+        assert!(workspace.sidebar_open);
+        assert_eq!(workspace.sidebar, Sidebar::Files);
+        workspace.toggle_sidebar(Sidebar::Files);
+        assert!(!workspace.sidebar_open);
+    }
+
+    #[test]
+    fn opens_the_files_where_the_search_was_shown_before() {
+        let json = Workspace::default()
+            .to_json()
+            .replace("\"Files\"", "\"Search\"");
+        assert!(json.contains("\"Search\""));
+        assert_eq!(Workspace::from_json(&json).unwrap().sidebar, Sidebar::Files);
     }
 
     #[test]

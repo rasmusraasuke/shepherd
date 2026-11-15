@@ -14,9 +14,10 @@ use crate::file_view::{self, OpenFiles};
 use crate::git::{self, Changes, DiffLine, FileDiff, FileStatus, Hunk, LineKind, Repo, Staged};
 use crate::highlight::{self, Highlighter, Spans};
 use crate::line_diff;
+use crate::theme;
 use crate::word_diff::{self, Ranges};
 
-pub const NEW_COLOR: Color32 = Color32::from_rgb(90, 150, 230);
+pub const NEW_COLOR: Color32 = theme::DARK.accent;
 
 const CONTEXT: usize = 3;
 
@@ -750,7 +751,17 @@ impl Review {
         let mut mark_file = None;
         let unsent = comments.iter().filter(|comment| !comment.sent).count();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(file.diff.display_name()).monospace().strong());
+            let name = file.diff.display_name();
+            let (dir, file_name) = name
+                .rsplit_once('/')
+                .map_or(("", name.as_str()), |(dir, file_name)| (dir, file_name));
+            ui.spacing_mut().item_spacing.x = 0.0;
+            if !dir.is_empty() {
+                ui.weak(format!("{dir}/"));
+            }
+            ui.label(RichText::new(file_name).strong());
+            ui.spacing_mut().item_spacing.x = 12.0;
+            ui.add_space(12.0);
             ui.weak(format!("{done}/{total} reviewed"));
             if done < total && ui.small_button("Mark file reviewed").clicked() {
                 mark_file = Some(true);
@@ -977,27 +988,18 @@ fn send_button(ui: &mut egui::Ui, label: &str, enabled: bool, agents: &[Agent]) 
 }
 
 fn status_colors(dark_mode: bool) -> (Color32, Color32) {
-    if dark_mode {
-        (
-            Color32::from_rgb(110, 190, 120),
-            Color32::from_rgb(220, 110, 110),
-        )
-    } else {
-        (
-            Color32::from_rgb(30, 130, 50),
-            Color32::from_rgb(190, 40, 40),
-        )
-    }
+    let palette = theme::palette(dark_mode);
+    (palette.added, palette.removed)
 }
 
 fn row_colors(kind: LineKind, dark_mode: bool) -> Option<(Color32, Color32)> {
     let rgb = |[r, g, b]: [u8; 3]| Color32::from_rgb(r, g, b);
     let colors = match (kind, dark_mode) {
         (LineKind::Context, _) => return None,
-        (LineKind::Added, true) => ([28, 58, 34], [42, 100, 54]),
-        (LineKind::Removed, true) => ([70, 30, 32], [125, 45, 48]),
-        (LineKind::Added, false) => ([218, 251, 225], [168, 236, 184]),
-        (LineKind::Removed, false) => ([255, 226, 226], [255, 186, 186]),
+        (LineKind::Added, true) => ([35, 46, 38], [48, 74, 54]),
+        (LineKind::Removed, true) => ([52, 35, 37], [84, 48, 50]),
+        (LineKind::Added, false) => ([232, 245, 234], [196, 230, 203]),
+        (LineKind::Removed, false) => ([252, 235, 234], [244, 200, 197]),
     };
     Some((rgb(colors.0), rgb(colors.1)))
 }
@@ -1764,9 +1766,9 @@ fn fold_ui(ui: &egui::Ui, rect: egui::Rect, hidden: usize, id: egui::Id) -> bool
     let color = if response.hovered() {
         ui.visuals().text_color()
     } else {
-        ui.visuals().weak_text_color().gamma_multiply(0.6)
+        ui.visuals().weak_text_color().gamma_multiply(0.45)
     };
-    let (amplitude, wavelength) = (2.0, 8.0);
+    let (amplitude, wavelength) = (1.5, 12.0);
     let points = (0..=(rect.width() / 2.0) as usize)
         .map(|step| {
             let x = step as f32 * 2.0;

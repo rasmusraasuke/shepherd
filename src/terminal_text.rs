@@ -2,9 +2,7 @@ use std::fs;
 use std::sync::Arc;
 
 use eframe::egui::epaint::QuadraticBezierShape;
-use eframe::egui::{
-    self, Color32, FontData, FontDefinitions, FontFamily, Painter, Pos2, Rect, Stroke, Vec2,
-};
+use eframe::egui::{self, Color32, FontData, FontFamily, Painter, Pos2, Rect, Stroke, Vec2};
 
 const MENLO: &str = "/System/Library/Fonts/Menlo.ttc";
 
@@ -43,7 +41,7 @@ pub fn fonts_ready(ctx: &egui::Context) -> bool {
 }
 
 fn install_fonts(ctx: &egui::Context) {
-    let mut definitions = FontDefinitions::default();
+    let mut definitions = ctx.fonts(|fonts| fonts.definitions().clone());
     let mut fallbacks: Vec<String> = FALLBACKS
         .iter()
         .filter_map(|(path, y_offset_factor)| {

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Key, Modifiers, RichText, ViewportBuilder, ViewportCommand, ViewportId};
+use eframe::egui::{self, Key, Modifiers, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 
 use crate::buffer::Pos;
@@ -12,10 +12,13 @@ use crate::control::{self, Control};
 use crate::file_tree::FileTree;
 use crate::file_view::OpenFiles;
 use crate::git::Repo;
+use crate::icons::{self, Icon};
+use crate::keys::{self, DoubleShift};
 use crate::quick_open::{Outcome, QuickOpen};
 use crate::review::{self, Review};
 use crate::search::{ProjectSearch, Reveal};
 use crate::terminal::{Activity, Terminals};
+use crate::theme;
 use crate::watcher::{Snapshot, Watcher};
 use crate::workspace::{Sidebar, Tab, Window, Workspace};
 
@@ -24,6 +27,12 @@ const SAVE_INTERVAL: Duration = Duration::from_secs(1);
 const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(1200.0, 800.0);
 
 const DRAG_TITLE_SHADOW: i8 = 16;
+
+const ACTIVITY_WIDTH: f32 = 44.0;
+
+const ACTIVITY_ROW: f32 = 40.0;
+
+const WAITING_COLOR: egui::Color32 = egui::Color32::from_rgb(214, 160, 92);
 
 pub struct App {
     repo: Repo,
@@ -36,6 +45,9 @@ pub struct App {
     last_save: Instant,
     viewports: HashMap<u64, ViewportBuilder>,
     quick_open: Option<(u64, QuickOpen)>,
+    search_in: Option<u64>,
+    double_shift: DoubleShift,
+    show_keys: bool,
     drag: Option<Drag>,
     action: Option<Action>,
 }
@@ -67,7 +79,7 @@ enum Action {
         terminal: u64,
         text: String,
     },
-    Search,
+    Search(u64),
     Reveal(Reveal),
     Move {
         from: usize,
@@ -128,6 +140,33 @@ fn drag_title(ui: &mut egui::Ui, title: &str) {
     drag_title_frame(ui.style()).show(ui, |ui| ui.add(egui::Label::new(title).extend()));
 }
 
+fn empty_ui(ui: &mut egui::Ui) {
+    let keys = [
+        ("Open a file", "⌘P"),
+        ("Search in files", "⇧⇧"),
+        ("New terminal", "⌘T"),
+    ];
+    let (width, row) = (220.0, 26.0);
+    let rect = ui.max_rect();
+    let top = rect.center().y - keys.len() as f32 * row / 2.0;
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let color = ui.visuals().weak_text_color();
+    for (index, (action, key)) in keys.into_iter().enumerate() {
+        let y = top + index as f32 * row;
+        for (x, align, text) in [
+            (
+                rect.center().x - width / 2.0,
+                egui::Align2::LEFT_TOP,
+                action,
+            ),
+            (rect.center().x + width / 2.0, egui::Align2::RIGHT_TOP, key),
+        ] {
+            ui.painter()
+                .text(egui::pos2(x, y), align, text, font.clone(), color);
+        }
+    }
+}
+
 fn viewport_id(window: &Window) -> ViewportId {
     if window.id == 0 {
         ViewportId::ROOT
@@ -138,6 +177,7 @@ fn viewport_id(window: &Window) -> ViewportId {
 
 impl App {
     pub fn new(repo: Repo, workspace: Workspace, ctx: egui::Context) -> Self {
+        theme::apply(&ctx);
         let control = Control::start(ctx.clone())
             .inspect_err(|e| eprintln!("{e}"))
             .ok();
@@ -174,6 +214,9 @@ impl App {
             layout_path: repo.layout_path(),
             last_save: Instant::now(),
             quick_open: None,
+            search_in: None,
+            double_shift: DoubleShift::default(),
+            show_keys: false,
             drag: None,
             action: None,
             watcher: Watcher::spawn(repo.clone(), ctx),
@@ -200,32 +243,54 @@ impl App {
         }
     }
 
-    fn top_bar(&self, ui: &mut egui::Ui) {
-        let (done, total) = self.content.review.progress();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(self.content.root.display().to_string()).strong());
-            ui.separator();
-            ui.label(format!("{done}/{total} lines reviewed"));
-            ui.separator();
-            ui.weak("Cmd+P open file · Cmd+F find in file · Cmd+Shift+F search in files · Cmd+T terminal · Cmd+click a change for a new review · j/k move · space mark reviewed · n next unreviewed · o open in file · Cmd+Shift+R review the line of a file · r refresh");
-        });
-        if let Some(error) = &self.content.error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
+    fn activity_bar(&mut self, ui: &mut egui::Ui) {
+        let width = ui.available_width();
+        let button = |ui: &mut egui::Ui, icon: Icon, label: &str, chosen: bool| {
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width, ACTIVITY_ROW), egui::Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::Role::Button, true, chosen, label)
+            });
+            let visuals = ui.visuals();
+            let color = if chosen || response.hovered() {
+                visuals.strong_text_color()
+            } else {
+                visuals.weak_text_color()
+            };
+            if chosen {
+                let bar = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(0.0, 8.0),
+                    egui::vec2(2.0, rect.height() - 16.0),
+                );
+                ui.painter()
+                    .rect_filled(bar, 1.0, theme::palette(visuals.dark_mode).accent);
+            }
+            icons::paint(ui.painter(), rect.center(), icon, color);
+            response.on_hover_text(label).clicked()
+        };
+        ui.add_space(6.0);
+        for (sidebar, icon, label) in [
+            (Sidebar::Files, Icon::Files, "Files"),
+            (Sidebar::Changes, Icon::Review, "Changes"),
+        ] {
+            let chosen = self.workspace.sidebar_open && self.workspace.sidebar == sidebar;
+            if button(ui, icon, label, chosen) {
+                self.workspace.toggle_sidebar(sidebar);
+            }
         }
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+            ui.add_space(6.0);
+            if button(ui, Icon::Keys, "Keyboard shortcuts", self.show_keys) {
+                self.show_keys = true;
+            }
+        });
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.workspace.sidebar, Sidebar::Files, "Files");
-            ui.selectable_value(&mut self.workspace.sidebar, Sidebar::Changes, "Changes");
-            if ui
-                .selectable_value(&mut self.workspace.sidebar, Sidebar::Search, "Search")
-                .clicked()
-            {
-                self.content.search.focus(None);
-            }
-        });
-        ui.separator();
+        ui.add_space(8.0);
+        if let Some(error) = &self.content.error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
         match self.workspace.sidebar {
             Sidebar::Files => {
                 if let Some(path) = self.content.file_tree.ui(
@@ -247,15 +312,6 @@ impl App {
                 {
                     let new_tab = ui.input(|i| i.modifiers.command);
                     self.action = Some(Action::Review { path, new_tab });
-                }
-            }
-            Sidebar::Search => {
-                if let Some(reveal) =
-                    self.content
-                        .search
-                        .ui(ui, &self.content.root, &self.content.files)
-                {
-                    self.action = Some(Action::Reveal(reveal));
                 }
             }
         }
@@ -280,8 +336,11 @@ impl App {
         if close_requested && index > 0 {
             self.action = Some(Action::CloseWindow(index));
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
-            self.action = Some(Action::Search);
+        let double_shift = ctx.input(|i| i.focused && self.double_shift.follow(&i.events, i.time));
+        if double_shift
+            || ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F))
+        {
+            self.action = Some(Action::Search(window_id));
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::T)) {
             self.action = Some(Action::NewTerminal(index, None));
@@ -332,7 +391,7 @@ impl App {
             .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
             .show(ui, |ui| {
                 if window.tabs().is_empty() {
-                    ui.centered_and_justified(|ui| ui.weak("Cmd+P to open a file"));
+                    empty_ui(ui);
                     return;
                 }
                 let agents = self.content.terminals.agents();
@@ -376,6 +435,17 @@ impl App {
                 }
                 Some(Outcome::Closed) => self.quick_open = None,
                 None => {}
+            }
+        }
+
+        if self.search_in == Some(window_id) {
+            let content = &mut self.content;
+            let (reveal, closed) = content.search.show(&ctx, &content.root, &content.files);
+            if let Some(reveal) = reveal {
+                self.action = Some(Action::Reveal(reveal));
+            }
+            if closed {
+                self.search_in = None;
             }
         }
     }
@@ -426,11 +496,10 @@ impl App {
                 );
             }
             Action::Send { terminal, text } => self.content.terminals.send(terminal, &text),
-            Action::Search => {
-                self.workspace.sidebar = Sidebar::Search;
+            Action::Search(window_id) => {
+                self.search_in = Some(window_id);
                 let selected = self.content.open_files.selected_text();
-                self.content.search.focus(selected);
-                self.focus(0, ctx);
+                self.content.search.start_with(selected);
             }
             Action::Move { from, tile, to } => self.workspace.move_tab(from, tile, to),
             Action::Drop(Drag { from, tile, point }) => {
@@ -757,8 +826,8 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         let terminals = &self.content.terminals;
         let title = terminals.title(*id).unwrap_or_else(|| tab.title());
         let dot = match terminals.activity(*id) {
-            Some(Activity::Working) => egui::Color32::from_rgb(90, 150, 230),
-            Some(Activity::Waiting) => egui::Color32::from_rgb(230, 150, 50),
+            Some(Activity::Working) => review::NEW_COLOR,
+            Some(Activity::Waiting) => WAITING_COLOR,
             _ => return title.into(),
         };
         let mut job = egui::text::LayoutJob::default();
@@ -787,6 +856,79 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                 *self.action = Some(Action::NewReview(self.window, Some(tile_id)));
             }
         });
+    }
+
+    fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
+        34.0
+    }
+
+    fn tab_title_spacing(&self, _visuals: &egui::Visuals) -> f32 {
+        12.0
+    }
+
+    fn close_button_outer_size(&self) -> f32 {
+        10.0
+    }
+
+    fn close_button_inner_margin(&self) -> f32 {
+        1.5
+    }
+
+    fn gap_width(&self, _style: &egui::Style) -> f32 {
+        1.0
+    }
+
+    fn resize_stroke(
+        &self,
+        style: &egui::Style,
+        resize_state: egui_tiles::ResizeState,
+    ) -> egui::Stroke {
+        match resize_state {
+            egui_tiles::ResizeState::Idle => style.visuals.widgets.noninteractive.bg_stroke,
+            _ => style.visuals.selection.stroke,
+        }
+    }
+
+    fn tab_bar_color(&self, visuals: &egui::Visuals) -> egui::Color32 {
+        visuals.panel_fill
+    }
+
+    fn tab_bg_color(
+        &self,
+        _visuals: &egui::Visuals,
+        _tiles: &Tiles<Tab>,
+        _tile_id: TileId,
+        _state: &egui_tiles::TabState,
+    ) -> egui::Color32 {
+        egui::Color32::TRANSPARENT
+    }
+
+    fn tab_outline_stroke(
+        &self,
+        _visuals: &egui::Visuals,
+        _tiles: &Tiles<Tab>,
+        _tile_id: TileId,
+        _state: &egui_tiles::TabState,
+    ) -> egui::Stroke {
+        egui::Stroke::NONE
+    }
+
+    fn tab_bar_hline_stroke(&self, visuals: &egui::Visuals) -> egui::Stroke {
+        visuals.widgets.noninteractive.bg_stroke
+    }
+
+    fn tab_text_color(
+        &self,
+        visuals: &egui::Visuals,
+        _tiles: &Tiles<Tab>,
+        _tile_id: TileId,
+        state: &egui_tiles::TabState,
+    ) -> egui::Color32 {
+        if state.active {
+            visuals.strong_text_color()
+        } else {
+            visuals.weak_text_color()
+        }
     }
 
     fn is_tab_closable(&self, _tiles: &Tiles<Tab>, _tile_id: TileId) -> bool {
@@ -894,11 +1036,25 @@ impl App {
             request.answer(answer);
         }
 
-        egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Slash)) {
+            self.show_keys = !self.show_keys;
+        }
+        egui::Panel::left("activity")
+            .resizable(false)
+            .exact_size(ACTIVITY_WIDTH)
+            .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
+            .show(ui, |ui| self.activity_bar(ui));
+        let mut sidebar_open = self.workspace.sidebar_open;
         egui::Panel::left("sidebar")
             .resizable(true)
-            .default_size(280.0)
-            .show(ui, |ui| self.sidebar(ui));
+            .default_size(260.0)
+            .frame(
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .fill(ui.visuals().panel_fill),
+            )
+            .show_collapsible(ui, &mut sidebar_open, |ui| self.sidebar(ui));
+        self.workspace.sidebar_open = sidebar_open;
         self.window_ui(ui, 0);
         for index in 1..self.workspace.windows.len() {
             let window = &self.workspace.windows[index];
@@ -912,6 +1068,13 @@ impl App {
             });
         }
 
+        if self.show_keys
+            && egui::Modal::new(egui::Id::unique("keys"))
+                .show(&ctx, keys::ui)
+                .should_close()
+        {
+            self.show_keys = false;
+        }
         self.drag_title(&ctx);
         if self.content.review.take_changed() {
             self.watcher.refresh_now();
@@ -955,6 +1118,10 @@ mod tests {
     use crate::testing::TempDir;
 
     fn harness(name: &str) -> (Harness<'static, App>, TempDir) {
+        harness_stepping(name, 0.25)
+    }
+
+    fn harness_stepping(name: &str, step_dt: f32) -> (Harness<'static, App>, TempDir) {
         let (repo, dir) = temp_repo(
             name,
             &[
@@ -966,8 +1133,10 @@ mod tests {
         let mut app = App::new(repo, Workspace::default(), egui::Context::default());
         app.apply(snapshot);
         let mut harness = Harness::builder()
+            .with_step_dt(step_dt)
             .with_size(egui::vec2(1000.0, 700.0))
             .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        theme::apply(&harness.ctx);
         harness.run();
         (harness, dir)
     }
@@ -977,6 +1146,35 @@ mod tests {
         let workspace = Workspace::default();
         let builder = viewport(Path::new("/work/shop"), &workspace.windows[0]);
         assert_eq!(builder.title.as_deref(), Some("Shepherd — /work/shop"));
+    }
+
+    #[test]
+    fn opens_and_closes_the_sidebar_from_the_bar_of_icons_and_shows_the_keys() {
+        let (mut harness, _dir) = harness("activity-bar");
+        harness.get_by_label("README.md");
+
+        harness.get_by_label("Files").click();
+        for _ in 0..10 {
+            harness.run();
+        }
+        assert!(!harness.state().workspace.sidebar_open);
+        assert!(harness.query_by_label("README.md").is_none());
+
+        harness.get_by_label("Changes").click();
+        harness.run();
+        assert!(harness.state().workspace.sidebar_open);
+        assert_eq!(harness.state().workspace.sidebar, Sidebar::Changes);
+
+        harness.get_by_label("Keyboard shortcuts").click();
+        harness.run();
+        harness.get_by_label("Next unreviewed hunk");
+        harness.key_press(Key::Escape);
+        harness.run();
+        assert!(harness.query_by_label("Next unreviewed hunk").is_none());
+
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Slash);
+        harness.run();
+        harness.get_by_label("Next unreviewed hunk");
     }
 
     fn open_tabs(harness: &Harness<'_, App>) -> Vec<Vec<Tab>> {
@@ -1525,6 +1723,7 @@ mod tests {
         assert!(harness.get_by_role(egui::Role::TextInput).is_focused());
         harness.key_press(Key::Enter);
         harness.run();
+        assert!(harness.state().search_in.is_none());
 
         harness.event(egui::Event::Text("bye".to_string()));
         harness.run();
@@ -1533,6 +1732,32 @@ mod tests {
             fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
             "fn main() {\n    println!(\"bye\");\n}\n"
         );
+    }
+
+    #[test]
+    fn opens_the_search_in_files_with_shift_pressed_twice() {
+        let (mut harness, _dir) = harness_stepping("double-shift", 0.05);
+        let shift = |harness: &mut Harness<'_, App>, modifiers: Modifiers| {
+            harness.event(egui::Event::Key {
+                key: Key::ShiftLeft,
+                physical_key: Some(Key::ShiftLeft),
+                pressed: modifiers.shift,
+                repeat: false,
+                modifiers,
+            });
+            harness.event(egui::Event::ModifiersChanged(modifiers));
+            harness.step();
+        };
+        for _ in 0..2 {
+            shift(&mut harness, Modifiers::SHIFT);
+            shift(&mut harness, Modifiers::NONE);
+        }
+        harness.run();
+        assert!(harness.state().search_in.is_some());
+        assert!(harness.get_by_role(egui::Role::TextInput).is_focused());
+        harness.key_press(Key::Escape);
+        harness.run();
+        assert!(harness.state().search_in.is_none());
     }
 
     #[test]

@@ -86,7 +86,6 @@ enum Row {
 #[derive(Default)]
 pub struct ProjectSearch {
     query: String,
-    focus: bool,
     stale: bool,
     results: (Vec<FileFound>, bool),
     rows: Vec<Row>,
@@ -96,8 +95,7 @@ pub struct ProjectSearch {
 }
 
 impl ProjectSearch {
-    pub fn focus(&mut self, query: Option<String>) {
-        self.focus = true;
+    pub fn start_with(&mut self, query: Option<String>) {
         if let Some(query) = query {
             self.query = query;
             self.stale = true;
@@ -190,7 +188,31 @@ impl ProjectSearch {
         })
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, root: &Path, files: &[String]) -> Option<Reveal> {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        root: &Path,
+        files: &[String],
+    ) -> (Option<Reveal>, bool) {
+        let id = egui::Id::unique("project search");
+        let area = egui::Modal::default_area(id).anchor(Align2::CENTER_TOP, [0.0, 60.0]);
+        let modal = egui::Modal::new(id).area(area).show(ctx, |ui| {
+            let size = ctx.content_rect().size();
+            ui.set_width(760.0_f32.min(size.x - 40.0));
+            self.ui(ui, root, files, 440.0_f32.min(size.y - 180.0))
+        });
+        let closed =
+            modal.should_close() || modal.inner.as_ref().is_some_and(|reveal| reveal.focus);
+        (modal.inner, closed)
+    }
+
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        root: &Path,
+        files: &[String],
+        max_height: f32,
+    ) -> Option<Reveal> {
         if let Some(results) = self
             .running
             .as_ref()
@@ -202,14 +224,13 @@ impl ProjectSearch {
 
         let id = egui::Id::unique("project search query");
         let mut reveal = None;
-        if ui.memory(|m| m.has_focus(id)) {
-            for (key, forward) in [(Key::ArrowDown, true), (Key::ArrowUp, false)] {
-                if ui.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
-                    self.step(forward);
-                    reveal = self.reveal(false);
-                }
+        for (key, forward) in [(Key::ArrowDown, true), (Key::ArrowUp, false)] {
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
+                self.step(forward);
+                reveal = self.reveal(false);
             }
         }
+        let entered = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
         let filter = EventFilter {
             vertical_arrows: true,
             ..Default::default()
@@ -219,24 +240,24 @@ impl ProjectSearch {
             .event_filter(filter)
             .hint_text("Search in files");
         let query = ui.add(text_edit.desired_width(f32::INFINITY));
-        if std::mem::take(&mut self.focus) {
-            query.request_focus();
-        }
+        query.request_focus();
         if query.changed() {
             self.selected = None;
         }
         if query.changed() || std::mem::take(&mut self.stale) {
             self.start(root, files, ui.ctx());
         }
-        if query.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+        if entered {
             if self.selected.is_none() {
                 self.step(true);
             }
             reveal = self.reveal(true);
         }
+        if self.query.is_empty() {
+            return reveal;
+        }
         let status = match &self.results {
             _ if self.running.is_some() => "Searching…".to_string(),
-            _ if self.query.is_empty() => String::new(),
             (results, cut_short) => {
                 let count: usize = results.iter().map(|file| file.found.len()).sum();
                 let more = if *cut_short { "+" } else { "" };
@@ -244,6 +265,9 @@ impl ProjectSearch {
             }
         };
         ui.weak(status);
+        if self.rows.is_empty() {
+            return reveal;
+        }
         ui.separator();
 
         let results = &self.results.0;
@@ -251,11 +275,12 @@ impl ProjectSearch {
         let row_height = ui.text_style_height(&TextStyle::Body) + 6.0;
         let mut clicked = None;
         ui.spacing_mut().item_spacing.y = 0.0;
-        egui::ScrollArea::both().auto_shrink(false).show_rows(
-            ui,
-            row_height,
-            self.rows.len(),
-            |ui, range| {
+        let height = (row_height * self.rows.len() as f32).min(max_height);
+        egui::ScrollArea::both()
+            .auto_shrink([false, true])
+            .min_scrolled_height(height)
+            .max_height(height)
+            .show_rows(ui, row_height, self.rows.len(), |ui, range| {
                 if let Some(selected) = self
                     .selected
                     .filter(|_| std::mem::take(&mut self.scroll_to_selected))
@@ -326,8 +351,7 @@ impl ProjectSearch {
                         }
                     }
                 }
-            },
-        );
+            });
         if let Some(row) = clicked {
             self.selected = Some(row);
             reveal = self.reveal(true);

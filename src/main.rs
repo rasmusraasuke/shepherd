@@ -8,6 +8,8 @@ mod file_tree;
 mod file_view;
 mod git;
 mod highlight;
+mod icons;
+mod keys;
 mod line_diff;
 mod quick_open;
 mod review;
@@ -16,6 +18,7 @@ mod terminal;
 mod terminal_text;
 #[cfg(test)]
 mod testing;
+mod theme;
 mod watcher;
 mod word_diff;
 mod workspace;

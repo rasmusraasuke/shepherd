@@ -26,14 +26,23 @@ Without a path the current directory is opened. The path must be inside a git re
   take is highlighted, and its title follows the pointer between the windows. A window has
   its own tabs and splits. A tab can also be moved from the menu behind a right-click on
   it; closing a popped out window brings its tabs back to the main window.
-- **Sidebar.** Switches between *Files*, the tree of project files (everything git doesn't
-  ignore), *Changes*, the tree of changed files with their review progress, and *Search*.
+- **Sidebar.** A narrow bar of icons on the left edge chooses what the sidebar shows:
+  *Files* (a page), the tree of project files (everything git doesn't ignore), or *Changes*
+  (two sides of a diff), the tree of changed files with their review progress. Clicking the icon of
+  what is already shown closes the sidebar, leaving the icons; any icon opens it again.
+- **Keyboard shortcuts.** The keyboard icon at the bottom of the bar, or Cmd+/, shows all the
+  keys in one place. Esc or a click outside closes it.
 - **Files.** Click a file in the tree to open it as a tab. A file that is already open is
   brought to the front instead, in whichever window it is.
 - **Quick open.** Cmd+P (Ctrl+P outside macOS) finds a file by name: type a few characters,
   pick with the arrow keys, open with Enter. The file opens in the window the popup is in.
+- **Quiet by design.** No toolbar and no status bar: the bar of icons, the sidebar and the
+  tabs, with the code taking the rest. One calm palette in dark and in light, following the system, with a
+  single blue accent, soft diff colors and the macOS fonts (SF Pro for the interface, SF Mono
+  for code). The tab shown in each group is the one in bright text. With no tab open, the
+  main space shows the few keys to start with.
 - **Restored on restart.** Windows with their position and size, splits, open tabs, the
-  sidebar and the expanded directories are saved per repository in `.git/shepherd-layout.json`.
+  sidebar, open or closed, and the expanded directories are saved per repository in `.git/shepherd-layout.json`.
 
 ### Editing
 
@@ -47,10 +56,12 @@ Without a path the current directory is opened. The path must be inside a git re
 - **Find and replace.** Cmd+F finds text in the file, starting from what is selected. Letter
   case matters only when the query has capital letters. Enter and Shift+Enter go to the
   next and the previous place, Esc closes the bar.
-- **Search in files.** Cmd+Shift+F searches all project files from the sidebar, starting
-  from the text selected in the editor. As in the file, letter case matters only when the
+- **Search in files.** Shift pressed twice, or Cmd+Shift+F, opens a search of all project
+  files over the window it was pressed in, starting from the text selected in the editor; the
+  query stays for the next time. As in the file, letter case matters only when the
   query has capital letters. Up and Down go through the places found and show each in its
-  file while typing stays in the search; Enter or a click goes to the place. Results follow
+  file behind while typing stays in the search; Enter or a click goes to the place and closes
+  the search, Esc or a click outside only closes it. Results follow
   changes on disk; binary and very large files are left out, and up to 2000 places are shown.
 - **Syntax highlighting.** Kotlin, Java, Rust, JavaScript, TypeScript, Python, Go, JSON,
   shell scripts, TOML, YAML, HTML and CSS are highlighted, in colors close to IntelliJ's.
@@ -64,8 +75,9 @@ Without a path the current directory is opened. The path must be inside a git re
 | Alt+Backspace / Cmd+Backspace | Delete the word / the line before the cursor |
 | Cmd+Z / Cmd+Shift+Z           | Undo / redo                             |
 | Cmd+F                         | Find and replace                        |
-| Cmd+Shift+F                   | Search in files                         |
+| Shift Shift / Cmd+Shift+F     | Search in files                         |
 | Cmd+S                         | Save now                                |
+| Cmd+/                         | All keyboard shortcuts                  |
 
 ### Terminals
 
