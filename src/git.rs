@@ -1,3 +1,4 @@
+use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,16 +42,34 @@ impl Repo {
         let mut out = git(&self.root, &["diff", "--no-color", "--no-ext-diff", "-M", base])?;
         let untracked = git(&self.root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
         for path in untracked.split('\0').filter(|p| !p.is_empty()) {
-            // --no-index exits with 1 when files differ, which is always the case here
-            let output = Command::new("git")
-                .args(["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", path])
-                .current_dir(&self.root)
-                .output()
-                .map_err(|e| e.to_string())?;
-            out.push_str(&String::from_utf8_lossy(&output.stdout));
+            out.push_str(&added_file_diff(path, &self.root.join(path)));
         }
         Ok(out)
     }
+}
+
+/// The diff of a new file, as git gives it. Made here rather than by git, as running git for
+/// each of many new files takes long.
+fn added_file_diff(path: &str, file: &Path) -> String {
+    // gone already, or not a file
+    let Ok(bytes) = fs::read(file) else { return String::new() };
+    let mut out = format!("diff --git a/{path} b/{path}\nnew file mode 100644\n");
+    if bytes.contains(&0) {
+        out.push_str(&format!("Binary files /dev/null and b/{path} differ\n"));
+        return out;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if text.is_empty() {
+        return out;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    out.push_str(&format!("--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n", lines.len()));
+    for line in lines {
+        out.push('+');
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -91,7 +110,6 @@ pub struct DiffLine {
 
 #[derive(Debug)]
 pub struct Hunk {
-    pub header: String,
     /// The first old and new line numbers, as the header gives them.
     pub old_start: u32,
     pub new_start: u32,
@@ -207,7 +225,7 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
             file.binary = true;
         } else if line.starts_with("@@") {
             (old_no, new_no) = parse_hunk_start(line);
-            file.hunks.push(Hunk { header: line.to_string(), old_start: old_no, new_start: new_no, lines: Vec::new() });
+            file.hunks.push(Hunk { old_start: old_no, new_start: new_no, lines: Vec::new() });
             in_hunk = true;
         }
     }
@@ -272,6 +290,25 @@ pub mod tests {
     fn lists_project_files_without_ignored_ones() {
         let (repo, _dir) = temp_repo("list-files", &[("src/main.rs", ""), ("README.md", ""), (".gitignore", "/target\n"), ("target/debug/editor", "")]);
         assert_eq!(repo.list_files().unwrap(), [".gitignore", "README.md", "src/main.rs"]);
+    }
+
+    #[test]
+    fn diffs_new_files_as_git_does() {
+        let (repo, _dir) = temp_repo("added", &[("a.txt", "one\r\ntwo"), ("dir/b.bin", "\0\u{1}"), ("empty", "")]);
+        let git_diff = |path: &str| {
+            // --no-index exits with 1 when files differ
+            let output = Command::new("git").args(["diff", "--no-color", "--no-index", "--", "/dev/null", path]).current_dir(&repo.root).output().unwrap();
+            format!("{:?}", parse_diff(&String::from_utf8_lossy(&output.stdout)))
+        };
+        for path in ["a.txt", "dir/b.bin", "empty"] {
+            assert_eq!(format!("{:?}", parse_diff(&added_file_diff(path, &repo.root.join(path)))), git_diff(path), "{path}");
+        }
+        let files = parse_diff(&repo.raw_diff().unwrap());
+        assert_eq!(files.iter().map(|file| (file.path.as_str(), file.status, file.binary)).collect::<Vec<_>>(), [
+            ("a.txt", FileStatus::Added, false),
+            ("dir/b.bin", FileStatus::Added, true),
+            ("empty", FileStatus::Added, false)
+        ]);
     }
 
     const DIFF: &str = "\

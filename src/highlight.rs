@@ -150,6 +150,13 @@ impl Highlighter {
         self.found = None;
     }
 
+    /// The parts to color on each line of a text that doesn't change, such as a side of a diff.
+    pub fn spans_of(path: &Path, lines: &[String]) -> Vec<Spans> {
+        let Some(mut highlighter) = Self::for_path(path) else { return vec![Vec::new(); lines.len()] };
+        highlighter.update(&mut Buffer::new(&lines.join("\n")));
+        highlighter.find(0..lines.len())
+    }
+
     /// The parts to color on each of the given lines.
     pub fn spans(&mut self, lines: Range<usize>) -> &[Spans] {
         if self.found.as_ref().is_none_or(|(found_for, _)| *found_for != lines) {
@@ -199,21 +206,19 @@ impl Highlighter {
     }
 }
 
-/// A line of code laid out in the colors of its spans.
-pub fn layout_job(line: &str, spans: &[(Range<usize>, &str)], font: &FontId, text_color: Color32, dark: bool) -> LayoutJob {
+/// A line of code laid out in the colors of its spans, with the `marked` parts on a background
+/// of the `mark` color.
+pub fn layout_job(line: &str, spans: &[(Range<usize>, &str)], marked: &[Range<usize>], mark: Color32, font: &FontId, text_color: Color32, dark: bool) -> LayoutJob {
+    let mut cuts: Vec<usize> = spans.iter().map(|(range, _)| range).chain(marked).flat_map(|range| [range.start, range.end]).chain([0, line.len()]).collect();
+    cuts.sort_unstable();
+    cuts.dedup();
     let mut job = LayoutJob::default();
-    let mut append = |range: Range<usize>, color: Option<Color32>| {
-        if !range.is_empty() {
-            job.append(&line[range], 0.0, TextFormat::simple(font.clone(), color.unwrap_or(text_color)));
-        }
-    };
-    let mut at = 0;
-    for (range, name) in spans {
-        append(at..range.start, None);
-        append(range.clone(), color(name, dark));
-        at = range.end;
+    for cut in cuts.windows(2) {
+        let range = cut[0]..cut[1];
+        let color = spans.iter().find(|(span, _)| span.contains(&range.start)).and_then(|(_, name)| color(name, dark));
+        let background = if marked.iter().any(|marked| marked.contains(&range.start)) { mark } else { Color32::TRANSPARENT };
+        job.append(&line[range], 0.0, TextFormat { background, ..TextFormat::simple(font.clone(), color.unwrap_or(text_color)) });
     }
-    append(at..line.len(), None);
     job
 }
 
@@ -302,8 +307,35 @@ mod tests {
     #[test]
     fn lays_out_spans_in_their_colors() {
         let font = FontId::monospace(12.0);
-        let job = layout_job("val x = 1", &[(0..3, "keyword"), (8..9, "number")], &font, Color32::WHITE, true);
+        let job = layout_job("val x = 1", &[(0..3, "keyword"), (8..9, "number")], &[], Color32::RED, &font, Color32::WHITE, true);
         let colors: Vec<(String, Color32)> = job.sections.iter().map(|section| (job.text[section.byte_range.start.0..section.byte_range.end.0].to_string(), section.format.color)).collect();
         assert_eq!(colors, [("val".to_string(), color("keyword", true).unwrap()), (" x = ".to_string(), Color32::WHITE), ("1".to_string(), color("number", true).unwrap())]);
+    }
+
+    #[test]
+    fn lays_out_marked_parts_on_their_background() {
+        let font = FontId::monospace(12.0);
+        let job = layout_job("val x = 1", &[(0..3, "keyword")], &[2..5, 7..8], Color32::RED, &font, Color32::WHITE, true);
+        let sections: Vec<(String, Color32, Color32)> =
+            job.sections.iter().map(|section| (job.text[section.byte_range.start.0..section.byte_range.end.0].to_string(), section.format.color, section.format.background)).collect();
+        let keyword = color("keyword", true).unwrap();
+        let transparent = Color32::TRANSPARENT;
+        assert_eq!(
+            sections,
+            [
+                ("va".to_string(), keyword, transparent),
+                ("l".to_string(), keyword, Color32::RED), (" x".to_string(), Color32::WHITE, Color32::RED),
+                (" =".to_string(), Color32::WHITE, transparent),
+                (" ".to_string(), Color32::WHITE, Color32::RED),
+                ("1".to_string(), Color32::WHITE, transparent)
+            ]
+        );
+    }
+
+    #[test]
+    fn highlights_a_text_as_a_whole() {
+        let lines = ["/* a".to_string(), "b */ val x = 1".to_string()];
+        assert_eq!(Highlighter::spans_of(Path::new("a.kt"), &lines), [vec![(0..4, "comment")], vec![(0..4, "comment"), (5..8, "keyword"), (13..14, "number")]]);
+        assert_eq!(Highlighter::spans_of(Path::new("a.txt"), &lines), [vec![], vec![]]);
     }
 }

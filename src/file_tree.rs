@@ -14,7 +14,10 @@ pub struct FileTree {
     open_by_default: bool,
 }
 
-/// How a file is shown in the tree besides its name.
+/// What is shown for a file or a directory when it is right-clicked.
+pub type Menu<'a> = &'a mut dyn FnMut(&mut egui::Ui, &str);
+
+/// How a file or a directory is shown in the tree besides its name.
 #[derive(Default)]
 pub struct FileLook {
     pub color: Option<Color32>,
@@ -48,6 +51,11 @@ impl FileTree {
         self.update_rows(toggled);
     }
 
+    /// The files, in the order the tree shows them.
+    pub fn files(&self) -> &[String] {
+        &self.files
+    }
+
     fn is_open(&self, dir: &str, toggled: &BTreeSet<String>) -> bool {
         toggled.contains(dir) != self.open_by_default
     }
@@ -56,8 +64,16 @@ impl FileTree {
         self.rows = rows(&self.files, |dir| self.is_open(dir, toggled));
     }
 
-    /// Shows the tree with the selected file highlighted. Returns the file that was clicked, if any.
-    pub fn ui(&mut self, ui: &mut egui::Ui, toggled: &mut BTreeSet<String>, selected: Option<&str>, look: impl Fn(&str) -> FileLook) -> Option<String> {
+    /// Shows the tree with the selected file highlighted, and the `menu` for a file or a
+    /// directory on a right click. Returns the file that was clicked, if any.
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        toggled: &mut BTreeSet<String>,
+        selected: Option<&str>,
+        look: impl Fn(&str) -> FileLook,
+        mut menu: Option<Menu>,
+    ) -> Option<String> {
         let font = TextStyle::Body.resolve(ui.style());
         let row_height = ui.text_style_height(&TextStyle::Body) + 6.0;
         let indent = 14.0;
@@ -84,11 +100,14 @@ impl FileTree {
                     };
                     painter.add(egui::Shape::convex_polygon(arrow, ui.visuals().weak_text_color(), egui::Stroke::NONE));
                 }
-                let look = if row.is_dir { FileLook::default() } else { look(&row.path) };
+                let look = look(&row.path);
                 let color = look.color.unwrap_or(ui.visuals().text_color());
                 painter.text(egui::pos2(x + indent, y), Align2::LEFT_CENTER, row.name(), font.clone(), color);
                 if let Some(detail) = look.detail {
                     painter.text(egui::pos2(rect.right() - 6.0, y), Align2::RIGHT_CENTER, detail, font.clone(), ui.visuals().weak_text_color());
+                }
+                if let Some(menu) = &mut menu {
+                    response.context_menu(|ui| menu(ui, &row.path));
                 }
                 if response.clicked() {
                     clicked = Some((row.path.clone(), row.is_dir));

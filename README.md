@@ -93,22 +93,31 @@ Without a path the current directory is opened. The path must be inside a git re
 
 - **One file at a time.** The review covers all working-tree changes (staged, unstaged and
   untracked) against HEAD. *Changes* in the sidebar shows the changed files as a tree, like
-  the project tree but with only the files that changed. Next to each file is the number of
-  its hunks that are reviewed; added files are green, deleted ones red, and fully reviewed
-  ones dimmed. Directories are open until closed.
+  the project tree but with only the files that changed. Next to each file and directory is
+  the number of its hunks that are reviewed; added files are green, deleted ones red, and
+  fully reviewed files and directories dimmed. Directories are open until closed.
 - **Review tabs.** Click a file under *Changes* to see its changes in the review tab used
   last, so review tabs don't pile up. A file already shown in a review tab is brought to
   the front there. Cmd+click a file, or choose *New review* from the + of a tab bar, to open
   another review tab, for example in another split or window. Several reviews can be open
   at once, each on its own file.
-- **Context on request.** A review shows the changed parts with three lines around them.
-  Between the parts, *Expand up* and *Expand down* show 20 more lines above or below a part,
-  and *Expand all* the rest of the lines in between, until the whole file is shown.
-- **Reviewed marks.** Hunks are marked as reviewed with the checkbox or Space and collapse
-  to their header. A hunk becomes unreviewed again when its content changes. Reviewed marks
-  are kept in `.git/editor-review`.
+- **One piece of code.** A review reads like the file itself: the changed parts with three
+  lines around them, and a thin wavy line where unchanged lines are left out. A click on the
+  wavy line shows those lines. The current hunk has a bar at its left edge; a click on a hunk
+  makes it the current one.
+- **Easy to read.** Both sides of a diff are highlighted like the file itself, and where a
+  line was changed rather than replaced, the words that changed stand out. Long lines scroll
+  sideways under the line numbers; lines over 500 characters are cut. Files with many hunks
+  scroll smoothly, as only the hunks in sight are drawn.
+- **Reviewed marks.** Hunks are marked as reviewed with the checkbox next to their first line
+  or with Space, and their colors fade. *Mark file reviewed* at the top of a review marks the whole file, and a
+  right click on a file or directory under *Changes* marks all of it, reviewed or not. A hunk
+  becomes unreviewed again when its content changes. Reviewed marks are kept in
+  `.git/editor-review`.
+- **Moving on.** Once the last hunk of a file is marked, the review moves on to the next file
+  in the tree that has hunks left to review; so does n when nothing is left in the file.
 - The working tree is watched in the background, so changes made by an agent show up on
-  their own.
+  their own, also when an agent adds many new files.
 
 The keys work in the review tab used last, while no text field or terminal has the keyboard.
 
@@ -116,7 +125,7 @@ The keys work in the review tab used last, while no text field or terminal has t
 |-------|----------------------------------|
 | j / k | Next / previous hunk             |
 | Space | Mark the hunk reviewed (or not)  |
-| n     | Next unreviewed hunk in the file |
+| n     | Next unreviewed hunk, in the next file once the file is done |
 | r     | Refresh now                      |
 
 ## Development

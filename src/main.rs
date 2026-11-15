@@ -14,6 +14,7 @@ mod terminal_text;
 #[cfg(test)]
 mod testing;
 mod watcher;
+mod word_diff;
 mod workspace;
 
 use std::path::PathBuf;

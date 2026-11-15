@@ -23,13 +23,14 @@ around that loop.
 
 ## Where we are
 
-Milestones 1 and 2 are done: a workspace of tabs, splits and windows that survives
+Milestones 1 to 3 are done: a workspace of tabs, splits and windows that survives
 restarts, with file editing (undo, find and replace, syntax highlighting, saving on its own,
 reloading of files changed on disk), search across the project, terminals good enough for
 CLI agents, and a review of one file at a time, chosen from the tree of changed files, with
-context shown on request. README.md describes the features.
+context shown on request, highlighted diffs with changes within lines, progress per
+directory and moving on to the next file to review. README.md describes the features.
 
-Next is milestone 3: making the review pleasant to read.
+Next is milestone 4: agents in the loop.
 
 ## Milestones
 
@@ -69,7 +70,7 @@ All three kinds of tab become usable for real work.
 Done when: an agent runs in a terminal tab, its changes appear in a review tab beside it,
 and a file can be fixed by hand in a third.
 
-### 3. A review that is pleasant to read
+### 3. A review that is pleasant to read (completed)
 
 The review becomes good enough to review real agent output in every day.
 

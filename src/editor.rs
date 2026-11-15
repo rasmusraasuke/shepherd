@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use eframe::egui::text::CCursor;
-use eframe::egui::{self, Event, EventFilter, Galley, ImeEvent, Key, Modifiers, Sense, Vec2};
+use eframe::egui::{self, Color32, Event, EventFilter, Galley, ImeEvent, Key, Modifiers, Sense, Vec2};
 
 use crate::buffer::{Buffer, Move, Pos};
 use crate::code::CodeStyle;
@@ -245,7 +245,7 @@ impl Editor {
             for line in first..last {
                 let text = &buffer.lines()[line];
                 let galley = match spans {
-                    Some(spans) => ui.fonts_mut(|fonts| fonts.layout_job(highlight::layout_job(text, &spans[line - first], &style.font, style.text_color, dark))),
+                    Some(spans) => ui.fonts_mut(|fonts| fonts.layout_job(highlight::layout_job(text, &spans[line - first], &[], Color32::TRANSPARENT, &style.font, style.text_color, dark))),
                     None => layout(ui, text),
                 };
                 if let Some((start, end)) = buffer.selection().filter(|(start, end)| (start.line..=end.line).contains(&line)) {

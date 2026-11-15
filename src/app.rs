@@ -176,7 +176,7 @@ impl App {
         ui.separator();
         match self.workspace.sidebar {
             Sidebar::Files => {
-                if let Some(path) = self.content.file_tree.ui(ui, &mut self.workspace.expanded_dirs, None, |_| Default::default()) {
+                if let Some(path) = self.content.file_tree.ui(ui, &mut self.workspace.expanded_dirs, None, |_| Default::default(), None) {
                     self.action = Some(Action::Open(Tab::File(path), 0));
                 }
             }
@@ -391,7 +391,10 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         let active = self.last_review.as_ref().is_none_or(|last| last == tab);
         match tab {
             Tab::Review(path) => {
-                egui::Frame::new().inner_margin(8.0).show(ui, |ui| self.content.review.ui(ui, path.as_deref(), active));
+                let next = egui::Frame::new().inner_margin(8.0).show(ui, |ui| self.content.review.ui(ui, path.as_deref(), active)).inner;
+                if let Some(path) = next {
+                    *self.action = Some(Action::Review { path, new_tab: false });
+                }
             }
             Tab::File(path) => self.content.open_files.ui(ui, path),
             Tab::Terminal(id) => self.content.terminals.ui(ui, *id),
@@ -628,6 +631,19 @@ mod tests {
     }
 
     #[test]
+    fn moves_the_review_on_to_the_next_file_once_a_file_is_reviewed() {
+        let (mut harness, _dir) = harness("review-moves-on");
+        harness.get_by_label("Changes").click();
+        harness.run();
+        harness.get_by_label("README.md").click();
+        harness.run();
+        harness.key_press(Key::Space);
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![review("src/main.rs")]]);
+        assert_eq!(harness.state().content.review.progress(), (1, 2));
+    }
+
+    #[test]
     fn shows_more_of_a_changed_file_than_its_changes_when_asked() {
         let (mut harness, dir) = harness("review-context");
         let lines: Vec<String> = (1..=60).map(|n| format!("line {n}")).collect();
@@ -636,11 +652,12 @@ mod tests {
         fs::write(dir.path().join("README.md"), lines.join("\n").replace("line 30\n", "changed\n") + "\n").unwrap();
         harness.state_mut().action = Some(Action::Review { path: "README.md".to_string(), new_tab: false });
         harness.state().watcher.refresh_now();
-        wait_for(&mut harness, "Expand up");
+        wait_for(&mut harness, "Show 26 hidden lines");
         harness.get_by_label("Review: README.md");
-        harness.get_by_label("Expand up").click();
+        harness.get_by_label("Show 26 hidden lines").click();
         harness.run();
-        harness.get_by_label("Expand all 6 lines");
+        assert!(harness.query_by_label("Show 26 hidden lines").is_none());
+        harness.get_by_label("Show 27 hidden lines");
     }
 
     #[test]
