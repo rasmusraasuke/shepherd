@@ -6,3 +6,5 @@
 * Always add tests for new functionalities
 * Keep responsiveness in mind when adding creating UI
 * Never commit code yourself, give developer an opportunity to review changes first
+* Don't write comments in the code: no `//`, `///`, `//!` or block comments
+* Run `cargo fmt` when you are done writing code
