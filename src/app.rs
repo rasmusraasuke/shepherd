@@ -9,7 +9,7 @@ use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 use crate::buffer::Pos;
 use crate::comments;
 use crate::control::{self, Control};
-use crate::file_tree::FileTree;
+use crate::file_tree::{FileLook, FileTree};
 use crate::file_view::OpenFiles;
 use crate::git::Repo;
 use crate::icons::{self, Icon};
@@ -293,11 +293,19 @@ impl App {
         }
         match self.workspace.sidebar {
             Sidebar::Files => {
+                let dark_mode = ui.visuals().dark_mode;
+                let review = &self.content.review;
+                let look = |path: &str| FileLook {
+                    color: review
+                        .status(path)
+                        .map(|status| review::status_color(status, dark_mode)),
+                    ..Default::default()
+                };
                 if let Some(path) = self.content.file_tree.ui(
                     ui,
                     &mut self.workspace.expanded_dirs,
                     None,
-                    |_| Default::default(),
+                    look,
                     None,
                 ) {
                     self.action = Some(Action::Open(Tab::File(path), 0));

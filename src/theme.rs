@@ -24,6 +24,7 @@ pub struct Palette {
     pub found: Color32,
     pub added: Color32,
     pub removed: Color32,
+    pub modified: Color32,
 }
 
 pub const DARK: Palette = Palette {
@@ -40,6 +41,7 @@ pub const DARK: Palette = Palette {
     found: Color32::from_rgb(196, 152, 84),
     added: Color32::from_rgb(120, 172, 128),
     removed: Color32::from_rgb(212, 124, 118),
+    modified: Color32::from_rgb(104, 151, 187),
 };
 
 pub const LIGHT: Palette = Palette {
@@ -56,6 +58,7 @@ pub const LIGHT: Palette = Palette {
     found: Color32::from_rgb(214, 160, 40),
     added: Color32::from_rgb(40, 130, 62),
     removed: Color32::from_rgb(196, 58, 50),
+    modified: Color32::from_rgb(36, 99, 160),
 };
 
 pub fn palette(dark: bool) -> &'static Palette {

@@ -35,7 +35,8 @@ Without a path the current directory is opened. The path must be inside a git re
 - **Icons in the trees.** Folders show as folders, open or closed, and files by their type,
   in its own color: Kotlin, Java, Rust, JavaScript, TypeScript, Python, Go, JSON, YAML, TOML,
   Markdown, HTML, XML, CSS and shell scripts. Any other file, plain text included, shows a
-  page with lines.
+  page with lines. The names of new files are green and of changed files blue, in *Files*
+  as under *Changes*.
 - **Files.** Click a file in the tree to open it as a tab. A file that is already open is
   brought to the front instead, in whichever window it is.
 - **Quick open.** Cmd+P (Ctrl+P outside macOS) finds a file by name: type a few characters,
@@ -114,8 +115,8 @@ Without a path the current directory is opened. The path must be inside a git re
 - **One file at a time.** The review covers all working-tree changes (staged, unstaged and
   untracked) against HEAD. *Changes* in the sidebar shows the changed files as a tree, like
   the project tree but with only the files that changed. Next to each file and directory is
-  the number of its changed lines that are reviewed; added files are green, deleted ones red,
-  and fully reviewed files and directories dimmed. Directories are open until closed. A
+  the number of its changed lines that are reviewed; new files are green, changed ones blue
+  and deleted ones red, faded once they are fully reviewed. Directories are open until closed. A
   renamed file shows as a deleted and an added one.
 - **Review tabs.** Click a file under *Changes* to see its changes in the review tab used
   last, so review tabs don't pile up. A file already shown in a review tab is brought to

@@ -335,6 +335,12 @@ impl Review {
         self.progress_of("")
     }
 
+    pub fn status(&self, path: &str) -> Option<FileStatus> {
+        self.by_path
+            .get(path)
+            .map(|&index| self.files[index].diff.status)
+    }
+
     fn progress_of(&self, path: &str) -> (usize, usize) {
         self.progress.get(path).copied().unwrap_or_default()
     }
@@ -651,8 +657,7 @@ impl Review {
             ui.weak("No changes");
             return None;
         }
-        let (added, deleted) = status_colors(ui.visuals().dark_mode);
-        let weak = ui.visuals().weak_text_color();
+        let dark_mode = ui.visuals().dark_mode;
         let mut mark = None;
         let Self {
             tree,
@@ -674,12 +679,10 @@ impl Review {
         };
         let look = |path: &str| {
             let (done, total) = progress_of(path);
-            let color = match by_path.get(path).map(|&index| files[index].diff.status) {
-                _ if done == total => Some(weak),
-                Some(FileStatus::Added) => Some(added),
-                Some(FileStatus::Deleted) => Some(deleted),
-                _ => None,
-            };
+            let color = by_path
+                .get(path)
+                .map(|&index| status_color(files[index].diff.status, dark_mode))
+                .map(|color| fade(color, done == total));
             FileLook {
                 color,
                 detail: (total > 0).then(|| format!("{done}/{total}")),
@@ -987,9 +990,13 @@ fn send_button(ui: &mut egui::Ui, label: &str, enabled: bool, agents: &[Agent]) 
     }
 }
 
-fn status_colors(dark_mode: bool) -> (Color32, Color32) {
+pub fn status_color(status: FileStatus, dark_mode: bool) -> Color32 {
     let palette = theme::palette(dark_mode);
-    (palette.added, palette.removed)
+    match status {
+        FileStatus::Added | FileStatus::Renamed => palette.added,
+        FileStatus::Deleted => palette.removed,
+        FileStatus::Modified => palette.modified,
+    }
 }
 
 fn row_colors(kind: LineKind, dark_mode: bool) -> Option<(Color32, Color32)> {
@@ -2236,6 +2243,34 @@ diff --git a/b.txt b/b.txt
         review.set_reviewed("image.bin", true);
         refresh(&mut review);
         assert_eq!(review.progress(), (1, 1));
+    }
+
+    #[test]
+    fn tells_new_changed_and_deleted_files_apart_by_color() {
+        let (review, dir) = review(
+            "status",
+            &[
+                ("kept.txt", "a\n", "a\n"),
+                ("gone.txt", "a\n", "a\n"),
+                ("edited.txt", "a\n", "b\n"),
+            ],
+        );
+        drop(review);
+        fs::remove_file(dir.path().join("gone.txt")).unwrap();
+        dir.write("new.txt", "a\n");
+        let mut review = Review::new(Repo::open(dir.path()).unwrap());
+        refresh(&mut review);
+        let colors = ["new.txt", "edited.txt", "gone.txt", "kept.txt"]
+            .map(|path| review.status(path).map(|status| status_color(status, true)));
+        assert_eq!(
+            colors,
+            [
+                Some(theme::DARK.added),
+                Some(theme::DARK.modified),
+                Some(theme::DARK.removed),
+                None
+            ]
+        );
     }
 
     const TREE: &[(&str, &str, &str)] = &[
