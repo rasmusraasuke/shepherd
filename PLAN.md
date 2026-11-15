@@ -23,15 +23,18 @@ around that loop.
 
 ## Where we are
 
-Milestones 1 to 4 are done: a workspace of tabs, splits and windows that survives
+Milestones 1 to 5 are done: a workspace of tabs, splits and windows that survives
 restarts, with file editing (undo, find and replace, syntax highlighting, saving on its own,
 reloading of files changed on disk), search across the project, terminals good enough for
 CLI agents, and a review of one file at a time, chosen from the tree of changed files, with
 context shown on request, highlighted diffs with changes within lines, progress per
-directory and moving on to the next file to review, and review marks that are git's staging
-area, line by line. README.md describes the features.
+directory and moving on to the next file to review, review marks that are git's staging
+area, line by line, and agents in the loop: comments on lines sent to agents in terminal tabs,
+the state of the agents in the tab titles, new changes marked, and `editor ctl` for agents to
+read what the editor shows and have it show files and reviews. README.md describes the
+features.
 
-Next is milestone 5: agents in the loop.
+Next is milestone 6: editing inside the diff.
 
 ## Milestones
 
@@ -101,7 +104,7 @@ The review marks become git's staging area, and work line by line.
 Done when: reviewing an agent's change leaves exactly the reviewed lines staged, ready to be
 committed.
 
-### 5. Agents in the loop
+### 5. Agents in the loop (completed)
 
 The review turns from reading into steering.
 
@@ -111,7 +114,7 @@ The review turns from reading into steering.
 - A comment disappears once the lines it is attached to change; the changed hunk shows up
   as unreviewed again
 - The editor exposes its context to agents: current selection, open files, review state and
-  comments, diagnostics, terminal and run output, git state
+  comments, terminal and run output, git state (diagnostics follow with the language server)
 - Agents can act on the editor: open a file, point at a line, ask for review
 - See which terminals have an agent working, waiting for input or finished
 - Changes made by an agent since the last look are easy to tell apart from already-seen ones
@@ -168,6 +171,7 @@ The step that lets IntelliJ be closed for good.
 - Kotlin language server set up automatically for Gradle projects
 - The same intelligence inside the review: go to definition and find usages from a diff line,
   diagnostics shown on changed lines
+- Diagnostics given to agents through `editor ctl`
 - Structural editing helpers from the syntax tree: selection by syntax node, outline,
   folding, sensible indentation
 - Other languages come for free where a language server exists
@@ -221,5 +225,8 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
   no storage of their own, survive anything that keeps the index, and what is committed is
   what was reviewed. Staging done outside the editor, for example by an agent running
   `git add`, counts as reviewed.
+- **Agents through the terminal.** Text for an agent is pasted into its terminal, and agents
+  reach the editor with the `editor ctl` command over a socket, so any CLI agent works without
+  a plugin or a protocol of its own.
 - **Language server first.** Code understanding comes from the Kotlin language server.
   Deeper analysis is considered only when a concrete review feature needs it.

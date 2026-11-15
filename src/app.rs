@@ -6,13 +6,16 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Key, Modifiers, RichText, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 
+use crate::buffer::Pos;
+use crate::comments;
+use crate::control::{self, Control};
 use crate::file_tree::FileTree;
 use crate::file_view::OpenFiles;
 use crate::git::Repo;
 use crate::quick_open::{Outcome, QuickOpen};
-use crate::review::Review;
+use crate::review::{self, Review};
 use crate::search::{ProjectSearch, Reveal};
-use crate::terminal::Terminals;
+use crate::terminal::{Activity, Terminals};
 use crate::watcher::{Snapshot, Watcher};
 use crate::workspace::{Sidebar, Tab, Window, Workspace};
 
@@ -25,7 +28,10 @@ const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(1200.0, 800.0);
 const DRAG_TITLE_SHADOW: i8 = 16;
 
 pub struct App {
+    repo: Repo,
     watcher: Watcher,
+    /// Where agents reach the editor, unless that failed.
+    control: Option<Control>,
     content: Content,
     workspace: Workspace,
     /// The workspace as it was last written to disk.
@@ -64,6 +70,8 @@ enum Action {
     NewReview(usize, Option<TileId>),
     /// Show the changes of a file in a review tab, in a new one when `new_tab` is set.
     Review { path: String, new_tab: bool },
+    /// Send text to the agent in a terminal.
+    Send { terminal: u64, text: String },
     /// Search across the project, in the sidebar of the main window.
     Search,
     /// Open the file and select a place in it.
@@ -81,6 +89,29 @@ struct Drag {
     tile: TileId,
     /// Where the pointer is on the screen.
     point: egui::Pos2,
+}
+
+const CONTROL_HELP: &str = "\
+editor ctl: ask the editor what the user sees, or have it show something.
+
+  editor ctl context              All of the below in one go
+  editor ctl selection            The place and the text selected in the file edited last
+  editor ctl comments             The user's review comments on the uncommitted changes
+  editor ctl review-state         Which changed lines are reviewed, by file; reviewed means staged
+  editor ctl terminals            The terminals and what their programs are doing
+  editor ctl terminal <id>        What a terminal shows
+  editor ctl open <path>[:<line>[-<line>]]
+                                  Open a file, selecting the lines
+  editor ctl review [<path>]      Show the changes of a file for review, or of the next file to review";
+
+/// A path with an optional line or range of lines, as in \"src/main.rs:12-14\".
+fn parse_place(place: &str) -> (&str, Option<(usize, usize)>) {
+    let Some((path, lines)) = place.rsplit_once(':') else { return (place, None) };
+    let (first, last) = lines.split_once('-').unwrap_or((lines, lines));
+    match (first.parse(), last.parse()) {
+        (Ok(first), Ok(last)) => (path, Some((first, last))),
+        _ => (place, None),
+    }
 }
 
 /// The title and placement of a window as it is first shown.
@@ -112,7 +143,8 @@ fn viewport_id(window: &Window) -> ViewportId {
 
 impl App {
     pub fn new(repo: Repo, workspace: Workspace, ctx: egui::Context) -> Self {
-        let content = Content {
+        let control = Control::start(ctx.clone()).inspect_err(|e| eprintln!("{e}")).ok();
+        let mut content = Content {
             review: Review::new(repo.clone()),
             open_files: OpenFiles::new(repo.root.clone()),
             file_tree: FileTree::default(),
@@ -122,7 +154,14 @@ impl App {
             error: None,
             root: repo.root.clone(),
         };
+        if let Some(control) = &control {
+            // the programs in the terminals find `editor ctl` and the socket it talks to
+            let path = std::env::var("PATH").unwrap_or_default();
+            content.terminals.set_env("PATH", format!("{}:{path}", control.bin_dir().display()));
+            content.terminals.set_env(control::SOCKET_VARIABLE, control.socket().display().to_string());
+        }
         Self {
+            control,
             content,
             saved: workspace.clone(),
             viewports: workspace.windows.iter().map(|window| (window.id, viewport(&repo.root, window))).collect(),
@@ -132,7 +171,8 @@ impl App {
             quick_open: None,
             drag: None,
             action: None,
-            watcher: Watcher::spawn(repo, ctx),
+            watcher: Watcher::spawn(repo.clone(), ctx),
+            repo,
         }
     }
 
@@ -248,7 +288,10 @@ impl App {
                 ui.centered_and_justified(|ui| ui.weak("Cmd+P to open a file"));
                 return;
             }
+            let agents = self.content.terminals.agents();
             let mut behavior = TabBehavior {
+                font: egui::TextStyle::Button.resolve(ui.style()),
+                agents: &agents,
                 content: &mut self.content,
                 window: index,
                 window_count,
@@ -309,6 +352,7 @@ impl App {
                 let window = self.workspace.show_review(&path, new_tab);
                 self.focus(window, ctx);
             }
+            Action::Send { terminal, text } => self.content.terminals.send(terminal, &text),
             Action::Search => {
                 self.workspace.sidebar = Sidebar::Search;
                 let selected = self.content.open_files.selected_text();
@@ -322,6 +366,108 @@ impl App {
             }
             Action::CloseWindow(index) => self.workspace.close_window(index),
         }
+    }
+
+    /// Answers a command of `editor ctl`, sent by a program in a terminal such as an agent.
+    fn answer(&mut self, args: &[String], ctx: &egui::Context) -> Result<String, String> {
+        let arg = |index: usize| args.get(index).map(String::as_str);
+        let content = &self.content;
+        match (arg(0), arg(1)) {
+            (None | Some("help"), _) => Ok(CONTROL_HELP.to_string()),
+            (Some("context"), None) => Ok(self.context()),
+            (Some("selection"), None) => Ok(self.selection()),
+            (Some("comments"), None) => match content.review.comments() {
+                [] => Ok("No review comments".to_string()),
+                all => Ok(comments::feedback(all)),
+            },
+            (Some("review-state"), None) => Ok(self.review_state()),
+            (Some("terminals"), None) => Ok(self.terminals()),
+            (Some("terminal"), Some(id)) => id.parse().ok().and_then(|id| content.terminals.screen(id)).ok_or_else(|| format!("No terminal {id}")),
+            (Some("open"), Some(place)) => {
+                let (path, lines) = parse_place(place);
+                if !content.files.iter().any(|file| file == path) {
+                    return Err(format!("No file {path} in the project"));
+                }
+                let (start, end) = match lines {
+                    Some((first, last)) => (Pos::new(first.saturating_sub(1), 0), Pos::new(last.saturating_sub(1), usize::MAX)),
+                    None => (Pos::default(), Pos::default()),
+                };
+                self.perform(Action::Reveal(Reveal { path: path.to_string(), start, end, focus: false }), ctx);
+                Ok(format!("Opened {place}"))
+            }
+            (Some("review"), path) => {
+                let Some(path) = path.map(str::to_string).or_else(|| content.review.first_unreviewed()) else { return Ok("Everything is reviewed".to_string()) };
+                if !content.review.files_progress().iter().any(|(file, _)| *file == path) {
+                    return Err(format!("No changes in {path}"));
+                }
+                self.perform(Action::Review { path: path.clone(), new_tab: false }, ctx);
+                Ok(format!("Showing the review of {path}"))
+            }
+            _ => Err(format!("Unknown command: {}\n\n{CONTROL_HELP}", args.join(" "))),
+        }
+    }
+
+    /// Everything the editor shows, for an agent.
+    fn context(&self) -> String {
+        let tabs: Vec<String> = self.workspace.windows.iter().flat_map(|window| window.tabs()).map(|tab| match tab {
+            Tab::Review(path) => format!("- review of {}", path.as_deref().unwrap_or("no file yet")),
+            Tab::File(path) => format!("- file {path}"),
+            Tab::Terminal(id) => format!("- terminal {id}"),
+        }).collect();
+        let comments = self.content.review.comments().len();
+        [
+            format!("Repository: {} (branch {})", self.content.root.display(), self.repo.branch()),
+            format!("Open tabs:\n{}", tabs.join("\n")),
+            format!("Selection: {}", self.selection()),
+            self.review_state(),
+            format!("Review comments: {comments}{}", if comments > 0 { " (`editor ctl comments` shows them)" } else { "" }),
+            self.terminals(),
+        ]
+        .join("\n\n")
+    }
+
+    fn selection(&self) -> String {
+        match self.content.open_files.selection() {
+            None => "nothing, no file was edited yet".to_string(),
+            Some(selection) => {
+                let place = |pos: Pos| format!("{}:{}", pos.line + 1, pos.col + 1);
+                let mut out = format!("{}:{}", selection.path, place(selection.start));
+                if selection.end != selection.start {
+                    out.push_str(&format!(" to {}\n{}", place(selection.end), selection.text));
+                }
+                out
+            }
+        }
+    }
+
+    fn review_state(&self) -> String {
+        let review = &self.content.review;
+        let (done, total) = review.progress();
+        let files: Vec<String> = review.files_progress().into_iter().map(|(path, (done, total))| format!("- {path}: {done}/{total}")).collect();
+        let files = if files.is_empty() { "No uncommitted changes".to_string() } else { files.join("\n") };
+        format!("Review: {done}/{total} changed lines reviewed. Reviewed lines are staged in git, the others are not.\n{files}")
+    }
+
+    fn terminals(&self) -> String {
+        let terminals = &self.content.terminals;
+        let lines: Vec<String> = self
+            .workspace
+            .windows
+            .iter()
+            .flat_map(|window| window.tabs())
+            .filter_map(|tab| if let Tab::Terminal(id) = tab { Some(*id) } else { None })
+            .map(|id| {
+                let activity = match terminals.activity(id) {
+                    Some(Activity::Working) => "working",
+                    Some(Activity::Waiting) => "stopped, waiting",
+                    Some(Activity::Idle) => "idle",
+                    Some(Activity::Ended) => "ended",
+                    None => "not started",
+                };
+                format!("- terminal {id}: {} ({activity})", terminals.title(id).unwrap_or_else(|| "Terminal".to_string()))
+            })
+            .collect();
+        if lines.is_empty() { "Terminals: none".to_string() } else { format!("Terminals (`editor ctl terminal <id>` shows one):\n{}", lines.join("\n")) }
     }
 
     /// Brings the window to the front.
@@ -369,6 +515,10 @@ impl App {
 /// Tells the tiles of a window how to show its tabs.
 struct TabBehavior<'a> {
     content: &'a mut Content,
+    /// The terminals that review comments can be sent to.
+    agents: &'a [review::Agent],
+    /// The font of the titles of the tabs.
+    font: egui::FontId,
     /// Index of the window the tabs are in.
     window: usize,
     window_count: usize,
@@ -391,9 +541,11 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         let active = self.last_review.as_ref().is_none_or(|last| last == tab);
         match tab {
             Tab::Review(path) => {
-                let next = egui::Frame::new().inner_margin(8.0).show(ui, |ui| self.content.review.ui(ui, path.as_deref(), active)).inner;
-                if let Some(path) = next {
-                    *self.action = Some(Action::Review { path, new_tab: false });
+                let outcome = egui::Frame::new().inner_margin(8.0).show(ui, |ui| self.content.review.ui(ui, path.as_deref(), active, self.agents)).inner;
+                match outcome {
+                    Some(review::Outcome::Show(path)) => *self.action = Some(Action::Review { path, new_tab: false }),
+                    Some(review::Outcome::Send { terminal, text }) => *self.action = Some(Action::Send { terminal, text }),
+                    None => {}
                 }
             }
             Tab::File(path) => self.content.open_files.ui(ui, path),
@@ -403,10 +555,20 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
     }
 
     fn tab_title_for_pane(&mut self, tab: &Tab) -> egui::WidgetText {
-        match tab {
-            Tab::Terminal(id) => self.content.terminals.title(*id).unwrap_or_else(|| tab.title().to_string()).into(),
-            _ => tab.title().into(),
-        }
+        let Tab::Terminal(id) = tab else { return tab.title().into() };
+        let terminals = &self.content.terminals;
+        let title = terminals.title(*id).unwrap_or_else(|| tab.title());
+        // a dot in front tells what the program is doing: blue while it works, orange once it stopped
+        let dot = match terminals.activity(*id) {
+            Some(Activity::Working) => egui::Color32::from_rgb(90, 150, 230),
+            Some(Activity::Waiting) => egui::Color32::from_rgb(230, 150, 50),
+            _ => return title.into(),
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append("● ", 0.0, egui::TextFormat::simple(self.font.clone(), dot));
+        // the color of the title is the one of the tab
+        job.append(&title, 0.0, egui::TextFormat::simple(self.font.clone(), egui::Color32::PLACEHOLDER));
+        job.into()
     }
 
     fn top_bar_right_ui(&mut self, _tiles: &Tiles<Tab>, ui: &mut egui::Ui, tile_id: TileId, _tabs: &egui_tiles::Tabs, _scroll_offset: &mut f32) {
@@ -486,6 +648,11 @@ impl App {
         let ctx = ui.ctx().clone();
         if let Some(snapshot) = self.watcher.changed() {
             self.apply(snapshot);
+        }
+        self.content.terminals.update(&ctx);
+        for request in self.control.as_ref().map(Control::requests).unwrap_or_default() {
+            let answer = self.answer(&request.args, &ctx);
+            request.answer(answer);
         }
 
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
@@ -938,8 +1105,8 @@ mod tests {
         harness.key_press(Key::Enter);
         let start = std::time::Instant::now();
         // cat repeats the line after the terminal echoed it
-        while harness.state().content.terminals.screen(1) != "j hello\nj hello" {
-            assert!(start.elapsed() < Duration::from_secs(5), "{:?}", harness.state().content.terminals.screen(1));
+        while harness.state().content.terminals.screen(1).unwrap() != "j hello\nj hello" {
+            assert!(start.elapsed() < Duration::from_secs(5), "{:?}", harness.state().content.terminals.screen(1).unwrap());
             harness.run();
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -952,10 +1119,50 @@ mod tests {
         assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), Tab::Terminal(1), Tab::Terminal(2)]]);
         let tile = harness.state().workspace.windows[0].tree.tiles.find_pane(&Tab::Terminal(1)).unwrap();
         let state = harness.state_mut();
-        let mut behavior = TabBehavior { content: &mut state.content, window: 0, window_count: 1, dragged_out: false, focused: &mut None, last_review: &mut None, action: &mut None };
+        let mut behavior = TabBehavior { content: &mut state.content, agents: &[], font: egui::FontId::default(), window: 0, window_count: 1, dragged_out: false, focused: &mut None, last_review: &mut None, action: &mut None };
         egui_tiles::Behavior::on_tab_close(&mut behavior, &mut state.workspace.windows[0].tree.tiles, tile);
         assert!(!harness.state().content.terminals.is_open(1));
         assert!(harness.state().content.terminals.is_open(2));
+    }
+
+    /// Has the editor answer a command of `editor ctl`, as sent from a terminal.
+    fn ask(harness: &mut Harness<'_, App>, args: &[&str]) -> Result<String, String> {
+        let socket = harness.state().control.as_ref().unwrap().socket();
+        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        let asking = std::thread::spawn(move || control::ask(&socket, &args));
+        while !asking.is_finished() {
+            harness.run();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        asking.join().unwrap()
+    }
+
+    #[test]
+    fn agents_ask_the_editor_what_it_shows_and_have_it_show_files() {
+        let (mut harness, _dir) = harness("control");
+        assert_eq!(ask(&mut harness, &["open", "README.md:1"]), Ok("Opened README.md:1".to_string()));
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("README.md")]]);
+        assert!(ask(&mut harness, &["open", "missing.rs"]).is_err());
+
+        // the line selected is the selection
+        harness.key_press(Key::Escape);
+        harness.state_mut().action = Some(Action::Reveal(Reveal { path: "README.md".to_string(), start: Pos::new(0, 2), end: Pos::new(0, 8), focus: true }));
+        harness.run();
+        let context = ask(&mut harness, &["context"]).unwrap();
+        for part in ["Open tabs:\n- review of no file yet\n- file README.md", "Selection: README.md:1:3 to 1:9\nReadme", "Review: 0/2 changed lines reviewed", "- src/main.rs: 0/1", "Review comments: 0"] {
+            assert!(context.contains(part), "{part:?} not in:\n{context}");
+        }
+
+        assert_eq!(ask(&mut harness, &["review"]), Ok("Showing the review of src/main.rs".to_string()));
+        assert_eq!(open_tabs(&harness), [vec![review("src/main.rs"), file("README.md")]]);
+        assert!(ask(&mut harness, &["what"]).unwrap_err().starts_with("Unknown command: what"));
+    }
+
+    #[test]
+    fn finds_the_lines_in_a_place() {
+        assert_eq!(parse_place("src/a.rs:12-14"), ("src/a.rs", Some((12, 14))));
+        assert_eq!(parse_place("a.rs:3"), ("a.rs", Some((3, 3))));
+        assert_eq!(parse_place("a:b.rs"), ("a:b.rs", None));
     }
 
     #[test]

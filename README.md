@@ -88,6 +88,10 @@ Without a path the current directory is opened. The path must be inside a git re
 - **Restarting and closing.** When the program ends, Enter or *Restart* starts it again in
   the same tab. Closing the tab ends the program. A terminal tab that is open when the
   editor quits comes back with a new shell on the next start.
+- **What the program is doing.** A blue dot in front of a terminal's title shows that its
+  program is working: it keeps writing to the terminal, as agents do while they work. Once it
+  stops, the dot turns orange, until the terminal gets the keyboard again: an agent is done,
+  or waits for an answer.
 
 ### Review
 
@@ -129,6 +133,10 @@ Without a path the current directory is opened. The path must be inside a git re
   again once it has caught up.
 - **Moving on.** Once the last hunk of a file is marked, the review moves on to the next file
   in the tree that has hunks left to review; so does n when nothing is left in the file.
+- **New changes.** Changes that came in since you last looked are marked with a blue bar
+  between the line numbers and the code, and their files and directories with a blue dot
+  under *Changes*. A hunk counts as looked at once it was the current one or was marked;
+  what there is when the editor starts counts as looked at.
 - The working tree is watched in the background, so changes made by an agent show up on
   their own, also when an agent adds many new files.
 
@@ -140,6 +148,37 @@ The keys work in the review tab used last, while no text field or terminal has t
 | Space | Mark the hunk reviewed (or not), staging it |
 | n     | Next unreviewed hunk, in the next file once the file is done |
 | r     | Refresh now                      |
+
+### Agents in the loop
+
+- **Comments.** Under the pointer a line of a review shows a + next to the reviewed marks.
+  Click it to select the line, Shift+click another one to select the lines between, or drag
+  from it over the lines. Write a comment in the box below the review and *Comment*
+  (Cmd+Enter) adds it under the lines; × takes it away. Comments are collected across files
+  until *Send N comments* at the top of a review sends them all to an agent as one message,
+  each with its lines quoted as a diff and its file mentioned as `@path/of/file`, the way
+  agents such as Claude Code take a file into the conversation. Sent comments stay, faded, until their lines change.
+- **Short-lived.** A comment disappears once the lines it is on change, as the changed lines
+  show up as not reviewed anyway. Comments are kept while the editor runs, not across restarts.
+- **Asking an agent.** *Ask agent* in the same box sends the selected lines with what was
+  written to an agent right away, without keeping a comment.
+- **Which agent.** Text goes to a terminal tab, pasted as if typed and followed by Enter, so
+  any CLI agent works. With several terminals open, the buttons become menus listing them,
+  the one used last first.
+- **`editor ctl`.** Programs in the editor's terminals can ask the editor what the user sees
+  and have it show things, with the `editor ctl` command that is on the PATH there. Tell
+  your agent about it, for example in `CLAUDE.md` or `AGENTS.md`:
+
+  | Command | What it does |
+  |---------|--------------|
+  | `editor ctl context` | All of the below in one go |
+  | `editor ctl selection` | The place and the text selected in the file edited last |
+  | `editor ctl comments` | The review comments on the uncommitted changes |
+  | `editor ctl review-state` | Which changed lines are reviewed (staged), by file |
+  | `editor ctl terminals` | The terminals and what their programs are doing |
+  | `editor ctl terminal <id>` | What a terminal shows |
+  | `editor ctl open <path>[:<line>[-<line>]]` | Opens a file, selecting the lines |
+  | `editor ctl review [<path>]` | Shows a file's changes for review, or the next file to review |
 
 ## Development
 

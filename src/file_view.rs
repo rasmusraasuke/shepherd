@@ -19,6 +19,16 @@ const SAVE_DELAY: Duration = Duration::from_secs(1);
 pub struct OpenFiles {
     root: PathBuf,
     files: HashMap<String, OpenFile>,
+    /// The file whose editor had the keyboard last.
+    last_active: Option<String>,
+}
+
+/// What is selected in a file, or where the cursor is when nothing is.
+pub struct Selection {
+    pub path: String,
+    pub start: Pos,
+    pub end: Pos,
+    pub text: String,
 }
 
 struct OpenFile {
@@ -35,7 +45,7 @@ struct OpenFile {
 
 impl OpenFiles {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, files: HashMap::new() }
+        Self { root, files: HashMap::new(), last_active: None }
     }
 
     fn file(&mut self, path: &str) -> &mut OpenFile {
@@ -51,6 +61,14 @@ impl OpenFiles {
     pub fn selected_text(&self) -> Option<String> {
         let file = self.files.values().find(|file| file.editor.is_active())?;
         file.buffer.as_ref().ok()?.selected_text().filter(|text| !text.contains('\n'))
+    }
+
+    /// What is selected in the file edited last.
+    pub fn selection(&self) -> Option<Selection> {
+        let path = self.last_active.as_ref()?;
+        let buffer = self.files.get(path)?.buffer.as_ref().ok()?;
+        let (start, end) = buffer.selection().unwrap_or((buffer.cursor(), buffer.cursor()));
+        Some(Selection { path: path.clone(), start, end, text: buffer.selected_text().unwrap_or_default() })
     }
 
     /// Selects a place in the file and shows it in the middle of the editor, which takes the
@@ -107,7 +125,12 @@ impl OpenFiles {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
         match &mut file.buffer {
-            Ok(buffer) => file.editor.ui(ui, path, buffer),
+            Ok(buffer) => {
+                file.editor.ui(ui, path, buffer);
+                if file.editor.is_active() {
+                    self.last_active = Some(path.to_string());
+                }
+            }
             Err(message) => {
                 ui.centered_and_justified(|ui| ui.weak(message.as_str()));
             }

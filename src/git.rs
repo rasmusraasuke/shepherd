@@ -50,6 +50,11 @@ impl Repo {
         Ok(files)
     }
 
+    /// The name of the branch checked out, or why there is none.
+    pub fn branch(&self) -> String {
+        git(&self.root, &["symbolic-ref", "--short", "-q", "HEAD"]).map_or_else(|_| "none (detached HEAD)".to_string(), |name| name.trim().to_string())
+    }
+
     /// HEAD, or the empty tree in a repository without commits.
     fn base(&self) -> &'static str {
         if git(&self.root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() { "HEAD" } else { EMPTY_TREE }
@@ -300,19 +305,26 @@ pub enum FileStatus {
     Renamed,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum LineKind {
     Context,
     Added,
     Removed,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DiffLine {
     pub kind: LineKind,
     pub old_no: Option<u32>,
     pub new_no: Option<u32>,
     pub text: String,
+}
+
+impl DiffLine {
+    /// The number of the line where a review shows it: in the new file, or in the old one when removed.
+    pub fn number(&self) -> u32 {
+        self.new_no.or(self.old_no).unwrap_or(0)
+    }
 }
 
 #[derive(Debug, PartialEq)]

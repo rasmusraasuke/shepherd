@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener, Notify, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
@@ -23,6 +24,30 @@ const PADDING: f32 = 4.0;
 
 /// Answers a program that asked for the clipboard.
 type ClipboardAnswer = Arc<dyn Fn(&str) -> String + Sync + Send>;
+
+/// A program is working while it writes to the terminal, as agents keep drawing while they work.
+const BUSY: Duration = Duration::from_millis(1500);
+
+/// Output this soon after a key press is the terminal showing what was typed, not work.
+const ECHO: Duration = Duration::from_millis(1000);
+
+/// What the program in a terminal is doing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Activity {
+    Working,
+    /// It stopped writing since the terminal had the keyboard last: an agent is done or waits
+    /// for an answer.
+    Waiting,
+    Idle,
+    Ended,
+}
+
+/// What the program wrote lately, as seen from the thread that reads it.
+#[derive(Default)]
+struct Output {
+    last: Option<Instant>,
+    ended: bool,
+}
 
 /// The size of a terminal in cells.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -50,10 +75,18 @@ impl Dimensions for Size {
 struct Listener {
     events: Sender<TermEvent>,
     ctx: egui::Context,
+    output: Arc<Mutex<Output>>,
 }
 
 impl EventListener for Listener {
     fn send_event(&self, event: TermEvent) {
+        if let Ok(mut output) = self.output.lock() {
+            match event {
+                TermEvent::Wakeup => output.last = Some(Instant::now()),
+                TermEvent::Exit | TermEvent::ChildExit(_) => output.ended = true,
+                _ => {}
+            }
+        }
         let _ = self.events.send(event);
         self.ctx.request_repaint();
     }
@@ -69,6 +102,10 @@ pub struct Terminals {
     focus_on_start: HashSet<u64>,
     /// Reads the text on the clipboard for programs that are allowed to.
     read_clipboard: fn() -> Option<String>,
+    /// The terminal that had the keyboard last.
+    last_used: Option<u64>,
+    /// Variables the programs get besides the editor's own.
+    env: HashMap<String, String>,
 }
 
 fn read_clipboard() -> Option<String> {
@@ -85,14 +122,59 @@ fn size_for(rect: egui::Rect, style: &CodeStyle) -> Size {
 
 impl Terminals {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, shell: None, terminals: HashMap::new(), focus_on_start: HashSet::new(), read_clipboard }
+        Self { root, shell: None, terminals: HashMap::new(), focus_on_start: HashSet::new(), read_clipboard, last_used: None, env: HashMap::new() }
+    }
+
+    /// Gives the programs started from now on a variable.
+    pub fn set_env(&mut self, name: &str, value: String) {
+        self.env.insert(name.to_string(), value);
+    }
+
+    fn running(&self) -> impl Iterator<Item = (u64, &Terminal)> {
+        self.terminals.iter().filter_map(|(id, terminal)| Some((*id, terminal.as_ref().ok()?)))
+    }
+
+    /// Takes note of what the programs in the terminals are doing, also in the ones not shown,
+    /// and has the editor drawn again while one is working to see when it stops.
+    pub fn update(&mut self, ctx: &egui::Context) {
+        let mut working = false;
+        for terminal in self.terminals.values_mut().flatten() {
+            terminal.update_activity();
+            working |= terminal.activity == Activity::Working;
+        }
+        if working {
+            ctx.request_repaint_after(BUSY / 3);
+        }
+    }
+
+    pub fn activity(&self, id: u64) -> Option<Activity> {
+        Some(self.terminals.get(&id)?.as_ref().ok()?.activity)
+    }
+
+    /// The terminals whose program still runs, by their id and title; the one used last first.
+    pub fn agents(&self) -> Vec<(u64, String)> {
+        let mut agents: Vec<(u64, String)> = self.running().filter(|(_, terminal)| terminal.activity != Activity::Ended).map(|(id, _)| (id, self.title(id).unwrap_or_else(|| "Terminal".to_string()))).collect();
+        agents.sort_by_key(|(id, _)| (Some(*id) != self.last_used, *id));
+        agents
+    }
+
+    /// Sends text to the program in the terminal as if it was pasted and Enter pressed, which
+    /// has an agent act on it.
+    pub fn send(&mut self, id: u64, text: &str) {
+        if let Some(Ok(terminal)) = self.terminals.get_mut(&id) {
+            let mode = *terminal.term.lock().mode();
+            let mut input = paste_bytes(text, mode);
+            input.push(b'\r');
+            terminal.last_input = Some(Instant::now());
+            terminal.write(input);
+        }
     }
 
     /// The title the program in the terminal gave it, if any.
     pub fn title(&self, id: u64) -> Option<String> {
         let terminal = self.terminals.get(&id)?.as_ref().ok()?;
         let title = terminal.title.clone().filter(|title| !title.is_empty());
-        if terminal.exited { Some(format!("{} (exited)", title.as_deref().unwrap_or("Terminal"))) } else { title }
+        if terminal.activity == Activity::Ended { Some(format!("{} (exited)", title.as_deref().unwrap_or("Terminal"))) } else { title }
     }
 
     /// Makes the terminal take the keyboard when it is shown next.
@@ -117,13 +199,15 @@ impl Terminals {
         let style = CodeStyle::with_font(ui, egui::FontId::new(size, terminal_text::family(fonts_ready, false, false)));
         let size = size_for(ui.available_rect_before_wrap(), &style);
         let focus = &mut self.focus_on_start;
-        let terminal = self.terminals.entry(id).or_insert_with(|| Terminal::spawn(&self.root, self.shell.clone(), size, &style, ui.ctx(), focus.remove(&id)));
+        let terminal = self.terminals.entry(id).or_insert_with(|| Terminal::spawn(&self.root, self.shell.clone(), &self.env, size, &style, ui.ctx(), focus.remove(&id)));
         match terminal {
             Ok(terminal) => {
-                terminal.ui(ui, id, &style, fonts_ready, self.read_clipboard);
+                if terminal.ui(ui, id, &style, fonts_ready, self.read_clipboard) {
+                    self.last_used = Some(id);
+                }
                 if terminal.restart {
                     // the same program again, in a terminal of its own
-                    let terminal = Terminal::spawn(&self.root, self.shell.clone(), size, &style, ui.ctx(), true);
+                    let terminal = Terminal::spawn(&self.root, self.shell.clone(), &self.env, size, &style, ui.ctx(), true);
                     self.terminals.insert(id, terminal);
                 }
             }
@@ -144,11 +228,10 @@ impl Terminals {
         self.terminals.contains_key(&id)
     }
 
-    /// What the terminal shows, one line per row, for tests.
-    #[cfg(test)]
-    pub fn screen(&self, id: u64) -> String {
-        let terminal = self.terminals[&id].as_ref().unwrap();
-        screen_text(&terminal.term.lock())
+    /// What the terminal shows, one line per row.
+    pub fn screen(&self, id: u64) -> Option<String> {
+        let terminal = self.terminals.get(&id)?.as_ref().ok()?;
+        Some(screen_text(&terminal.term.lock()))
     }
 }
 
@@ -157,7 +240,12 @@ struct Terminal {
     notifier: Notifier,
     events: Receiver<TermEvent>,
     title: Option<String>,
-    exited: bool,
+    output: Arc<Mutex<Output>>,
+    activity: Activity,
+    /// When a key was pressed or text was sent to the program last.
+    last_input: Option<Instant>,
+    /// Whether the program worked since the terminal had the keyboard last.
+    worked: bool,
     size: Size,
     /// Take the keyboard when shown next.
     focus: bool,
@@ -179,12 +267,14 @@ fn window_size(size: Size, style: &CodeStyle) -> WindowSize {
 }
 
 impl Terminal {
-    fn spawn(root: &std::path::Path, shell: Option<Shell>, size: Size, style: &CodeStyle, ctx: &egui::Context, focus: bool) -> Result<Self, String> {
-        let env = HashMap::from([("TERM".to_string(), "xterm-256color".to_string()), ("COLORTERM".to_string(), "truecolor".to_string())]);
+    fn spawn(root: &std::path::Path, shell: Option<Shell>, env: &HashMap<String, String>, size: Size, style: &CodeStyle, ctx: &egui::Context, focus: bool) -> Result<Self, String> {
+        let mut env = env.clone();
+        env.extend([("TERM".to_string(), "xterm-256color".to_string()), ("COLORTERM".to_string(), "truecolor".to_string())]);
         let options = tty::Options { shell, working_directory: Some(root.to_path_buf()), drain_on_exit: true, env, ..Default::default() };
         let pty = tty::new(&options, window_size(size, style), 0).map_err(|e| format!("Cannot start the terminal: {e}"))?;
         let (sender, events) = mpsc::channel();
-        let listener = Listener { events: sender, ctx: ctx.clone() };
+        let output = Arc::new(Mutex::new(Output::default()));
+        let listener = Listener { events: sender, ctx: ctx.clone(), output: output.clone() };
         // reading the clipboard is let through here and asked about in the editor
         let config = Config { osc52: Osc52::CopyPaste, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, listener.clone())));
@@ -196,7 +286,10 @@ impl Terminal {
             notifier,
             events,
             title: None,
-            exited: false,
+            output,
+            activity: Activity::Idle,
+            last_input: None,
+            worked: false,
             size,
             focus,
             scroll: 0.0,
@@ -210,6 +303,18 @@ impl Terminal {
 
     fn write(&self, bytes: impl Into<Vec<u8>>) {
         self.notifier.notify(bytes.into());
+    }
+
+    fn update_activity(&mut self) {
+        let Ok(output) = self.output.lock() else { return };
+        let working = output.last.is_some_and(|last| last.elapsed() < BUSY && self.last_input.is_none_or(|input| last.saturating_duration_since(input) > ECHO));
+        self.worked |= working;
+        self.activity = match () {
+            _ if output.ended => Activity::Ended,
+            _ if working => Activity::Working,
+            _ if self.worked => Activity::Waiting,
+            _ => Activity::Idle,
+        };
     }
 
     /// Answers what the program in the terminal asked for and takes note of what it reported.
@@ -226,7 +331,6 @@ impl Terminal {
                     self.write(answer(Rgb { r: color.r(), g: color.g(), b: color.b() }));
                 }
                 TermEvent::TextAreaSizeRequest(answer) => self.write(answer(window_size(self.size, style))),
-                TermEvent::Exit | TermEvent::ChildExit(_) => self.exited = true,
                 _ => {}
             }
         }
@@ -260,8 +364,10 @@ impl Terminal {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, id: u64, style: &CodeStyle, fonts_ready: bool, read_clipboard: fn() -> Option<String>) {
+    /// Shows the terminal. Returns whether it has the keyboard.
+    fn ui(&mut self, ui: &mut egui::Ui, id: u64, style: &CodeStyle, fonts_ready: bool, read_clipboard: fn() -> Option<String>) -> bool {
         let palette = Palette::new(ui.visuals());
+        self.update_activity();
         self.clipboard_bar(ui);
         self.handle_reports(ui.ctx(), style, &palette, read_clipboard);
         let size = size_for(ui.available_rect_before_wrap(), style);
@@ -385,7 +491,7 @@ impl Terminal {
                             ui.ctx().copy_text(text);
                         }
                     }
-                    Event::Key { key: Key::Enter, pressed: true, .. } if self.exited => self.restart = true,
+                    Event::Key { key: Key::Enter, pressed: true, .. } if self.activity == Activity::Ended => self.restart = true,
                     Event::Key { key, pressed: true, modifiers, .. } => {
                         if key == Key::K && modifiers.command {
                             term.grid_mut().clear_history();
@@ -396,7 +502,10 @@ impl Terminal {
                     _ => {}
                 }
             }
+            // what the program does is seen
+            self.worked = false;
             if !input.is_empty() {
+                self.last_input = Some(Instant::now());
                 // typing shows the end of the output and leaves what was selected
                 term.scroll_display(Scroll::Bottom);
                 term.selection = None;
@@ -408,7 +517,7 @@ impl Terminal {
 
         paint(ui, &term, rect, origin, style, &palette, response.has_focus(), fonts_ready);
         drop(term);
-        if self.exited {
+        if self.activity == Activity::Ended {
             let bottom_right = egui::pos2(rect.right() - PADDING, rect.bottom() - PADDING);
             let place = egui::Rect::from_min_max(bottom_right - Vec2::new(320.0, 2.0 * style.row_height), bottom_right);
             ui.scope_builder(egui::UiBuilder::new().max_rect(place).layout(egui::Layout::right_to_left(egui::Align::Max)), |ui| {
@@ -416,6 +525,7 @@ impl Terminal {
                 ui.weak("The process has ended");
             });
         }
+        response.has_focus()
     }
 }
 
@@ -743,14 +853,14 @@ mod tests {
     fn wait(harness: &mut Harness<'_, Terminals>, what: &str, done: impl Fn(&Harness<'_, Terminals>) -> bool) {
         let start = Instant::now();
         while !done(harness) {
-            assert!(start.elapsed() < Duration::from_secs(5), "no {what} on the screen:\n{}", harness.state().screen(1));
+            assert!(start.elapsed() < Duration::from_secs(5), "no {what} on the screen:\n{}", harness.state().screen(1).unwrap());
             harness.run();
             std::thread::sleep(Duration::from_millis(10));
         }
     }
 
     fn wait_for_screen(harness: &mut Harness<'_, Terminals>, text: &str) {
-        wait(harness, text, |harness| harness.state().screen(1).contains(text));
+        wait(harness, text, |harness| harness.state().screen(1).unwrap().contains(text));
     }
 
     /// Lets the program read the input byte by byte and shows what it got.
@@ -761,7 +871,7 @@ mod tests {
         let (mut harness, dir) = harness("terminal", "pwd; printf '\\033]0;working\\007\\033[31mred\\033[0m'; read line; echo got $line");
         wait_for_screen(&mut harness, "red");
         // the path is long enough to wrap
-        assert!(harness.state().screen(1).replace('\n', "").starts_with(&dir.path().canonicalize().unwrap().display().to_string()));
+        assert!(harness.state().screen(1).unwrap().replace('\n', "").starts_with(&dir.path().canonicalize().unwrap().display().to_string()));
         wait(&mut harness, "title", |harness| harness.state().title(1).as_deref() == Some("working"));
 
         harness.state().terminals[&1].as_ref().unwrap().write("hello\r");
@@ -770,18 +880,38 @@ mod tests {
     }
 
     #[test]
+    fn tells_when_the_program_works_and_when_it_stopped() {
+        let (mut harness, _dir) = harness("terminal-activity", "sleep 0.5; for i in 1 2 3 4 5 6; do echo $i; sleep 0.2; done; sleep 10");
+        wait(&mut harness, "work", |harness| harness.state().activity(1) == Some(Activity::Working));
+        wait(&mut harness, "stop", |harness| harness.state().activity(1) == Some(Activity::Waiting));
+    }
+
+    #[test]
+    fn sends_text_to_the_program_as_if_typed_with_enter() {
+        let dir = TempDir::new("terminal-send");
+        let mut terminals = Terminals::new(dir.path().to_path_buf());
+        terminals.set_env("GREETING", "hi".to_string());
+        terminals.run("/bin/sh", &["-c", "read line; echo $GREETING $line; sleep 5"]);
+        let mut harness = Harness::builder().with_size(Vec2::new(600.0, 400.0)).with_max_steps(8).build_ui_state(|ui, terminals: &mut Terminals| terminals.ui(ui, 1), terminals);
+        harness.run();
+        assert_eq!(harness.state().agents(), [(1, "Terminal".to_string())]);
+        harness.state_mut().send(1, "hello");
+        wait_for_screen(&mut harness, "hi hello");
+    }
+
+    #[test]
     fn restarts_the_program_after_it_ended() {
         let (mut harness, _dir) = harness("terminal-restart", "echo started-$$");
         wait(&mut harness, "end", |harness| harness.state().title(1).is_some_and(|title| title.ends_with("(exited)")));
-        let first = harness.state().screen(1);
+        let first = harness.state().screen(1).unwrap();
         harness.get_by_label("Restart").click();
-        wait(&mut harness, "new start", |harness| harness.state().screen(1).starts_with("started-") && harness.state().screen(1) != first);
+        wait(&mut harness, "new start", |harness| harness.state().screen(1).unwrap().starts_with("started-") && harness.state().screen(1).unwrap() != first);
 
         // Enter in an ended terminal starts it again as well
         wait(&mut harness, "end", |harness| harness.state().title(1).is_some_and(|title| title.ends_with("(exited)")));
-        let second = harness.state().screen(1);
+        let second = harness.state().screen(1).unwrap();
         harness.key_press(Key::Enter);
-        wait(&mut harness, "new start", |harness| harness.state().screen(1).starts_with("started-") && harness.state().screen(1) != second);
+        wait(&mut harness, "new start", |harness| harness.state().screen(1).unwrap().starts_with("started-") && harness.state().screen(1).unwrap() != second);
     }
 
     #[test]
@@ -800,7 +930,7 @@ mod tests {
         denied.get_by_label("Deny").click();
         denied.run();
         assert!(denied.query_by_label("Deny").is_none());
-        assert_eq!(denied.state().screen(1), "");
+        assert_eq!(denied.state().screen(1).unwrap(), "");
     }
 
     #[test]
@@ -821,6 +951,6 @@ mod tests {
         }
         // the press and the release of the left button in column 1, row 1, as od shows them
         let sent = "033[<0;1;1M033[<0;1;1m";
-        wait(&mut harness, sent, |harness| harness.state().screen(1).split_whitespace().collect::<String>().contains(sent));
+        wait(&mut harness, sent, |harness| harness.state().screen(1).unwrap().split_whitespace().collect::<String>().contains(sent));
     }
 }

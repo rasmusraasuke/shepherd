@@ -23,6 +23,8 @@ pub struct FileLook {
     pub color: Option<Color32>,
     /// Text at the right end of the row.
     pub detail: Option<String>,
+    /// A dot of this color in front of the detail, to draw attention.
+    pub dot: Option<Color32>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -103,8 +105,12 @@ impl FileTree {
                 let look = look(&row.path);
                 let color = look.color.unwrap_or(ui.visuals().text_color());
                 painter.text(egui::pos2(x + indent, y), Align2::LEFT_CENTER, row.name(), font.clone(), color);
+                let mut right = rect.right() - 6.0;
                 if let Some(detail) = look.detail {
-                    painter.text(egui::pos2(rect.right() - 6.0, y), Align2::RIGHT_CENTER, detail, font.clone(), ui.visuals().weak_text_color());
+                    right = painter.text(egui::pos2(right, y), Align2::RIGHT_CENTER, detail, font.clone(), ui.visuals().weak_text_color()).left() - 6.0;
+                }
+                if let Some(dot) = look.dot {
+                    painter.circle_filled(egui::pos2(right - 3.0, y), 3.0, dot);
                 }
                 if let Some(menu) = &mut menu {
                     response.context_menu(|ui| menu(ui, &row.path));

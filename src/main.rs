@@ -1,6 +1,8 @@
 mod app;
 mod buffer;
 mod code;
+mod comments;
+mod control;
 mod editor;
 mod file_tree;
 mod file_view;
@@ -22,6 +24,10 @@ use std::path::PathBuf;
 use workspace::Workspace;
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "ctl") {
+        std::process::exit(control::run_command(&args[2..]));
+    }
     let path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let repo = match git::Repo::open(&path) {
         Ok(repo) => repo,
