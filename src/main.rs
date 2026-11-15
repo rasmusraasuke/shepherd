@@ -29,7 +29,10 @@ fn main() -> eframe::Result {
     if args.get(1).is_some_and(|arg| arg == "ctl") {
         std::process::exit(control::run_command(&args[2..]));
     }
-    let path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     let repo = match git::Repo::open(&path) {
         Ok(repo) => repo,
         Err(e) => {
@@ -40,13 +43,21 @@ fn main() -> eframe::Result {
     let workspace = Workspace::load(&repo.layout_path());
 
     let viewport = app::viewport(&repo.root, &workspace.windows[0]).with_transparent(true);
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
     eframe::run_native(
         "editor",
         options,
         Box::new(|cc| {
-            cc.egui_ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Transparent(false));
-            Ok(Box::new(app::App::new(repo, workspace, cc.egui_ctx.clone())))
+            cc.egui_ctx
+                .send_viewport_cmd(eframe::egui::ViewportCommand::Transparent(false));
+            Ok(Box::new(app::App::new(
+                repo,
+                workspace,
+                cc.egui_ctx.clone(),
+            )))
         }),
     )
 }

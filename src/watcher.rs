@@ -18,7 +18,10 @@ pub struct Snapshot {
 
 impl Snapshot {
     pub fn take(repo: &Repo) -> Result<Self, String> {
-        Ok(Self { changes: repo.changes()?, files: repo.list_files()? })
+        Ok(Self {
+            changes: repo.changes()?,
+            files: repo.list_files()?,
+        })
     }
 }
 
@@ -51,12 +54,20 @@ impl Watcher {
                 }
             }
         });
-        Self { snapshots, wake, refreshes }
+        Self {
+            snapshots,
+            wake,
+            refreshes,
+        }
     }
 
     pub fn changed(&self) -> Option<Result<Snapshot, String>> {
         let refreshes = self.refreshes.load(Ordering::SeqCst);
-        self.snapshots.try_iter().filter(|(started_after, _)| *started_after == refreshes).last().map(|(_, snapshot)| snapshot)
+        self.snapshots
+            .try_iter()
+            .filter(|(started_after, _)| *started_after == refreshes)
+            .last()
+            .map(|(_, snapshot)| snapshot)
     }
 
     pub fn refresh_now(&self) {

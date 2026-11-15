@@ -15,7 +15,11 @@ impl CodeStyle {
 
     pub fn with_font(ui: &Ui, font: FontId) -> Self {
         let text_color = ui.visuals().text_color();
-        let digit_width = ui.painter().layout_no_wrap("0".into(), font.clone(), text_color).size().x;
+        let digit_width = ui
+            .painter()
+            .layout_no_wrap("0".into(), font.clone(), text_color)
+            .size()
+            .x;
         Self {
             row_height: ui.fonts_mut(|fonts| fonts.row_height(&font)) + 2.0,
             weak_color: ui.visuals().weak_text_color(),
@@ -27,11 +31,30 @@ impl CodeStyle {
 
     pub fn number(&self, painter: &Painter, right: f32, top: f32, number: Option<u32>) {
         if let Some(number) = number {
-            painter.text(egui::pos2(right, top), Align2::RIGHT_TOP, number, self.font.clone(), self.weak_color);
+            painter.text(
+                egui::pos2(right, top),
+                Align2::RIGHT_TOP,
+                number,
+                self.font.clone(),
+                self.weak_color,
+            );
         }
     }
 
-    pub fn text(&self, painter: &Painter, left: f32, top: f32, text: impl ToString, color: Color32) {
-        painter.text(egui::pos2(left, top), Align2::LEFT_TOP, text, self.font.clone(), color);
+    pub fn text(
+        &self,
+        painter: &Painter,
+        left: f32,
+        top: f32,
+        text: impl ToString,
+        color: Color32,
+    ) {
+        painter.text(
+            egui::pos2(left, top),
+            Align2::LEFT_TOP,
+            text,
+            self.font.clone(),
+            color,
+        );
     }
 }

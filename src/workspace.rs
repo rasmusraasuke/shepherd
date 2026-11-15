@@ -75,7 +75,14 @@ pub struct Window {
 impl Window {
     fn new(id: u64, tabs: Vec<Tab>) -> Self {
         let tree = Tree::new_tabs(egui::Id::unique(("window", id)), tabs);
-        Self { id, tree, position: None, size: None, screen_rect: None, focused: None }
+        Self {
+            id,
+            tree,
+            position: None,
+            size: None,
+            screen_rect: None,
+            focused: None,
+        }
     }
 
     pub fn tabs(&self) -> Vec<&Tab> {
@@ -93,46 +100,91 @@ impl Window {
     }
 
     fn activate(&mut self, tab: &Tab) -> bool {
-        self.tree.make_active(|_, tile| matches!(tile, Tile::Pane(t) if t == tab))
+        self.tree
+            .make_active(|_, tile| matches!(tile, Tile::Pane(t) if t == tab))
     }
 
     fn target_tabs(&self) -> Option<TileId> {
         let is_tabs = |id: &TileId| self.is_tabs(id);
-        let focused = self.focused.and_then(|tile| self.tree.tiles.parent_of(tile)).filter(is_tabs);
-        focused.or_else(|| self.tree.tiles.tile_ids().filter(is_tabs).min_by_key(|id| id.0))
+        let focused = self
+            .focused
+            .and_then(|tile| self.tree.tiles.parent_of(tile))
+            .filter(is_tabs);
+        focused.or_else(|| {
+            self.tree
+                .tiles
+                .tile_ids()
+                .filter(is_tabs)
+                .min_by_key(|id| id.0)
+        })
     }
 
     fn is_tabs(&self, tile: &TileId) -> bool {
-        matches!(self.tree.tiles.get_container(*tile), Some(Container::Tabs(_)))
+        matches!(
+            self.tree.tiles.get_container(*tile),
+            Some(Container::Tabs(_))
+        )
     }
 
     pub fn drop_target(&self, point: egui::Pos2) -> Option<DropTarget> {
         let point = point - self.screen_rect?.min.to_vec2();
         let tiles = &self.tree.tiles;
-        let (tabs, rect) = tiles.tile_ids().filter(|id| self.is_tabs(id)).find_map(|id| Some((id, tiles.rect(id).filter(|rect| rect.contains(point))?)))?;
+        let (tabs, rect) = tiles
+            .tile_ids()
+            .filter(|id| self.is_tabs(id))
+            .find_map(|id| Some((id, tiles.rect(id).filter(|rect| rect.contains(point))?)))?;
         let (left, right) = rect.split_left_right_at_fraction(0.5);
         let (top, bottom) = rect.split_top_bottom_at_fraction(0.5);
         let (bar, body) = rect.split_top_bottom_at_y(rect.top() + TAB_BAR_HEIGHT);
-        let sides = [(Side::Left, left), (Side::Right, right), (Side::Top, top), (Side::Bottom, bottom)];
+        let sides = [
+            (Side::Left, left),
+            (Side::Right, right),
+            (Side::Top, top),
+            (Side::Bottom, bottom),
+        ];
         let distance = |rect: &egui::Rect| rect.center().distance_sq(point);
-        let nearest = sides.into_iter().min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b))).filter(|(_, rect)| distance(rect) < distance(&body));
+        let nearest = sides
+            .into_iter()
+            .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
+            .filter(|(_, rect)| distance(rect) < distance(&body));
         Some(match nearest.filter(|_| !bar.contains(point)) {
-            Some((side, rect)) => DropTarget { tabs, side: Some(side), rect },
-            None => DropTarget { tabs, side: None, rect: body },
+            Some((side, rect)) => DropTarget {
+                tabs,
+                side: Some(side),
+                rect,
+            },
+            None => DropTarget {
+                tabs,
+                side: None,
+                rect: body,
+            },
         })
     }
 
     fn add_at(&mut self, target: DropTarget, tab: Tab) {
-        let Some(side) = target.side else { return self.add_to(Some(target.tabs), tab) };
+        let Some(side) = target.side else {
+            return self.add_to(Some(target.tabs), tab);
+        };
         let tiles = &mut self.tree.tiles;
         let parent = tiles.parent_of(target.tabs);
         let tile = tiles.insert_pane(tab);
         let new_tabs = tiles.insert_tab_tile(vec![tile]);
-        let children = if matches!(side, Side::Left | Side::Top) { vec![new_tabs, target.tabs] } else { vec![target.tabs, new_tabs] };
-        let split = if matches!(side, Side::Left | Side::Right) { tiles.insert_horizontal_tile(children) } else { tiles.insert_vertical_tile(children) };
+        let children = if matches!(side, Side::Left | Side::Top) {
+            vec![new_tabs, target.tabs]
+        } else {
+            vec![target.tabs, new_tabs]
+        };
+        let split = if matches!(side, Side::Left | Side::Right) {
+            tiles.insert_horizontal_tile(children)
+        } else {
+            tiles.insert_vertical_tile(children)
+        };
         let place = match parent.map(|parent| tiles.get_mut(parent)) {
             None => self.tree.root.as_mut(),
-            Some(Some(Tile::Container(Container::Linear(linear)))) => linear.children.iter_mut().find(|child| **child == target.tabs),
+            Some(Some(Tile::Container(Container::Linear(linear)))) => linear
+                .children
+                .iter_mut()
+                .find(|child| **child == target.tabs),
             Some(_) => None,
         };
         if let Some(place) = place {
@@ -163,7 +215,8 @@ impl Window {
             _ => {
                 let children = self.tree.root.into_iter().chain([tile]).collect();
                 let root = self.tree.tiles.insert_tab_tile(children);
-                if let Some(Tile::Container(Container::Tabs(tabs))) = self.tree.tiles.get_mut(root) {
+                if let Some(Tile::Container(Container::Tabs(tabs))) = self.tree.tiles.get_mut(root)
+                {
                     tabs.set_active(tile);
                 }
                 self.tree.root = Some(root);
@@ -173,10 +226,13 @@ impl Window {
     }
 
     fn remove(&mut self, tile: TileId) -> Option<Tab> {
-        self.tree.remove_recursively(tile).into_iter().find_map(|tile| match tile {
-            Tile::Pane(tab) => Some(tab),
-            Tile::Container(_) => None,
-        })
+        self.tree
+            .remove_recursively(tile)
+            .into_iter()
+            .find_map(|tile| match tile {
+                Tile::Pane(tab) => Some(tab),
+                Tile::Container(_) => None,
+            })
     }
 }
 
@@ -205,11 +261,16 @@ impl Default for Workspace {
 
 impl Workspace {
     pub fn load(path: &Path) -> Self {
-        fs::read_to_string(path).ok().and_then(|json| Self::from_json(&json)).unwrap_or_default()
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|json| Self::from_json(&json))
+            .unwrap_or_default()
     }
 
     fn from_json(json: &str) -> Option<Self> {
-        serde_json::from_str(json).ok().filter(|workspace: &Self| !workspace.windows.is_empty())
+        serde_json::from_str(json)
+            .ok()
+            .filter(|workspace: &Self| !workspace.windows.is_empty())
     }
 
     pub fn to_json(&self) -> String {
@@ -230,23 +291,46 @@ impl Workspace {
     }
 
     pub fn open_terminal(&mut self, window: usize, tabs: Option<TileId>) -> u64 {
-        let id = self.windows.iter().flat_map(|window| window.tabs()).filter_map(|tab| if let Tab::Terminal(id) = tab { Some(*id) } else { None }).max().unwrap_or(0) + 1;
+        let id = self
+            .windows
+            .iter()
+            .flat_map(|window| window.tabs())
+            .filter_map(|tab| {
+                if let Tab::Terminal(id) = tab {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
         self.add_tab(window, tabs, Tab::Terminal(id));
         id
     }
 
     fn find(&self, tab: &Tab) -> Option<(usize, TileId)> {
-        self.windows.iter().enumerate().find_map(|(index, window)| Some((index, window.tree.tiles.find_pane(tab)?)))
+        self.windows
+            .iter()
+            .enumerate()
+            .find_map(|(index, window)| Some((index, window.tree.tiles.find_pane(tab)?)))
     }
 
     fn review_tab(&self) -> Option<(usize, TileId)> {
         let first = || {
             self.windows.iter().enumerate().find_map(|(index, window)| {
-                let tiles = window.tree.tiles.iter().filter(|(_, tile)| matches!(tile, Tile::Pane(Tab::Review(_))));
+                let tiles = window
+                    .tree
+                    .tiles
+                    .iter()
+                    .filter(|(_, tile)| matches!(tile, Tile::Pane(Tab::Review(_))));
                 Some((index, *tiles.map(|(id, _)| id).min_by_key(|id| id.0)?))
             })
         };
-        self.last_review.as_ref().and_then(|tab| self.find(tab)).or_else(first)
+        self.last_review
+            .as_ref()
+            .and_then(|tab| self.find(tab))
+            .or_else(first)
     }
 
     pub fn show_review(&mut self, path: &str, new_tab: bool) -> usize {
@@ -271,7 +355,9 @@ impl Workspace {
     }
 
     pub fn move_tab(&mut self, from: usize, tile: TileId, to: Option<usize>) {
-        let Some(tab) = self.windows[from].remove(tile) else { return };
+        let Some(tab) = self.windows[from].remove(tile) else {
+            return;
+        };
         match to {
             Some(to) => self.windows[to].add(tab),
             None => {
@@ -287,7 +373,8 @@ impl Workspace {
     }
 
     pub fn window_at(&self, point: egui::Pos2, from: usize) -> Option<usize> {
-        let is_there = |window: &Window| window.screen_rect.is_some_and(|rect| rect.contains(point));
+        let is_there =
+            |window: &Window| window.screen_rect.is_some_and(|rect| rect.contains(point));
         (0..self.windows.len()).find(|&index| index != from && is_there(&self.windows[index]))
     }
 
@@ -296,7 +383,9 @@ impl Workspace {
         if to.is_none() && from > 0 && self.windows[from].tabs().len() == 1 {
             return from;
         }
-        let Some(tab) = self.windows[from].remove(tile) else { return from };
+        let Some(tab) = self.windows[from].remove(tile) else {
+            return from;
+        };
         match to {
             Some(to) => {
                 let window = &mut self.windows[to];
@@ -404,7 +493,10 @@ mod tests {
     }
 
     fn on_screen(window: &mut Window, x: f32) {
-        window.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(x, 0.0), egui::vec2(100.0, 100.0)));
+        window.screen_rect = Some(egui::Rect::from_min_size(
+            egui::pos2(x, 0.0),
+            egui::vec2(100.0, 100.0),
+        ));
     }
 
     #[test]
@@ -434,7 +526,10 @@ mod tests {
         workspace.drop_tab(0, tile, egui::pos2(500.0, 300.0));
         assert_eq!(tabs(&workspace.windows[0]), ["Review"]);
         assert_eq!(tabs(&workspace.windows[1]), ["a.rs"]);
-        assert_eq!(workspace.windows[1].position, Some(egui::pos2(500.0, 300.0) - NEW_WINDOW_GRIP));
+        assert_eq!(
+            workspace.windows[1].position,
+            Some(egui::pos2(500.0, 300.0) - NEW_WINDOW_GRIP)
+        );
 
         let tile = tile_of(&workspace.windows[1], &file("a.rs"));
         workspace.drop_tab(1, tile, egui::pos2(900.0, 300.0));
@@ -507,7 +602,13 @@ mod tests {
         workspace.expanded_dirs.insert("src".to_string());
 
         let restored = Workspace::from_json(&workspace.to_json()).unwrap();
-        assert!(restored.windows.iter().zip(&workspace.windows).all(|(a, b)| a.tree == b.tree));
+        assert!(
+            restored
+                .windows
+                .iter()
+                .zip(&workspace.windows)
+                .all(|(a, b)| a.tree == b.tree)
+        );
         assert_eq!(tabs(&restored.windows[0]), ["Review", "a.rs"]);
         assert_eq!(tabs(&restored.windows[1]), ["b.rs"]);
         assert_eq!(restored.windows[1].position, Some(egui::pos2(10.0, 20.0)));
@@ -533,13 +634,22 @@ mod tests {
         assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs"]);
 
         workspace.show_review("src/b.rs", true);
-        assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs", "Review: b.rs"]);
+        assert_eq!(
+            tabs(&workspace.windows[0]),
+            ["Review: a.rs", "Review: b.rs"]
+        );
         let first = tile_of(&workspace.windows[0], &review("src/a.rs"));
         let second = tile_of(&workspace.windows[0], &review("src/b.rs"));
-        assert_eq!(workspace.windows[0].tree.tiles.parent_of(first), workspace.windows[0].tree.tiles.parent_of(second));
+        assert_eq!(
+            workspace.windows[0].tree.tiles.parent_of(first),
+            workspace.windows[0].tree.tiles.parent_of(second)
+        );
 
         workspace.show_review("src/c.rs", false);
-        assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs", "Review: c.rs"]);
+        assert_eq!(
+            tabs(&workspace.windows[0]),
+            ["Review: a.rs", "Review: c.rs"]
+        );
         assert!(is_active(&workspace.windows[0], &review("src/c.rs")));
 
         workspace.move_tab(0, first, None);

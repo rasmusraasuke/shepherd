@@ -31,11 +31,33 @@ macro_rules! define {
 }
 
 static DEFINITIONS: [Definition; 14] = [
-    define!(&["kt", "kts"], tree_sitter_kotlin_ng::LANGUAGE, include_str!("../queries/kotlin.scm")),
-    define!(&["java"], tree_sitter_java::LANGUAGE, tree_sitter_java::HIGHLIGHTS_QUERY),
-    define!(&["rs"], tree_sitter_rust::LANGUAGE, tree_sitter_rust::HIGHLIGHTS_QUERY),
-    define!(&["js", "mjs", "cjs", "jsx"], tree_sitter_javascript::LANGUAGE, tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY),
-    define!(&["ts", "mts", "cts"], tree_sitter_typescript::LANGUAGE_TYPESCRIPT, tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_typescript::HIGHLIGHTS_QUERY),
+    define!(
+        &["kt", "kts"],
+        tree_sitter_kotlin_ng::LANGUAGE,
+        include_str!("../queries/kotlin.scm")
+    ),
+    define!(
+        &["java"],
+        tree_sitter_java::LANGUAGE,
+        tree_sitter_java::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["rs"],
+        tree_sitter_rust::LANGUAGE,
+        tree_sitter_rust::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["js", "mjs", "cjs", "jsx"],
+        tree_sitter_javascript::LANGUAGE,
+        tree_sitter_javascript::HIGHLIGHT_QUERY,
+        tree_sitter_javascript::JSX_HIGHLIGHT_QUERY
+    ),
+    define!(
+        &["ts", "mts", "cts"],
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        tree_sitter_javascript::HIGHLIGHT_QUERY,
+        tree_sitter_typescript::HIGHLIGHTS_QUERY
+    ),
     define!(
         &["tsx"],
         tree_sitter_typescript::LANGUAGE_TSX,
@@ -43,21 +65,54 @@ static DEFINITIONS: [Definition; 14] = [
         tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
         tree_sitter_typescript::HIGHLIGHTS_QUERY
     ),
-    define!(&["py"], tree_sitter_python::LANGUAGE, tree_sitter_python::HIGHLIGHTS_QUERY),
-    define!(&["go"], tree_sitter_go::LANGUAGE, tree_sitter_go::HIGHLIGHTS_QUERY),
-    define!(&["json"], tree_sitter_json::LANGUAGE, tree_sitter_json::HIGHLIGHTS_QUERY),
-    define!(&["sh", "bash", "zsh"], tree_sitter_bash::LANGUAGE, tree_sitter_bash::HIGHLIGHT_QUERY),
-    define!(&["toml"], tree_sitter_toml_ng::LANGUAGE, tree_sitter_toml_ng::HIGHLIGHTS_QUERY),
-    define!(&["yml", "yaml"], tree_sitter_yaml::LANGUAGE, tree_sitter_yaml::HIGHLIGHTS_QUERY),
-    define!(&["html", "htm"], tree_sitter_html::LANGUAGE, tree_sitter_html::HIGHLIGHTS_QUERY),
-    define!(&["css"], tree_sitter_css::LANGUAGE, tree_sitter_css::HIGHLIGHTS_QUERY),
+    define!(
+        &["py"],
+        tree_sitter_python::LANGUAGE,
+        tree_sitter_python::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["go"],
+        tree_sitter_go::LANGUAGE,
+        tree_sitter_go::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["json"],
+        tree_sitter_json::LANGUAGE,
+        tree_sitter_json::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["sh", "bash", "zsh"],
+        tree_sitter_bash::LANGUAGE,
+        tree_sitter_bash::HIGHLIGHT_QUERY
+    ),
+    define!(
+        &["toml"],
+        tree_sitter_toml_ng::LANGUAGE,
+        tree_sitter_toml_ng::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["yml", "yaml"],
+        tree_sitter_yaml::LANGUAGE,
+        tree_sitter_yaml::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["html", "htm"],
+        tree_sitter_html::LANGUAGE,
+        tree_sitter_html::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["css"],
+        tree_sitter_css::LANGUAGE,
+        tree_sitter_css::HIGHLIGHTS_QUERY
+    ),
 ];
 
 impl Definition {
     fn grammar(&self) -> &Grammar {
         self.grammar.get_or_init(|| {
             let language = Language::new(self.language);
-            let query = Query::new(&language, &self.queries.concat()).unwrap_or_else(|e| panic!("highlight query for {:?}: {e}", self.extensions));
+            let query = Query::new(&language, &self.queries.concat())
+                .unwrap_or_else(|e| panic!("highlight query for {:?}: {e}", self.extensions));
             Grammar { language, query }
         })
     }
@@ -69,7 +124,11 @@ const COLORS: &[(&str, [u8; 3], [u8; 3])] = &[
     ("variable.builtin", [0xCC, 0x78, 0x32], [0x00, 0x33, 0xB3]),
     ("constant.builtin", [0xCC, 0x78, 0x32], [0x00, 0x33, 0xB3]),
     ("boolean", [0xCC, 0x78, 0x32], [0x00, 0x33, 0xB3]),
-    ("punctuation.special", [0xCC, 0x78, 0x32], [0x00, 0x33, 0xB3]),
+    (
+        "punctuation.special",
+        [0xCC, 0x78, 0x32],
+        [0x00, 0x33, 0xB3],
+    ),
     ("string", [0x6A, 0x87, 0x59], [0x06, 0x7D, 0x17]),
     ("string.escape", [0xCC, 0x78, 0x32], [0x00, 0x37, 0xA6]),
     ("escape", [0xCC, 0x78, 0x32], [0x00, 0x37, 0xA6]),
@@ -112,11 +171,20 @@ pub struct Highlighter {
 impl Highlighter {
     pub fn for_path(path: &Path) -> Option<Self> {
         let extension = path.extension()?.to_str()?;
-        let definition = DEFINITIONS.iter().find(|definition| definition.extensions.contains(&extension))?;
+        let definition = DEFINITIONS
+            .iter()
+            .find(|definition| definition.extensions.contains(&extension))?;
         let grammar = definition.grammar();
         let mut parser = Parser::new();
         parser.set_language(&grammar.language).ok()?;
-        Some(Self { grammar, parser, tree: None, text: String::new(), line_starts: Vec::new(), found: None })
+        Some(Self {
+            grammar,
+            parser,
+            tree: None,
+            text: String::new(),
+            line_starts: Vec::new(),
+            found: None,
+        })
     }
 
     pub fn update(&mut self, buffer: &mut Buffer) {
@@ -131,28 +199,53 @@ impl Highlighter {
         }
         let lines = buffer.lines();
         self.text = lines.join("\n");
-        self.line_starts = lines.iter().scan(0, |start, line| Some(std::mem::replace(start, *start + line.len() + 1))).collect();
-        self.tree = if self.text.len() > MAX_SIZE { None } else { self.parser.parse(&self.text, self.tree.as_ref()) };
+        self.line_starts = lines
+            .iter()
+            .scan(0, |start, line| {
+                Some(std::mem::replace(start, *start + line.len() + 1))
+            })
+            .collect();
+        self.tree = if self.text.len() > MAX_SIZE {
+            None
+        } else {
+            self.parser.parse(&self.text, self.tree.as_ref())
+        };
         self.found = None;
     }
 
     pub fn spans_of(path: &Path, lines: &[String]) -> Vec<Spans> {
-        let Some(mut highlighter) = Self::for_path(path) else { return vec![Vec::new(); lines.len()] };
+        let Some(mut highlighter) = Self::for_path(path) else {
+            return vec![Vec::new(); lines.len()];
+        };
         highlighter.update(&mut Buffer::new(&lines.join("\n")));
         highlighter.find(0..lines.len())
     }
 
     pub fn spans(&mut self, lines: Range<usize>) -> &[Spans] {
-        if self.found.as_ref().is_none_or(|(found_for, _)| *found_for != lines) {
+        if self
+            .found
+            .as_ref()
+            .is_none_or(|(found_for, _)| *found_for != lines)
+        {
             self.found = Some((lines.clone(), self.find(lines)));
         }
         &self.found.as_ref().unwrap().1
     }
 
     fn find(&self, lines: Range<usize>) -> Vec<Spans> {
-        let Some(tree) = &self.tree else { return vec![Vec::new(); lines.len()] };
-        let line_end = |line: usize| self.line_starts.get(line + 1).map_or(self.text.len(), |next| next - 1);
-        let start = self.line_starts.get(lines.start).copied().unwrap_or(self.text.len());
+        let Some(tree) = &self.tree else {
+            return vec![Vec::new(); lines.len()];
+        };
+        let line_end = |line: usize| {
+            self.line_starts
+                .get(line + 1)
+                .map_or(self.text.len(), |next| next - 1)
+        };
+        let start = self
+            .line_starts
+            .get(lines.start)
+            .copied()
+            .unwrap_or(self.text.len());
         let end = lines.end.checked_sub(1).map_or(start, line_end).max(start);
 
         let names = self.grammar.query.capture_names();
@@ -160,7 +253,8 @@ impl Highlighter {
         let mut painted = HashSet::new();
         let mut cursor = QueryCursor::new();
         cursor.set_byte_range(start..end);
-        let mut captures = cursor.captures(&self.grammar.query, tree.root_node(), self.text.as_bytes());
+        let mut captures =
+            cursor.captures(&self.grammar.query, tree.root_node(), self.text.as_bytes());
         while let Some((found, index)) = captures.next() {
             let capture = found.captures()[*index];
             if !painted.insert(capture.node.id()) {
@@ -175,10 +269,15 @@ impl Highlighter {
             .map(|line| {
                 let (line_start, line_end) = (self.line_starts[line], line_end(line));
                 let mut spans: Spans = Vec::new();
-                for (offset, name) in byte_names[line_start - start..line_end - start].iter().enumerate() {
+                for (offset, name) in byte_names[line_start - start..line_end - start]
+                    .iter()
+                    .enumerate()
+                {
                     let Some(name) = name else { continue };
                     match spans.last_mut() {
-                        Some((range, last)) if range.end == offset && last == name => range.end += 1,
+                        Some((range, last)) if range.end == offset && last == name => {
+                            range.end += 1
+                        }
                         _ => spans.push((offset..offset + 1, name)),
                     }
                 }
@@ -188,16 +287,44 @@ impl Highlighter {
     }
 }
 
-pub fn layout_job(line: &str, spans: &[(Range<usize>, &str)], marked: &[Range<usize>], mark: Color32, font: &FontId, text_color: Color32, dark: bool) -> LayoutJob {
-    let mut cuts: Vec<usize> = spans.iter().map(|(range, _)| range).chain(marked).flat_map(|range| [range.start, range.end]).chain([0, line.len()]).collect();
+pub fn layout_job(
+    line: &str,
+    spans: &[(Range<usize>, &str)],
+    marked: &[Range<usize>],
+    mark: Color32,
+    font: &FontId,
+    text_color: Color32,
+    dark: bool,
+) -> LayoutJob {
+    let mut cuts: Vec<usize> = spans
+        .iter()
+        .map(|(range, _)| range)
+        .chain(marked)
+        .flat_map(|range| [range.start, range.end])
+        .chain([0, line.len()])
+        .collect();
     cuts.sort_unstable();
     cuts.dedup();
     let mut job = LayoutJob::default();
     for cut in cuts.windows(2) {
         let range = cut[0]..cut[1];
-        let color = spans.iter().find(|(span, _)| span.contains(&range.start)).and_then(|(_, name)| color(name, dark));
-        let background = if marked.iter().any(|marked| marked.contains(&range.start)) { mark } else { Color32::TRANSPARENT };
-        job.append(&line[range], 0.0, TextFormat { background, ..TextFormat::simple(font.clone(), color.unwrap_or(text_color)) });
+        let color = spans
+            .iter()
+            .find(|(span, _)| span.contains(&range.start))
+            .and_then(|(_, name)| color(name, dark));
+        let background = if marked.iter().any(|marked| marked.contains(&range.start)) {
+            mark
+        } else {
+            Color32::TRANSPARENT
+        };
+        job.append(
+            &line[range],
+            0.0,
+            TextFormat {
+                background,
+                ..TextFormat::simple(font.clone(), color.unwrap_or(text_color))
+            },
+        );
     }
     job
 }
@@ -214,9 +341,16 @@ mod tests {
         }
     }
 
-    fn names(highlighter: &mut Highlighter, lines: &[String], line: usize) -> Vec<(String, &'static str)> {
+    fn names(
+        highlighter: &mut Highlighter,
+        lines: &[String],
+        line: usize,
+    ) -> Vec<(String, &'static str)> {
         let spans = highlighter.spans(line..line + 1)[0].clone();
-        spans.into_iter().map(|(range, name)| (lines[line][range].to_string(), name)).collect()
+        spans
+            .into_iter()
+            .map(|(range, name)| (lines[line][range].to_string(), name))
+            .collect()
     }
 
     fn highlighted(path: &str, text: &str) -> (Highlighter, Vec<String>) {
@@ -228,12 +362,48 @@ mod tests {
 
     #[test]
     fn highlights_kotlin() {
-        let (mut highlighter, lines) = highlighted("Main.kt", "@Suppress(\"x\")\nfun main(args: Array<String>) {\n    val s = \"hi ${args.size}\\n\" // done\n    println(null)\n}");
-        let line = |highlighter: &mut Highlighter, line| names(highlighter, &lines, line).into_iter().map(|(text, name)| format!("{text}={name}")).collect::<Vec<_>>();
-        assert_eq!(line(&mut highlighter, 0), ["@Suppress=attribute", "\"x\"=string"]);
-        assert_eq!(line(&mut highlighter, 1), ["fun=keyword", "main=function", "args=variable.parameter", "Array=type", "String=type"]);
-        assert_eq!(line(&mut highlighter, 2), ["val=keyword", "\"hi =string", "${=punctuation.special", "args.=embedded", "size=property", "}=punctuation.special", "\\n=string.escape", "\"=string", "// done=comment"]);
-        assert_eq!(line(&mut highlighter, 3), ["println=function.call", "null=constant.builtin"]);
+        let (mut highlighter, lines) = highlighted(
+            "Main.kt",
+            "@Suppress(\"x\")\nfun main(args: Array<String>) {\n    val s = \"hi ${args.size}\\n\" // done\n    println(null)\n}",
+        );
+        let line = |highlighter: &mut Highlighter, line| {
+            names(highlighter, &lines, line)
+                .into_iter()
+                .map(|(text, name)| format!("{text}={name}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            line(&mut highlighter, 0),
+            ["@Suppress=attribute", "\"x\"=string"]
+        );
+        assert_eq!(
+            line(&mut highlighter, 1),
+            [
+                "fun=keyword",
+                "main=function",
+                "args=variable.parameter",
+                "Array=type",
+                "String=type"
+            ]
+        );
+        assert_eq!(
+            line(&mut highlighter, 2),
+            [
+                "val=keyword",
+                "\"hi =string",
+                "${=punctuation.special",
+                "args.=embedded",
+                "size=property",
+                "}=punctuation.special",
+                "\\n=string.escape",
+                "\"=string",
+                "// done=comment"
+            ]
+        );
+        assert_eq!(
+            line(&mut highlighter, 3),
+            ["println=function.call", "null=constant.builtin"]
+        );
     }
 
     #[test]
@@ -249,7 +419,14 @@ mod tests {
     #[test]
     fn highlights_lines_inside_a_comment_that_started_above_them() {
         let (mut highlighter, lines) = highlighted("a.kt", "/*\none\ntwo\n*/\nval x = 1");
-        assert_eq!(highlighter.spans(2..5).to_vec(), [vec![(0..3, "comment")], vec![(0..2, "comment")], vec![(0..3, "keyword"), (8..9, "number")]]);
+        assert_eq!(
+            highlighter.spans(2..5).to_vec(),
+            [
+                vec![(0..3, "comment")],
+                vec![(0..2, "comment")],
+                vec![(0..3, "keyword"), (8..9, "number")]
+            ]
+        );
         assert_eq!(lines.len(), 5);
     }
 
@@ -272,13 +449,22 @@ mod tests {
 
         let (mut fresh, lines) = highlighted("a.kt", &buffer.text());
         let all = 0..lines.len();
-        assert_eq!(highlighter.tree.as_ref().unwrap().root_node().to_sexp(), fresh.tree.as_ref().unwrap().root_node().to_sexp());
-        assert_eq!(highlighter.spans(all.clone()).to_vec(), fresh.spans(all).to_vec());
+        assert_eq!(
+            highlighter.tree.as_ref().unwrap().root_node().to_sexp(),
+            fresh.tree.as_ref().unwrap().root_node().to_sexp()
+        );
+        assert_eq!(
+            highlighter.spans(all.clone()).to_vec(),
+            fresh.spans(all).to_vec()
+        );
     }
 
     #[test]
     fn colors_names_by_their_most_specific_known_part() {
-        assert_eq!(color("function.call.generic", true), color("function.call", true));
+        assert_eq!(
+            color("function.call.generic", true),
+            color("function.call", true)
+        );
         assert_eq!(color("function.method", false), color("function", false));
         assert_eq!(color("variable", true), None);
     }
@@ -286,24 +472,66 @@ mod tests {
     #[test]
     fn lays_out_spans_in_their_colors() {
         let font = FontId::monospace(12.0);
-        let job = layout_job("val x = 1", &[(0..3, "keyword"), (8..9, "number")], &[], Color32::RED, &font, Color32::WHITE, true);
-        let colors: Vec<(String, Color32)> = job.sections.iter().map(|section| (job.text[section.byte_range.start.0..section.byte_range.end.0].to_string(), section.format.color)).collect();
-        assert_eq!(colors, [("val".to_string(), color("keyword", true).unwrap()), (" x = ".to_string(), Color32::WHITE), ("1".to_string(), color("number", true).unwrap())]);
+        let job = layout_job(
+            "val x = 1",
+            &[(0..3, "keyword"), (8..9, "number")],
+            &[],
+            Color32::RED,
+            &font,
+            Color32::WHITE,
+            true,
+        );
+        let colors: Vec<(String, Color32)> = job
+            .sections
+            .iter()
+            .map(|section| {
+                (
+                    job.text[section.byte_range.start.0..section.byte_range.end.0].to_string(),
+                    section.format.color,
+                )
+            })
+            .collect();
+        assert_eq!(
+            colors,
+            [
+                ("val".to_string(), color("keyword", true).unwrap()),
+                (" x = ".to_string(), Color32::WHITE),
+                ("1".to_string(), color("number", true).unwrap())
+            ]
+        );
     }
 
     #[test]
     fn lays_out_marked_parts_on_their_background() {
         let font = FontId::monospace(12.0);
-        let job = layout_job("val x = 1", &[(0..3, "keyword")], &[2..5, 7..8], Color32::RED, &font, Color32::WHITE, true);
-        let sections: Vec<(String, Color32, Color32)> =
-            job.sections.iter().map(|section| (job.text[section.byte_range.start.0..section.byte_range.end.0].to_string(), section.format.color, section.format.background)).collect();
+        let job = layout_job(
+            "val x = 1",
+            &[(0..3, "keyword")],
+            &[2..5, 7..8],
+            Color32::RED,
+            &font,
+            Color32::WHITE,
+            true,
+        );
+        let sections: Vec<(String, Color32, Color32)> = job
+            .sections
+            .iter()
+            .map(|section| {
+                (
+                    job.text[section.byte_range.start.0..section.byte_range.end.0].to_string(),
+                    section.format.color,
+                    section.format.background,
+                )
+            })
+            .collect();
         let keyword = color("keyword", true).unwrap();
         let transparent = Color32::TRANSPARENT;
         assert_eq!(
             sections,
             [
                 ("va".to_string(), keyword, transparent),
-                ("l".to_string(), keyword, Color32::RED), (" x".to_string(), Color32::WHITE, Color32::RED),
+                ("l".to_string(), keyword, Color32::RED),
+                (" x".to_string(), Color32::WHITE, Color32::RED),
                 (" =".to_string(), Color32::WHITE, transparent),
                 (" ".to_string(), Color32::WHITE, Color32::RED),
                 ("1".to_string(), Color32::WHITE, transparent)
@@ -314,7 +542,16 @@ mod tests {
     #[test]
     fn highlights_a_text_as_a_whole() {
         let lines = ["/* a".to_string(), "b */ val x = 1".to_string()];
-        assert_eq!(Highlighter::spans_of(Path::new("a.kt"), &lines), [vec![(0..4, "comment")], vec![(0..4, "comment"), (5..8, "keyword"), (13..14, "number")]]);
-        assert_eq!(Highlighter::spans_of(Path::new("a.txt"), &lines), [vec![], vec![]]);
+        assert_eq!(
+            Highlighter::spans_of(Path::new("a.kt"), &lines),
+            [
+                vec![(0..4, "comment")],
+                vec![(0..4, "comment"), (5..8, "keyword"), (13..14, "number")]
+            ]
+        );
+        assert_eq!(
+            Highlighter::spans_of(Path::new("a.txt"), &lines),
+            [vec![], vec![]]
+        );
     }
 }

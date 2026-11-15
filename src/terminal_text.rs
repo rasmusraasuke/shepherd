@@ -1,13 +1,17 @@
-
 use std::fs;
 use std::sync::Arc;
 
 use eframe::egui::epaint::QuadraticBezierShape;
-use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Painter, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{
+    self, Color32, FontData, FontDefinitions, FontFamily, Painter, Pos2, Rect, Stroke, Vec2,
+};
 
 const MENLO: &str = "/System/Library/Fonts/Menlo.ttc";
 
-const FALLBACKS: [(&str, f32); 2] = [("/System/Library/Fonts/Supplemental/STIXTwoMath.otf", 0.25), ("/System/Library/Fonts/Apple Symbols.ttf", 0.15)];
+const FALLBACKS: [(&str, f32); 2] = [
+    ("/System/Library/Fonts/Supplemental/STIXTwoMath.otf", 0.25),
+    ("/System/Library/Fonts/Apple Symbols.ttf", 0.15),
+];
 
 pub fn family(fonts_ready: bool, bold: bool, italic: bool) -> FontFamily {
     if !fonts_ready {
@@ -23,7 +27,12 @@ pub fn family(fonts_ready: bool, bold: bool, italic: bool) -> FontFamily {
 }
 
 pub fn fonts_ready(ctx: &egui::Context) -> bool {
-    if ctx.fonts(|fonts| fonts.definitions().families.contains_key(&family(true, false, false))) {
+    if ctx.fonts(|fonts| {
+        fonts
+            .definitions()
+            .families
+            .contains_key(&family(true, false, false))
+    }) {
         return true;
     }
     let id = egui::Id::unique("terminal fonts added");
@@ -39,21 +48,36 @@ fn install_fonts(ctx: &egui::Context) {
         .iter()
         .filter_map(|(path, y_offset_factor)| {
             let font = fs::read(path).ok()?;
-            let tweak = egui::FontTweak { y_offset_factor: *y_offset_factor, ..Default::default() };
-            definitions.font_data.insert(path.to_string(), Arc::new(FontData::from_owned(font).tweak(tweak)));
+            let tweak = egui::FontTweak {
+                y_offset_factor: *y_offset_factor,
+                ..Default::default()
+            };
+            definitions.font_data.insert(
+                path.to_string(),
+                Arc::new(FontData::from_owned(font).tweak(tweak)),
+            );
             Some(path.to_string())
         })
         .collect();
     fallbacks.extend(definitions.families[&FontFamily::Monospace].clone());
-    let menlo: Option<egui::epaint::text::Blob> = fs::read(MENLO).ok().map(|font| Arc::new(font) as _);
-    for (index, (bold, italic)) in [(false, false), (true, false), (false, true), (true, true)].into_iter().enumerate() {
+    let menlo: Option<egui::epaint::text::Blob> =
+        fs::read(MENLO).ok().map(|font| Arc::new(font) as _);
+    for (index, (bold, italic)) in [(false, false), (true, false), (false, true), (true, true)]
+        .into_iter()
+        .enumerate()
+    {
         let mut fonts = fallbacks.clone();
         if let Some(menlo) = &menlo {
             let name = format!("{MENLO}#{index}");
-            definitions.font_data.insert(name.clone(), Arc::new(FontData::from_blob(menlo.clone(), index as u32)));
+            definitions.font_data.insert(
+                name.clone(),
+                Arc::new(FontData::from_blob(menlo.clone(), index as u32)),
+            );
             fonts.insert(0, name);
         }
-        definitions.families.insert(family(true, bold, italic), fonts);
+        definitions
+            .families
+            .insert(family(true, bold, italic), fonts);
     }
     ctx.set_fonts(definitions);
 }
@@ -75,8 +99,15 @@ pub fn draw(painter: &Painter, cell: Rect, c: char, color: Color32, pixel: f32) 
         '\u{2800}'..='\u{28FF}' => draw_braille(painter, cell, c, color),
         '\u{2580}'..='\u{259F}' => {
             for (part, alpha) in block_parts(c) {
-                let rect = Rect::from_min_max(cell.min + part.min.to_vec2() * cell.size(), cell.min + part.max.to_vec2() * cell.size());
-                painter.rect_filled(Rect::from_min_max(snap(rect.min, pixel), snap(rect.max, pixel)), 0.0, color.gamma_multiply(alpha));
+                let rect = Rect::from_min_max(
+                    cell.min + part.min.to_vec2() * cell.size(),
+                    cell.min + part.max.to_vec2() * cell.size(),
+                );
+                painter.rect_filled(
+                    Rect::from_min_max(snap(rect.min, pixel), snap(rect.max, pixel)),
+                    0.0,
+                    color.gamma_multiply(alpha),
+                );
             }
         }
         _ => return false,
@@ -85,7 +116,10 @@ pub fn draw(painter: &Painter, cell: Rect, c: char, color: Color32, pixel: f32) 
 }
 
 fn snap(pos: Pos2, pixel: f32) -> Pos2 {
-    Pos2::new((pos.x / pixel).round() * pixel, (pos.y / pixel).round() * pixel)
+    Pos2::new(
+        (pos.x / pixel).round() * pixel,
+        (pos.y / pixel).round() * pixel,
+    )
 }
 
 fn line_width(cell: Rect, pixel: f32) -> f32 {
@@ -105,14 +139,23 @@ const BOX_ARMS: &[u8] = b"\
 fn box_arms(c: char) -> [u8; 4] {
     let start = (c as usize - 0x2500) * 5;
     let arms = &BOX_ARMS[start..start + 4];
-    [arms[0] - b'0', arms[1] - b'0', arms[2] - b'0', arms[3] - b'0']
+    [
+        arms[0] - b'0',
+        arms[1] - b'0',
+        arms[2] - b'0',
+        arms[3] - b'0',
+    ]
 }
 
 fn draw_lines(painter: &Painter, cell: Rect, arms: [u8; 4], color: Color32, pixel: f32) {
     let light = line_width(cell, pixel);
     let center = snap(cell.center(), pixel);
     let gap = light * 1.5;
-    let reach = if arms.contains(&3) { gap + light / 2.0 } else { light * if arms.contains(&2) { 1.0 } else { 0.5 } };
+    let reach = if arms.contains(&3) {
+        gap + light / 2.0
+    } else {
+        light * if arms.contains(&2) { 1.0 } else { 0.5 }
+    };
     let ends = [cell.top(), cell.right(), cell.bottom(), cell.left()];
     for (side, (weight, end)) in arms.into_iter().zip(ends).enumerate() {
         let (width, offsets): (f32, &[f32]) = match weight {
@@ -124,12 +167,26 @@ fn draw_lines(painter: &Painter, cell: Rect, arms: [u8; 4], color: Color32, pixe
         for offset in offsets {
             let rect = if side % 2 == 0 {
                 let x = center.x + offset;
-                let (from, to) = if side == 0 { (end, center.y + reach) } else { (center.y - reach, end) };
-                Rect::from_min_max(Pos2::new(x - width / 2.0, from), Pos2::new(x + width / 2.0, to))
+                let (from, to) = if side == 0 {
+                    (end, center.y + reach)
+                } else {
+                    (center.y - reach, end)
+                };
+                Rect::from_min_max(
+                    Pos2::new(x - width / 2.0, from),
+                    Pos2::new(x + width / 2.0, to),
+                )
             } else {
                 let y = center.y + offset;
-                let (from, to) = if side == 3 { (end, center.x + reach) } else { (center.x - reach, end) };
-                Rect::from_min_max(Pos2::new(from, y - width / 2.0), Pos2::new(to, y + width / 2.0))
+                let (from, to) = if side == 3 {
+                    (end, center.x + reach)
+                } else {
+                    (center.x - reach, end)
+                };
+                Rect::from_min_max(
+                    Pos2::new(from, y - width / 2.0),
+                    Pos2::new(to, y + width / 2.0),
+                )
             };
             painter.rect_filled(rect, 0.0, color);
         }
@@ -138,39 +195,85 @@ fn draw_lines(painter: &Painter, cell: Rect, arms: [u8; 4], color: Color32, pixe
 
 fn draw_arc(painter: &Painter, cell: Rect, c: char, color: Color32, pixel: f32) {
     let center = snap(cell.center(), pixel);
-    let vertical = Pos2::new(center.x, if matches!(c, '╭' | '╮') { cell.bottom() } else { cell.top() });
-    let horizontal = Pos2::new(if matches!(c, '╭' | '╰') { cell.right() } else { cell.left() }, center.y);
+    let vertical = Pos2::new(
+        center.x,
+        if matches!(c, '╭' | '╮') {
+            cell.bottom()
+        } else {
+            cell.top()
+        },
+    );
+    let horizontal = Pos2::new(
+        if matches!(c, '╭' | '╰') {
+            cell.right()
+        } else {
+            cell.left()
+        },
+        center.y,
+    );
     let stroke = Stroke::new(line_width(cell, pixel), color);
-    painter.add(QuadraticBezierShape::from_points_stroke([vertical, center, horizontal], false, Color32::TRANSPARENT, stroke));
+    painter.add(QuadraticBezierShape::from_points_stroke(
+        [vertical, center, horizontal],
+        false,
+        Color32::TRANSPARENT,
+        stroke,
+    ));
 }
 
 fn draw_braille(painter: &Painter, cell: Rect, c: char, color: Color32) {
     let radius = (cell.width() / 4.0).min(cell.height() / 8.0) * 0.7;
     for (row, column) in braille_dots(c) {
-        let center = cell.min + Vec2::new(cell.width() * (1.0 + 2.0 * column as f32) / 4.0, cell.height() * (1.0 + 2.0 * row as f32) / 8.0);
+        let center = cell.min
+            + Vec2::new(
+                cell.width() * (1.0 + 2.0 * column as f32) / 4.0,
+                cell.height() * (1.0 + 2.0 * row as f32) / 8.0,
+            );
         painter.circle_filled(center, radius, color);
     }
 }
 
 fn braille_dots(c: char) -> Vec<(usize, usize)> {
-    const DOTS: [(usize, usize); 8] = [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1), (3, 0), (3, 1)];
+    const DOTS: [(usize, usize); 8] = [
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (3, 0),
+        (3, 1),
+    ];
     let bits = c as u32 - 0x2800;
-    DOTS.into_iter().enumerate().filter(|(bit, _)| bits & (1 << bit) != 0).map(|(_, dot)| dot).collect()
+    DOTS.into_iter()
+        .enumerate()
+        .filter(|(bit, _)| bits & (1 << bit) != 0)
+        .map(|(_, dot)| dot)
+        .collect()
 }
 
 fn block_parts(c: char) -> Vec<(Rect, f32)> {
-    let part = |left: f32, top: f32, right: f32, bottom: f32| (Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom)), 1.0);
+    let part = |left: f32, top: f32, right: f32, bottom: f32| {
+        (
+            Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom)),
+            1.0,
+        )
+    };
     let eighth = |n: u32| n as f32 / 8.0;
     match c as u32 {
         0x2580 => vec![part(0.0, 0.0, 1.0, 0.5)],
         code @ 0x2581..=0x2588 => vec![part(0.0, 1.0 - eighth(code - 0x2580), 1.0, 1.0)],
         code @ 0x2589..=0x258F => vec![part(0.0, 0.0, eighth(0x2590 - code), 1.0)],
         0x2590 => vec![part(0.5, 0.0, 1.0, 1.0)],
-        code @ 0x2591..=0x2593 => vec![(Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), (code - 0x2590) as f32 / 4.0)],
+        code @ 0x2591..=0x2593 => vec![(
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            (code - 0x2590) as f32 / 4.0,
+        )],
         0x2594 => vec![part(0.0, 0.0, 1.0, eighth(1))],
         0x2595 => vec![part(eighth(7), 0.0, 1.0, 1.0)],
         code @ 0x2596..=0x259F => {
-            const QUADRANTS: [u8; 10] = [0b0100, 0b1000, 0b0001, 0b1101, 0b1001, 0b0111, 0b1011, 0b0010, 0b0110, 0b1110];
+            const QUADRANTS: [u8; 10] = [
+                0b0100, 0b1000, 0b0001, 0b1101, 0b1001, 0b0111, 0b1011, 0b0010, 0b0110, 0b1110,
+            ];
             let quadrants = QUADRANTS[(code - 0x2596) as usize];
             [(0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5)]
                 .into_iter()
@@ -201,10 +304,24 @@ mod tests {
     fn knows_the_parts_of_block_characters() {
         let full = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         assert_eq!(block_parts('█'), [(full, 1.0)]);
-        assert_eq!(block_parts('▁'), [(Rect::from_min_max(Pos2::new(0.0, 0.875), Pos2::new(1.0, 1.0)), 1.0)]);
-        assert_eq!(block_parts('▏'), [(Rect::from_min_max(Pos2::ZERO, Pos2::new(0.125, 1.0)), 1.0)]);
+        assert_eq!(
+            block_parts('▁'),
+            [(
+                Rect::from_min_max(Pos2::new(0.0, 0.875), Pos2::new(1.0, 1.0)),
+                1.0
+            )]
+        );
+        assert_eq!(
+            block_parts('▏'),
+            [(Rect::from_min_max(Pos2::ZERO, Pos2::new(0.125, 1.0)), 1.0)]
+        );
         assert_eq!(block_parts('▒'), [(full, 0.5)]);
-        let quadrants = |c| block_parts(c).into_iter().map(|(rect, _)| (rect.min.x, rect.min.y)).collect::<Vec<_>>();
+        let quadrants = |c| {
+            block_parts(c)
+                .into_iter()
+                .map(|(rect, _)| (rect.min.x, rect.min.y))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(quadrants('▛'), [(0.0, 0.0), (0.5, 0.0), (0.0, 0.5)]);
         assert_eq!(quadrants('▟'), [(0.5, 0.0), (0.0, 0.5), (0.5, 0.5)]);
         assert_eq!(quadrants('▖'), [(0.0, 0.5)]);

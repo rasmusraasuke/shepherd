@@ -18,7 +18,10 @@ pub enum Outcome {
 impl QuickOpen {
     pub fn ui(&mut self, ctx: &egui::Context, files: &[String]) -> Option<Outcome> {
         if self.searched.as_ref() != Some(&self.query) {
-            self.results = find(files, &self.query, MAX_RESULTS).into_iter().map(str::to_string).collect();
+            self.results = find(files, &self.query, MAX_RESULTS)
+                .into_iter()
+                .map(str::to_string)
+                .collect();
             self.searched = Some(self.query.clone());
             self.selected = 0;
         }
@@ -35,7 +38,12 @@ impl QuickOpen {
         let area = egui::Modal::default_area(id).anchor(Align2::CENTER_TOP, [0.0, 60.0]);
         let modal = egui::Modal::new(id).area(area).show(ctx, |ui| {
             ui.set_width(520.0_f32.min(ctx.content_rect().width() - 40.0));
-            egui::TextEdit::singleline(&mut self.query).hint_text("Open file by name").desired_width(f32::INFINITY).show(ui).response.request_focus();
+            egui::TextEdit::singleline(&mut self.query)
+                .hint_text("Open file by name")
+                .desired_width(f32::INFINITY)
+                .show(ui)
+                .response
+                .request_focus();
             for (index, path) in self.results.iter().enumerate() {
                 if ui.selectable_label(index == self.selected, path).clicked() {
                     picked = Some(index);
@@ -55,14 +63,28 @@ fn find<'a>(files: &'a [String], query: &str, limit: usize) -> Vec<&'a str> {
     if query.is_empty() {
         return Vec::new();
     }
-    let mut found: Vec<(i32, &str)> = files.iter().filter_map(|path| Some((path_score(path, &query)?, path.as_str()))).collect();
-    found.sort_by(|(score_a, a), (score_b, b)| score_b.cmp(score_a).then(a.len().cmp(&b.len())).then(a.cmp(b)));
-    found.into_iter().take(limit).map(|(_, path)| path).collect()
+    let mut found: Vec<(i32, &str)> = files
+        .iter()
+        .filter_map(|path| Some((path_score(path, &query)?, path.as_str())))
+        .collect();
+    found.sort_by(|(score_a, a), (score_b, b)| {
+        score_b
+            .cmp(score_a)
+            .then(a.len().cmp(&b.len()))
+            .then(a.cmp(b))
+    });
+    found
+        .into_iter()
+        .take(limit)
+        .map(|(_, path)| path)
+        .collect()
 }
 
 fn path_score(path: &str, query: &str) -> Option<i32> {
     let name = path.rsplit('/').next().unwrap_or(path);
-    score(name, query).map(|score| score + 100).or_else(|| score(path, query))
+    score(name, query)
+        .map(|score| score + 100)
+        .or_else(|| score(path, query))
 }
 
 fn score(text: &str, query: &str) -> Option<i32> {
@@ -74,7 +96,8 @@ fn score(text: &str, query: &str) -> Option<i32> {
         let Some(want) = wanted.peek() else { break };
         let matched = c.to_lowercase().eq(want.to_lowercase());
         if matched {
-            let word_start = previous.is_none_or(|p| !p.is_alphanumeric() || (p.is_lowercase() && c.is_uppercase()));
+            let word_start = previous
+                .is_none_or(|p| !p.is_alphanumeric() || (p.is_lowercase() && c.is_uppercase()));
             score += 1 + if previous_matched { 5 } else { 0 } + if word_start { 10 } else { 0 };
             wanted.next();
         }
@@ -89,7 +112,16 @@ mod tests {
     use super::*;
 
     fn files() -> Vec<String> {
-        ["src/app.rs", "src/git.rs", "src/review.rs", "docs/app/readme.md", "src/FileTree.kt", "src/filter.kt"].map(str::to_string).to_vec()
+        [
+            "src/app.rs",
+            "src/git.rs",
+            "src/review.rs",
+            "docs/app/readme.md",
+            "src/FileTree.kt",
+            "src/filter.kt",
+        ]
+        .map(str::to_string)
+        .to_vec()
     }
 
     #[test]
@@ -106,12 +138,18 @@ mod tests {
 
     #[test]
     fn file_name_matches_come_before_directory_matches() {
-        assert_eq!(find(&files(), "app", 10), ["src/app.rs", "docs/app/readme.md"]);
+        assert_eq!(
+            find(&files(), "app", 10),
+            ["src/app.rs", "docs/app/readme.md"]
+        );
     }
 
     #[test]
     fn word_starts_beat_scattered_characters() {
-        assert_eq!(find(&files(), "ft", 10), ["src/FileTree.kt", "src/filter.kt"]);
+        assert_eq!(
+            find(&files(), "ft", 10),
+            ["src/FileTree.kt", "src/filter.kt"]
+        );
     }
 
     #[test]

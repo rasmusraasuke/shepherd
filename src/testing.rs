@@ -7,7 +7,11 @@ pub struct TempDir(PathBuf);
 impl TempDir {
     pub fn new(name: &str) -> Self {
         static CREATED: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!("editor-test-{}-{}-{name}", std::process::id(), CREATED.fetch_add(1, Ordering::SeqCst)));
+        let path = std::env::temp_dir().join(format!(
+            "editor-test-{}-{}-{name}",
+            std::process::id(),
+            CREATED.fetch_add(1, Ordering::SeqCst)
+        ));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         Self(path)

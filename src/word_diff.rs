@@ -7,8 +7,18 @@ pub type Ranges = Vec<Range<usize>>;
 pub fn changed_ranges(old: &str, new: &str) -> Option<(Ranges, Ranges)> {
     let (a, b) = (words(old), words(new));
     let (a_kept, b_kept) = common(&a, &b, old, new);
-    let kept_size: usize = a.iter().zip(&a_kept).filter(|(word, kept)| **kept && !is_space(&old[(*word).clone()])).map(|(word, _)| word.len()).sum();
-    let size = |text: &str| text.chars().filter(|c| !c.is_whitespace()).map(char::len_utf8).sum::<usize>();
+    let kept_size: usize = a
+        .iter()
+        .zip(&a_kept)
+        .filter(|(word, kept)| **kept && !is_space(&old[(*word).clone()]))
+        .map(|(word, _)| word.len())
+        .sum();
+    let size = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_whitespace())
+            .map(char::len_utf8)
+            .sum::<usize>()
+    };
     if kept_size * 2 < size(old).max(size(new)) {
         return None;
     }
@@ -16,7 +26,15 @@ pub fn changed_ranges(old: &str, new: &str) -> Option<(Ranges, Ranges)> {
 }
 
 fn words(text: &str) -> Vec<Range<usize>> {
-    let class = |c: char| if c.is_alphanumeric() || c == '_' { 1 } else if c.is_whitespace() { 2 } else { 0 };
+    let class = |c: char| {
+        if c.is_alphanumeric() || c == '_' {
+            1
+        } else if c.is_whitespace() {
+            2
+        } else {
+            0
+        }
+    };
     let mut words: Vec<Range<usize>> = Vec::new();
     let mut previous = None;
     for (at, c) in text.char_indices() {
@@ -58,7 +76,11 @@ fn common(a: &[Range<usize>], b: &[Range<usize>], old: &str, new: &str) -> (Vec<
     let mut lengths = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            lengths[i][j] = if same(start + i, start + j) { lengths[i + 1][j + 1] + 1 } else { lengths[i + 1][j].max(lengths[i][j + 1]) };
+            lengths[i][j] = if same(start + i, start + j) {
+                lengths[i + 1][j + 1] + 1
+            } else {
+                lengths[i + 1][j].max(lengths[i][j + 1])
+            };
         }
     }
     let (mut i, mut j) = (0, 0);
@@ -101,20 +123,38 @@ mod tests {
 
     fn changes(old: &str, new: &str) -> Option<(Vec<String>, Vec<String>)> {
         let (a, b) = changed_ranges(old, new)?;
-        Some((a.into_iter().map(|r| old[r].to_string()).collect(), b.into_iter().map(|r| new[r].to_string()).collect()))
+        Some((
+            a.into_iter().map(|r| old[r].to_string()).collect(),
+            b.into_iter().map(|r| new[r].to_string()).collect(),
+        ))
     }
 
     #[test]
     fn finds_the_words_that_changed() {
-        assert_eq!(changes("val total = price * count", "val total = price * amount"), Some((vec!["count".into()], vec!["amount".into()])));
-        assert_eq!(changes("call(a)", "call(a, b)"), Some((vec![], vec![", b".into()])));
-        assert_eq!(changes("    return x", "        return x"), Some((vec!["    ".into()], vec!["        ".into()])));
-        assert_eq!(changes("fn öäü(x: u8) {}", "fn öäü(y: u8) {}"), Some((vec!["x".into()], vec!["y".into()])));
+        assert_eq!(
+            changes("val total = price * count", "val total = price * amount"),
+            Some((vec!["count".into()], vec!["amount".into()]))
+        );
+        assert_eq!(
+            changes("call(a)", "call(a, b)"),
+            Some((vec![], vec![", b".into()]))
+        );
+        assert_eq!(
+            changes("    return x", "        return x"),
+            Some((vec!["    ".into()], vec!["        ".into()]))
+        );
+        assert_eq!(
+            changes("fn öäü(x: u8) {}", "fn öäü(y: u8) {}"),
+            Some((vec!["x".into()], vec!["y".into()]))
+        );
     }
 
     #[test]
     fn joins_changed_words_with_the_spaces_between_them() {
-        assert_eq!(changes("let a = one two three;", "let a = four five three;"), Some((vec!["one two".into()], vec!["four five".into()])));
+        assert_eq!(
+            changes("let a = one two three;", "let a = four five three;"),
+            Some((vec!["one two".into()], vec!["four five".into()]))
+        );
     }
 
     #[test]
@@ -128,6 +168,9 @@ mod tests {
         let new = format!("start {} end", "b ".repeat(1000));
         assert_eq!(changes(&old, &new), None);
         let new = old.replacen("a ", "x ", 1);
-        assert_eq!(changes(&old, &new), Some((vec!["a".into()], vec!["x".into()])));
+        assert_eq!(
+            changes(&old, &new),
+            Some((vec!["a".into()], vec!["x".into()]))
+        );
     }
 }

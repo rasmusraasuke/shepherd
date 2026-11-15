@@ -42,7 +42,11 @@ impl Control {
     pub fn start(ctx: egui::Context) -> Result<Self, String> {
         static STARTED: AtomicUsize = AtomicUsize::new(0);
         remove_stale(&std::env::temp_dir(), STARTING);
-        let dir = std::env::temp_dir().join(format!("editor-{}-{}", std::process::id(), STARTED.fetch_add(1, Ordering::SeqCst)));
+        let dir = std::env::temp_dir().join(format!(
+            "editor-{}-{}",
+            std::process::id(),
+            STARTED.fetch_add(1, Ordering::SeqCst)
+        ));
         let error = |e: std::io::Error| format!("Agents can't reach the editor: {e}");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("bin")).map_err(error)?;
@@ -80,11 +84,19 @@ impl Drop for Control {
 }
 
 fn remove_stale(parent: &Path, starting: Duration) {
-    let Ok(entries) = fs::read_dir(parent) else { return };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let ours = name.strip_prefix("editor-").and_then(|rest| rest.split_once('-')).is_some_and(|(pid, n)| pid.parse::<u32>().is_ok() && n.parse::<u32>().is_ok());
-        let old = entry.metadata().and_then(|meta| meta.modified()).is_ok_and(|modified| modified.elapsed().unwrap_or_default() >= starting);
+        let ours = name
+            .strip_prefix("editor-")
+            .and_then(|rest| rest.split_once('-'))
+            .is_some_and(|(pid, n)| pid.parse::<u32>().is_ok() && n.parse::<u32>().is_ok());
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| modified.elapsed().unwrap_or_default() >= starting);
         if ours && old && UnixStream::connect(entry.path().join("control.sock")).is_err() {
             let _ = fs::remove_dir_all(entry.path());
         }
@@ -101,7 +113,9 @@ fn serve(stream: UnixStream, sender: &Sender<Request>, ctx: &egui::Context) {
             let (reply, answer) = mpsc::channel();
             let _ = sender.send(Request { args, reply });
             ctx.request_repaint();
-            answer.recv_timeout(ANSWER_TIMEOUT).unwrap_or_else(|_| Err("The editor didn't answer".to_string()))
+            answer
+                .recv_timeout(ANSWER_TIMEOUT)
+                .unwrap_or_else(|_| Err("The editor didn't answer".to_string()))
         }
         Err(e) => Err(format!("Not a command: {e}")),
     };
@@ -109,21 +123,40 @@ fn serve(stream: UnixStream, sender: &Sender<Request>, ctx: &egui::Context) {
         Ok(output) => Answer { ok: true, output },
         Err(output) => Answer { ok: false, output },
     };
-    let _ = writeln!(&stream, "{}", serde_json::to_string(&answer).unwrap_or_default());
+    let _ = writeln!(
+        &stream,
+        "{}",
+        serde_json::to_string(&answer).unwrap_or_default()
+    );
 }
 
 pub fn ask(socket: &Path, args: &[String]) -> Result<String, String> {
-    let stream = UnixStream::connect(socket).map_err(|e| format!("Cannot reach the editor at {}: {e}", socket.display()))?;
-    writeln!(&stream, "{}", serde_json::to_string(args).unwrap_or_default()).map_err(|e| e.to_string())?;
+    let stream = UnixStream::connect(socket)
+        .map_err(|e| format!("Cannot reach the editor at {}: {e}", socket.display()))?;
+    writeln!(
+        &stream,
+        "{}",
+        serde_json::to_string(args).unwrap_or_default()
+    )
+    .map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(&stream).read_line(&mut line).map_err(|e| e.to_string())?;
-    let answer: Answer = serde_json::from_str(&line).map_err(|e| format!("The editor gave no answer: {e}"))?;
-    if answer.ok { Ok(answer.output) } else { Err(answer.output) }
+    BufReader::new(&stream)
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    let answer: Answer =
+        serde_json::from_str(&line).map_err(|e| format!("The editor gave no answer: {e}"))?;
+    if answer.ok {
+        Ok(answer.output)
+    } else {
+        Err(answer.output)
+    }
 }
 
 pub fn run_command(args: &[String]) -> i32 {
     let Some(socket) = std::env::var_os(SOCKET_VARIABLE) else {
-        eprintln!("editor ctl works in the terminals of the editor only (no {SOCKET_VARIABLE} set)");
+        eprintln!(
+            "editor ctl works in the terminals of the editor only (no {SOCKET_VARIABLE} set)"
+        );
         return 2;
     };
     match ask(Path::new(&socket), args) {
@@ -154,9 +187,15 @@ mod tests {
         let _running = UnixListener::bind(dir("editor-2-0").join("control.sock")).unwrap();
         dir("editor-notes");
         remove_stale(parent.path(), STARTING);
-        assert!(parent.path().join("editor-1-0").exists(), "a young directory may be of an editor starting");
+        assert!(
+            parent.path().join("editor-1-0").exists(),
+            "a young directory may be of an editor starting"
+        );
         remove_stale(parent.path(), Duration::ZERO);
-        let mut left: Vec<String> = fs::read_dir(parent.path()).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut left: Vec<String> = fs::read_dir(parent.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         left.sort();
         assert_eq!(left, ["editor-2-0", "editor-notes"]);
     }
@@ -165,11 +204,20 @@ mod tests {
     fn answers_commands_sent_over_the_socket() {
         let control = Control::start(egui::Context::default()).unwrap();
         let socket = control.socket();
-        let asking = thread::spawn(move || (ask(&socket, &["open".to_string(), "a.rs".to_string()]), ask(&socket, &["wrong".to_string()])));
+        let asking = thread::spawn(move || {
+            (
+                ask(&socket, &["open".to_string(), "a.rs".to_string()]),
+                ask(&socket, &["wrong".to_string()]),
+            )
+        });
         let mut answered = 0;
         while answered < 2 {
             for request in control.requests() {
-                let answer = if request.args[0] == "open" { Ok(format!("opened {}", request.args[1])) } else { Err("no such command".to_string()) };
+                let answer = if request.args[0] == "open" {
+                    Ok(format!("opened {}", request.args[1]))
+                } else {
+                    Err("no such command".to_string())
+                };
                 request.answer(answer);
                 answered += 1;
             }

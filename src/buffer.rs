@@ -53,12 +53,16 @@ fn chars(line: &str) -> usize {
 }
 
 fn byte(line: &str, col: usize) -> usize {
-    line.char_indices().nth(col).map_or(line.len(), |(index, _)| index)
+    line.char_indices()
+        .nth(col)
+        .map_or(line.len(), |(index, _)| index)
 }
 
 fn end_of(start: Pos, text: &str) -> Pos {
     match text.rsplit_once('\n') {
-        Some((before, last)) => Pos::new(start.line + before.matches('\n').count() + 1, chars(last)),
+        Some((before, last)) => {
+            Pos::new(start.line + before.matches('\n').count() + 1, chars(last))
+        }
         None => Pos::new(start.line, start.col + chars(text)),
     }
 }
@@ -68,13 +72,23 @@ pub fn find_in_line(line: &str, query: &str) -> Vec<std::ops::Range<usize>> {
         return Vec::new();
     }
     let exact = query.chars().any(char::is_uppercase);
-    let same = |a: &char, b: &char| if exact { a == b } else { a.to_lowercase().eq(b.to_lowercase()) };
+    let same = |a: &char, b: &char| {
+        if exact {
+            a == b
+        } else {
+            a.to_lowercase().eq(b.to_lowercase())
+        }
+    };
     let query: Vec<char> = query.chars().collect();
     let line: Vec<char> = line.chars().collect();
     let mut found = Vec::new();
     let mut col = 0;
     while col + query.len() <= line.len() {
-        if line[col..col + query.len()].iter().zip(&query).all(|(a, b)| same(a, b)) {
+        if line[col..col + query.len()]
+            .iter()
+            .zip(&query)
+            .all(|(a, b)| same(a, b))
+        {
             found.push(col..col + query.len());
             col += query.len();
         } else {
@@ -108,7 +122,10 @@ fn kind(c: char) -> CharKind {
 impl Buffer {
     pub fn new(text: &str) -> Self {
         let crlf = text.contains("\r\n");
-        let lines = text.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line).to_string()).collect();
+        let lines = text
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
+            .collect();
         Self {
             lines,
             crlf,
@@ -138,7 +155,8 @@ impl Buffer {
     }
 
     pub fn selection(&self) -> Option<(Pos, Pos)> {
-        (self.cursor != self.anchor).then(|| (self.cursor.min(self.anchor), self.cursor.max(self.anchor)))
+        (self.cursor != self.anchor)
+            .then(|| (self.cursor.min(self.anchor), self.cursor.max(self.anchor)))
     }
 
     pub fn selected_text(&self) -> Option<String> {
@@ -195,13 +213,19 @@ impl Buffer {
     }
 
     fn offset(&self, pos: Pos) -> usize {
-        self.lines[..pos.line].iter().map(|line| line.len() + 1).sum::<usize>() + self.point(pos).column
+        self.lines[..pos.line]
+            .iter()
+            .map(|line| line.len() + 1)
+            .sum::<usize>()
+            + self.point(pos).column
     }
 
     fn splice(&mut self, start: Pos, end: Pos, text: &str) -> String {
         let (start_byte, start_position) = (self.offset(start), self.point(start));
         let new_end_position = match text.rsplit_once('\n') {
-            Some((before, last)) => Point::new(start.line + before.matches('\n').count() + 1, last.len()),
+            Some((before, last)) => {
+                Point::new(start.line + before.matches('\n').count() + 1, last.len())
+            }
             None => Point::new(start.line, start_position.column + text.len()),
         };
         self.changes.push(InputEdit {
@@ -214,8 +238,15 @@ impl Buffer {
         });
         let removed = self.slice(start, end);
         let (first, last) = (&self.lines[start.line], &self.lines[end.line]);
-        let replaced = format!("{}{text}{}", &first[..byte(first, start.col)], &last[byte(last, end.col)..]);
-        self.lines.splice(start.line..=end.line, replaced.split('\n').map(str::to_string));
+        let replaced = format!(
+            "{}{text}{}",
+            &first[..byte(first, start.col)],
+            &last[byte(last, end.col)..]
+        );
+        self.lines.splice(
+            start.line..=end.line,
+            replaced.split('\n').map(str::to_string),
+        );
         removed
     }
 
@@ -226,7 +257,13 @@ impl Buffer {
         let selection = (self.cursor, self.anchor);
         let removed = self.splice(start, end, text);
         self.last_revision += 1;
-        self.undo.push(Edit { start, removed, inserted: text.to_string(), selection, revisions: (self.revision, self.last_revision) });
+        self.undo.push(Edit {
+            start,
+            removed,
+            inserted: text.to_string(),
+            selection,
+            revisions: (self.revision, self.last_revision),
+        });
         self.redo.clear();
         self.revision = self.last_revision;
         self.place_cursor(end_of(start, text));
@@ -241,7 +278,11 @@ impl Buffer {
 
     pub fn undo(&mut self) {
         let Some(edit) = self.undo.pop() else { return };
-        self.splice(edit.start, end_of(edit.start, &edit.inserted), &edit.removed);
+        self.splice(
+            edit.start,
+            end_of(edit.start, &edit.inserted),
+            &edit.removed,
+        );
         self.place_cursor(edit.selection.0);
         self.anchor = edit.selection.1;
         self.revision = edit.revisions.0;
@@ -250,7 +291,11 @@ impl Buffer {
 
     pub fn redo(&mut self) {
         let Some(edit) = self.redo.pop() else { return };
-        self.splice(edit.start, end_of(edit.start, &edit.removed), &edit.inserted);
+        self.splice(
+            edit.start,
+            end_of(edit.start, &edit.removed),
+            &edit.inserted,
+        );
         self.place_cursor(end_of(edit.start, &edit.inserted));
         self.revision = edit.revisions.1;
         self.undo.push(edit);
@@ -262,7 +307,9 @@ impl Buffer {
     }
 
     pub fn type_text(&mut self, text: &str) {
-        let continues = self.typing_at == Some(self.cursor) && self.selection().is_none() && !text.starts_with(char::is_whitespace);
+        let continues = self.typing_at == Some(self.cursor)
+            && self.selection().is_none()
+            && !text.starts_with(char::is_whitespace);
         if continues && !self.undo.is_empty() {
             let cursor = self.cursor;
             self.splice(cursor, cursor, text);
@@ -281,8 +328,14 @@ impl Buffer {
     }
 
     pub fn newline(&mut self) {
-        let line = &self.lines[self.selection().map_or(self.cursor, |(start, _)| start).line];
-        let indent: String = line.chars().take(indent_of(line).min(self.cursor.col)).collect();
+        let line = &self.lines[self
+            .selection()
+            .map_or(self.cursor, |(start, _)| start)
+            .line];
+        let indent: String = line
+            .chars()
+            .take(indent_of(line).min(self.cursor.col))
+            .collect();
         self.insert(&format!("\n{indent}"));
     }
 
@@ -317,16 +370,28 @@ impl Buffer {
     pub fn select_word(&mut self, pos: Pos) {
         let pos = self.clamp(pos);
         let line: Vec<char> = self.lines[pos.line].chars().collect();
-        let Some(at) = line.get(pos.col).or(line.last()).map(|c| kind(*c)) else { return };
+        let Some(at) = line.get(pos.col).or(line.last()).map(|c| kind(*c)) else {
+            return;
+        };
         let col = pos.col.min(line.len() - 1);
-        let start = line[..col].iter().rposition(|c| kind(*c) != at).map_or(0, |index| index + 1);
-        let end = line[col..].iter().position(|c| kind(*c) != at).map_or(line.len(), |index| col + index);
+        let start = line[..col]
+            .iter()
+            .rposition(|c| kind(*c) != at)
+            .map_or(0, |index| index + 1);
+        let end = line[col..]
+            .iter()
+            .position(|c| kind(*c) != at)
+            .map_or(line.len(), |index| col + index);
         self.select(Pos::new(pos.line, start), Pos::new(pos.line, end));
     }
 
     pub fn select_line(&mut self, line: usize) {
         let line = line.min(self.lines.len() - 1);
-        let end = if line + 1 < self.lines.len() { Pos::new(line + 1, 0) } else { self.last_pos() };
+        let end = if line + 1 < self.lines.len() {
+            Pos::new(line + 1, 0)
+        } else {
+            self.last_pos()
+        };
         self.select(Pos::new(line, 0), end);
     }
 
@@ -337,8 +402,12 @@ impl Buffer {
             (Move::Left, Some((start, _))) if !extend => start,
             (Move::Right, Some((_, end))) if !extend => end,
             (Move::Left, _) if cursor.col > 0 => Pos::new(cursor.line, cursor.col - 1),
-            (Move::Left, _) if cursor.line > 0 => Pos::new(cursor.line - 1, self.line_len(cursor.line - 1)),
-            (Move::Right, _) if cursor.col < self.line_len(cursor.line) => Pos::new(cursor.line, cursor.col + 1),
+            (Move::Left, _) if cursor.line > 0 => {
+                Pos::new(cursor.line - 1, self.line_len(cursor.line - 1))
+            }
+            (Move::Right, _) if cursor.col < self.line_len(cursor.line) => {
+                Pos::new(cursor.line, cursor.col + 1)
+            }
             (Move::Right, _) if cursor.line + 1 < self.lines.len() => Pos::new(cursor.line + 1, 0),
             (Move::Left | Move::Right, _) => cursor,
             (Move::Rows(rows), _) => match cursor.line.checked_add_signed(rows) {
@@ -364,12 +433,22 @@ impl Buffer {
 
     fn word_left(&self, from: Pos) -> Pos {
         if from.col == 0 {
-            return if from.line > 0 { Pos::new(from.line - 1, self.line_len(from.line - 1)) } else { from };
+            return if from.line > 0 {
+                Pos::new(from.line - 1, self.line_len(from.line - 1))
+            } else {
+                from
+            };
         }
         let line: Vec<char> = self.lines[from.line].chars().take(from.col).collect();
-        let end = line.iter().rposition(|c| kind(*c) != CharKind::Space).map_or(0, |index| index + 1);
+        let end = line
+            .iter()
+            .rposition(|c| kind(*c) != CharKind::Space)
+            .map_or(0, |index| index + 1);
         let start = match end.checked_sub(1) {
-            Some(last) => line[..last].iter().rposition(|c| kind(*c) != kind(line[last])).map_or(0, |index| index + 1),
+            Some(last) => line[..last]
+                .iter()
+                .rposition(|c| kind(*c) != kind(line[last]))
+                .map_or(0, |index| index + 1),
             None => 0,
         };
         Pos::new(from.line, start)
@@ -378,25 +457,48 @@ impl Buffer {
     fn word_right(&self, from: Pos) -> Pos {
         let line: Vec<char> = self.lines[from.line].chars().collect();
         if from.col >= line.len() {
-            return if from.line + 1 < self.lines.len() { Pos::new(from.line + 1, 0) } else { from };
+            return if from.line + 1 < self.lines.len() {
+                Pos::new(from.line + 1, 0)
+            } else {
+                from
+            };
         }
         let rest = &line[from.col..];
-        let start = rest.iter().position(|c| kind(*c) != CharKind::Space).unwrap_or(rest.len());
+        let start = rest
+            .iter()
+            .position(|c| kind(*c) != CharKind::Space)
+            .unwrap_or(rest.len());
         let end = match rest.get(start) {
-            Some(first) => rest[start..].iter().position(|c| kind(*c) != kind(*first)).map_or(rest.len(), |index| start + index),
+            Some(first) => rest[start..]
+                .iter()
+                .position(|c| kind(*c) != kind(*first))
+                .map_or(rest.len(), |index| start + index),
             None => rest.len(),
         };
         Pos::new(from.line, from.col + end)
     }
 
     fn indent_unit(&self) -> &'static str {
-        if self.lines.iter().any(|line| line.starts_with('\t')) { "\t" } else { "    " }
+        if self.lines.iter().any(|line| line.starts_with('\t')) {
+            "\t"
+        } else {
+            "    "
+        }
     }
 
     pub fn indent(&mut self) {
         let unit = self.indent_unit();
-        match self.selection().filter(|(start, end)| start.line != end.line) {
-            Some(_) => self.change_lines(|line| if line.is_empty() { String::new() } else { format!("{unit}{line}") }),
+        match self
+            .selection()
+            .filter(|(start, end)| start.line != end.line)
+        {
+            Some(_) => self.change_lines(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("{unit}{line}")
+                }
+            }),
             None if unit == "\t" => self.insert(unit),
             None => {
                 let col = self.selection().map_or(self.cursor, |(start, _)| start).col;
@@ -408,7 +510,11 @@ impl Buffer {
     pub fn outdent(&mut self) {
         let width = self.indent_unit().len();
         self.change_lines(|line| {
-            let remove = if line.starts_with('\t') { 1 } else { line.chars().take(width).take_while(|c| *c == ' ').count() };
+            let remove = if line.starts_with('\t') {
+                1
+            } else {
+                line.chars().take(width).take_while(|c| *c == ' ').count()
+            };
             line[remove..].to_string()
         });
     }
@@ -416,25 +522,51 @@ impl Buffer {
     fn change_lines(&mut self, change: impl Fn(&str) -> String) {
         let (cursor, anchor) = (self.cursor, self.anchor);
         let (start, end) = (cursor.min(anchor), cursor.max(anchor));
-        let last = if end.line > start.line && end.col == 0 { end.line - 1 } else { end.line };
-        let changed: Vec<String> = self.lines[start.line..=last].iter().map(|line| change(line)).collect();
-        let moved = |pos: Pos| match pos.line.checked_sub(start.line).and_then(|index| changed.get(index)) {
-            Some(line) => Pos::new(pos.line, (pos.col + chars(line)).saturating_sub(self.line_len(pos.line))),
+        let last = if end.line > start.line && end.col == 0 {
+            end.line - 1
+        } else {
+            end.line
+        };
+        let changed: Vec<String> = self.lines[start.line..=last]
+            .iter()
+            .map(|line| change(line))
+            .collect();
+        let moved = |pos: Pos| match pos
+            .line
+            .checked_sub(start.line)
+            .and_then(|index| changed.get(index))
+        {
+            Some(line) => Pos::new(
+                pos.line,
+                (pos.col + chars(line)).saturating_sub(self.line_len(pos.line)),
+            ),
             None => pos,
         };
         let (cursor, anchor) = (moved(cursor), moved(anchor));
-        self.edit(Pos::new(start.line, 0), Pos::new(last, self.line_len(last)), &changed.join("\n"));
+        self.edit(
+            Pos::new(start.line, 0),
+            Pos::new(last, self.line_len(last)),
+            &changed.join("\n"),
+        );
         self.select(anchor, cursor);
     }
 
     pub fn find(&self, query: &str) -> Vec<(Pos, Pos)> {
-        let found = self.lines.iter().enumerate().flat_map(|(index, line)| find_in_line(line, query).into_iter().map(move |cols| (index, cols)));
-        found.map(|(index, cols)| (Pos::new(index, cols.start), Pos::new(index, cols.end))).collect()
+        let found = self.lines.iter().enumerate().flat_map(|(index, line)| {
+            find_in_line(line, query)
+                .into_iter()
+                .map(move |cols| (index, cols))
+        });
+        found
+            .map(|(index, cols)| (Pos::new(index, cols.start), Pos::new(index, cols.end)))
+            .collect()
     }
 
     pub fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
         let found = self.find(query);
-        let (Some(first), Some(last)) = (found.first(), found.last()) else { return 0 };
+        let (Some(first), Some(last)) = (found.first(), found.last()) else {
+            return 0;
+        };
         let mut text = String::new();
         for (index, (start, _)) in found.iter().enumerate() {
             if index > 0 {
@@ -448,12 +580,20 @@ impl Buffer {
 
     pub fn replace_lines(&mut self, range: std::ops::Range<usize>, with: &[String]) {
         let (start, end, text) = if range.end < self.lines.len() {
-            (Pos::new(range.start, 0), Pos::new(range.end, 0), with.iter().map(|line| format!("{line}\n")).collect())
+            (
+                Pos::new(range.start, 0),
+                Pos::new(range.end, 0),
+                with.iter().map(|line| format!("{line}\n")).collect(),
+            )
         } else if range.start == 0 {
             (Pos::default(), self.last_pos(), with.join("\n"))
         } else {
             let before = range.start - 1;
-            (Pos::new(before, self.line_len(before)), self.last_pos(), with.iter().map(|line| format!("\n{line}")).collect())
+            (
+                Pos::new(before, self.line_len(before)),
+                self.last_pos(),
+                with.iter().map(|line| format!("\n{line}")).collect(),
+            )
         };
         self.edit(start, end, &text);
     }
@@ -494,7 +634,12 @@ mod tests {
 
     #[test]
     fn replaces_whole_lines_as_one_edit() {
-        let lines = |texts: &[&str]| texts.iter().map(|text| text.to_string()).collect::<Vec<_>>();
+        let lines = |texts: &[&str]| {
+            texts
+                .iter()
+                .map(|text| text.to_string())
+                .collect::<Vec<_>>()
+        };
         let mut buffer = Buffer::new("a\nb\nc\n");
         buffer.replace_lines(1..2, &lines(&["x", "y"]));
         assert_eq!(buffer.text(), "a\nx\ny\nc\n");
@@ -576,7 +721,12 @@ mod tests {
         assert_eq!(shown(&buffer), "let x = foo.bar();\n|    second");
         buffer.move_cursor(Move::Left, false);
         assert_eq!(shown(&buffer), "let x = foo.bar();|\n    second");
-        for expected in ["let x = foo.bar|();", "let x = foo.|bar();", "let x = foo|.bar();", "let x = |foo.bar();"] {
+        for expected in [
+            "let x = foo.bar|();",
+            "let x = foo.|bar();",
+            "let x = foo|.bar();",
+            "let x = |foo.bar();",
+        ] {
             buffer.move_cursor(Move::WordLeft, false);
             assert_eq!(shown(&buffer), format!("{expected}\n    second"));
         }
@@ -687,13 +837,19 @@ mod tests {
         let mut buffer = buffer("fn main() {\n|let x = 1;\n\nlet y = 2;\n}");
         buffer.set_cursor(Pos::new(3, 3), true);
         buffer.indent();
-        assert_eq!(shown(&buffer), "fn main() {\n    ^let x = 1;\n\n    let| y = 2;\n}");
+        assert_eq!(
+            shown(&buffer),
+            "fn main() {\n    ^let x = 1;\n\n    let| y = 2;\n}"
+        );
         buffer.outdent();
         buffer.outdent();
         assert_eq!(shown(&buffer), "fn main() {\n^let x = 1;\n\nlet| y = 2;\n}");
         buffer.undo();
         buffer.undo();
-        assert_eq!(shown(&buffer), "fn main() {\n    ^let x = 1;\n\n    let| y = 2;\n}");
+        assert_eq!(
+            shown(&buffer),
+            "fn main() {\n    ^let x = 1;\n\n    let| y = 2;\n}"
+        );
     }
 
     #[test]
@@ -733,8 +889,17 @@ mod tests {
     #[test]
     fn finds_text_ignoring_case_unless_the_query_has_capitals() {
         let buffer = buffer("Foo foo\nfoofoo õFOO");
-        let found = |query| buffer.find(query).into_iter().map(|(start, end)| (start.line, start.col, end.col)).collect::<Vec<_>>();
-        assert_eq!(found("foo"), [(0, 0, 3), (0, 4, 7), (1, 0, 3), (1, 3, 6), (1, 8, 11)]);
+        let found = |query| {
+            buffer
+                .find(query)
+                .into_iter()
+                .map(|(start, end)| (start.line, start.col, end.col))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            found("foo"),
+            [(0, 0, 3), (0, 4, 7), (1, 0, 3), (1, 3, 6), (1, 8, 11)]
+        );
         assert_eq!(found("Foo"), [(0, 0, 3)]);
         assert_eq!(found("o f"), [(0, 2, 5)]);
         assert!(found("").is_empty());

@@ -38,14 +38,24 @@ struct OpenFile {
 
 impl OpenFiles {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, files: HashMap::new(), last_active: None }
+        Self {
+            root,
+            files: HashMap::new(),
+            last_active: None,
+        }
     }
 
     fn file(&mut self, path: &str) -> &mut OpenFile {
-        self.files.entry(path.to_string()).or_insert_with(|| OpenFile::open(self.root.join(path)))
+        self.files
+            .entry(path.to_string())
+            .or_insert_with(|| OpenFile::open(self.root.join(path)))
     }
 
-    pub fn text(&mut self, path: &str, missing_is_empty: bool) -> Result<(&mut Buffer, Option<&mut Highlighter>), &str> {
+    pub fn text(
+        &mut self,
+        path: &str,
+        missing_is_empty: bool,
+    ) -> Result<(&mut Buffer, Option<&mut Highlighter>), &str> {
         let file = self.file(path);
         if missing_is_empty && file.buffer.is_err() && !file.path.exists() {
             file.buffer = Ok(Buffer::new(""));
@@ -62,14 +72,25 @@ impl OpenFiles {
 
     pub fn selected_text(&self) -> Option<String> {
         let file = self.files.values().find(|file| file.editor.is_active())?;
-        file.buffer.as_ref().ok()?.selected_text().filter(|text| !text.contains('\n'))
+        file.buffer
+            .as_ref()
+            .ok()?
+            .selected_text()
+            .filter(|text| !text.contains('\n'))
     }
 
     pub fn selection(&self) -> Option<Selection> {
         let path = self.last_active.as_ref()?;
         let buffer = self.files.get(path)?.buffer.as_ref().ok()?;
-        let (start, end) = buffer.selection().unwrap_or((buffer.cursor(), buffer.cursor()));
-        Some(Selection { path: path.clone(), start, end, text: buffer.selected_text().unwrap_or_default() })
+        let (start, end) = buffer
+            .selection()
+            .unwrap_or((buffer.cursor(), buffer.cursor()));
+        Some(Selection {
+            path: path.clone(),
+            start,
+            end,
+            text: buffer.selected_text().unwrap_or_default(),
+        })
     }
 
     pub fn reveal(&mut self, path: &str, start: Pos, end: Pos, focus: bool) {
@@ -121,7 +142,10 @@ impl OpenFiles {
         }
         match &mut file.buffer {
             Ok(buffer) => {
-                let review = file.editor.is_active() && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R));
+                let review = file.editor.is_active()
+                    && ui.input_mut(|i| {
+                        i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R)
+                    });
                 file.editor.ui(ui, path, buffer, file.highlighter.as_mut());
                 let line = review.then(|| buffer.cursor().line);
                 if review {
@@ -144,7 +168,15 @@ impl OpenFile {
     fn open(path: PathBuf) -> Self {
         let buffer = read(&path).map(|text| Buffer::new(&text));
         let highlighter = Highlighter::for_path(&path);
-        Self { modified: modified(&path), buffer, highlighter, editor: Editor::default(), edited: (0, Instant::now()), save_error: None, path }
+        Self {
+            modified: modified(&path),
+            buffer,
+            highlighter,
+            editor: Editor::default(),
+            edited: (0, Instant::now()),
+            save_error: None,
+            path,
+        }
     }
 
     fn save(&mut self) {
@@ -182,7 +214,9 @@ impl OpenFile {
 }
 
 pub fn read(path: &Path) -> Result<String, String> {
-    let size = fs::metadata(path).map_err(|e| format!("Cannot open file: {e}"))?.len();
+    let size = fs::metadata(path)
+        .map_err(|e| format!("Cannot open file: {e}"))?
+        .len();
     if size > MAX_SIZE {
         return Err("File is too large to show".to_string());
     }
@@ -216,14 +250,26 @@ mod tests {
     fn write_later(dir: &TempDir, name: &str, content: &str) {
         let path = dir.write(name, content);
         let later = SystemTime::now() + Duration::from_secs(5);
-        fs::File::options().write(true).open(path).unwrap().set_modified(later).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
     }
 
     #[test]
     fn refuses_binary_and_missing_files() {
         let dir = TempDir::new("binary");
-        assert_eq!(read(&dir.write("image.png", [0x89, b'P', b'N', b'G', 0, 1])).unwrap_err(), "Binary file");
-        assert!(read(&dir.path().join("missing")).unwrap_err().starts_with("Cannot open file"));
+        assert_eq!(
+            read(&dir.write("image.png", [0x89, b'P', b'N', b'G', 0, 1])).unwrap_err(),
+            "Binary file"
+        );
+        assert!(
+            read(&dir.path().join("missing"))
+                .unwrap_err()
+                .starts_with("Cannot open file")
+        );
     }
 
     #[test]
@@ -232,7 +278,10 @@ mod tests {
         let mut files = open(&dir, "a.txt", "one\r\n\ttwo\r\n");
         buffer(&mut files, "a.txt").type_text("zero ");
         files.save_all();
-        assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "zero one\r\n\ttwo\r\n");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "zero one\r\n\ttwo\r\n"
+        );
         assert!(!buffer(&mut files, "a.txt").is_dirty());
     }
 
@@ -268,7 +317,13 @@ mod tests {
 
         fs::remove_file(dir.path().join("a.txt")).unwrap();
         files.reload_changed();
-        assert!(files.file("a.txt").buffer.as_ref().is_err_and(|message| message.starts_with("Cannot open file")));
+        assert!(
+            files
+                .file("a.txt")
+                .buffer
+                .as_ref()
+                .is_err_and(|message| message.starts_with("Cannot open file"))
+        );
     }
 
     #[test]
@@ -279,6 +334,9 @@ mod tests {
         write_later(&dir, "a.txt", "theirs");
         files.reload_changed();
         files.save_all();
-        assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "my one");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "my one"
+        );
     }
 }

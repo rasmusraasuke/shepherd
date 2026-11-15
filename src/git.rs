@@ -7,7 +7,15 @@ use std::process::{Command, Stdio};
 
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-const DIFF: &[&str] = &["diff", "--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--unified=0"];
+const DIFF: &[&str] = &[
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-renames",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--unified=0",
+];
 
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct Changes {
@@ -27,7 +35,10 @@ impl Repo {
     pub fn open(path: &Path) -> Result<Self, String> {
         let root = git(path, &["rev-parse", "--show-toplevel"])?;
         let git_dir = git(path, &["rev-parse", "--absolute-git-dir"])?;
-        Ok(Self { root: PathBuf::from(root.trim()), git_dir: PathBuf::from(git_dir.trim()) })
+        Ok(Self {
+            root: PathBuf::from(root.trim()),
+            git_dir: PathBuf::from(git_dir.trim()),
+        })
     }
 
     pub fn layout_path(&self) -> PathBuf {
@@ -35,24 +46,55 @@ impl Repo {
     }
 
     pub fn list_files(&self) -> Result<Vec<String>, String> {
-        let out = git(&self.root, &["ls-files", "--cached", "--others", "--exclude-standard", "-z"])?;
-        let mut files: Vec<String> = out.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
+        let out = git(
+            &self.root,
+            &[
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+        )?;
+        let mut files: Vec<String> = out
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect();
         files.sort();
         files.dedup();
         Ok(files)
     }
 
     pub fn branch(&self) -> String {
-        git(&self.root, &["symbolic-ref", "--short", "-q", "HEAD"]).map_or_else(|_| "none (detached HEAD)".to_string(), |name| name.trim().to_string())
+        git(&self.root, &["symbolic-ref", "--short", "-q", "HEAD"]).map_or_else(
+            |_| "none (detached HEAD)".to_string(),
+            |name| name.trim().to_string(),
+        )
     }
 
     fn base(&self) -> &'static str {
-        if git(&self.root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() { "HEAD" } else { EMPTY_TREE }
+        if git(&self.root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
+            "HEAD"
+        } else {
+            EMPTY_TREE
+        }
     }
 
     fn untracked(&self, paths: &[&str]) -> Result<Vec<String>, String> {
-        let out = git(&self.root, &[&["ls-files", "--others", "--exclude-standard", "-z", "--"], paths].concat())?;
-        Ok(out.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
+        let out = git(
+            &self.root,
+            &[
+                &["ls-files", "--others", "--exclude-standard", "-z", "--"],
+                paths,
+            ]
+            .concat(),
+        )?;
+        Ok(out
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 
     pub fn changes(&self) -> Result<Changes, String> {
@@ -64,7 +106,12 @@ impl Repo {
         }
         let staged = git(&self.root, &[DIFF, &["--cached", base]].concat())?;
         let unstaged = git(&self.root, DIFF)?;
-        Ok(Changes { diff, staged, unstaged, untracked })
+        Ok(Changes {
+            diff,
+            staged,
+            unstaged,
+            untracked,
+        })
     }
 
     fn file_diff(&self, path: &str) -> Result<Option<FileDiff>, String> {
@@ -77,25 +124,65 @@ impl Repo {
 
     fn check_unchanged(&self, diff: &FileDiff) -> Result<(), String> {
         let path = diff.path.as_str();
-        if self.file_diff(path)?.is_none_or(|now| now.hunks != diff.hunks) {
+        if self
+            .file_diff(path)?
+            .is_none_or(|now| now.hunks != diff.hunks)
+        {
             return Err(format!("{path} changed in the meantime, try again"));
         }
         Ok(())
     }
 
-    pub fn stage_lines(&self, diff: &FileDiff, chosen: impl Fn(usize, usize) -> bool) -> Result<(), String> {
+    pub fn stage_lines(
+        &self,
+        diff: &FileDiff,
+        chosen: impl Fn(usize, usize) -> bool,
+    ) -> Result<(), String> {
         self.check_unchanged(diff)?;
         let path = diff.path.as_str();
-        let head = if diff.status == FileStatus::Added { Vec::new() } else { run(&self.root, &["show", &format!("{}:{path}", self.base())], None)? };
-        self.stage_version(path, version(diff.status, &head, &self.read_work(path), &diff.hunks, chosen).as_deref())
+        let head = if diff.status == FileStatus::Added {
+            Vec::new()
+        } else {
+            run(
+                &self.root,
+                &["show", &format!("{}:{path}", self.base())],
+                None,
+            )?
+        };
+        self.stage_version(
+            path,
+            version(
+                diff.status,
+                &head,
+                &self.read_work(path),
+                &diff.hunks,
+                chosen,
+            )
+            .as_deref(),
+        )
     }
 
     pub fn stage_version(&self, path: &str, content: Option<&[u8]>) -> Result<(), String> {
         let Some(content) = content else {
             return git(&self.root, &["update-index", "--force-remove", "--", path]).map(drop);
         };
-        let hash = String::from_utf8_lossy(&run(&self.root, &["hash-object", "-w", "--stdin"], Some(content))?).trim().to_string();
-        git(&self.root, &["update-index", "--add", "--cacheinfo", &format!("{},{hash},{path}", self.mode(path))]).map(drop)
+        let hash = String::from_utf8_lossy(&run(
+            &self.root,
+            &["hash-object", "-w", "--stdin"],
+            Some(content),
+        )?)
+        .trim()
+        .to_string();
+        git(
+            &self.root,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("{},{hash},{path}", self.mode(path)),
+            ],
+        )
+        .map(drop)
     }
 
     pub fn committed(&self, path: &str) -> Option<String> {
@@ -147,8 +234,22 @@ fn is_executable(_meta: &fs::Metadata) -> bool {
     false
 }
 
-pub fn version(status: FileStatus, head: &[u8], work: &[u8], hunks: &[Hunk], chosen: impl Fn(usize, usize) -> bool) -> Option<Vec<u8>> {
-    let changed = |kind: LineKind| hunks.iter().enumerate().flat_map(move |(h, hunk)| hunk.lines.iter().enumerate().filter(move |(_, line)| line.kind == kind).map(move |(i, _)| (h, i)));
+pub fn version(
+    status: FileStatus,
+    head: &[u8],
+    work: &[u8],
+    hunks: &[Hunk],
+    chosen: impl Fn(usize, usize) -> bool,
+) -> Option<Vec<u8>> {
+    let changed = |kind: LineKind| {
+        hunks.iter().enumerate().flat_map(move |(h, hunk)| {
+            hunk.lines
+                .iter()
+                .enumerate()
+                .filter(move |(_, line)| line.kind == kind)
+                .map(move |(i, _)| (h, i))
+        })
+    };
     let gone = match status {
         FileStatus::Added => !changed(LineKind::Added).any(|(h, i)| chosen(h, i)),
         FileStatus::Deleted => changed(LineKind::Removed).all(|(h, i)| chosen(h, i)),
@@ -157,7 +258,12 @@ pub fn version(status: FileStatus, head: &[u8], work: &[u8], hunks: &[Hunk], cho
     (!gone).then(|| compose(head, work, hunks, chosen))
 }
 
-fn compose(head: &[u8], work: &[u8], hunks: &[Hunk], chosen: impl Fn(usize, usize) -> bool) -> Vec<u8> {
+fn compose(
+    head: &[u8],
+    work: &[u8],
+    hunks: &[Hunk],
+    chosen: impl Fn(usize, usize) -> bool,
+) -> Vec<u8> {
     fn push(out: &mut Vec<u8>, line: &[u8]) {
         if out.last().is_some_and(|&last| last != b'\n') {
             out.push(b'\n');
@@ -168,7 +274,11 @@ fn compose(head: &[u8], work: &[u8], hunks: &[Hunk], chosen: impl Fn(usize, usiz
         text.split_inclusive(|&b| b == b'\n').collect()
     }
     let (head, work) = (split(head), split(work));
-    let line = |lines: &[&[u8]], number: Option<u32>| -> Vec<u8> { number.and_then(|n| lines.get((n as usize).checked_sub(1)?)).map_or(Vec::new(), |line| line.to_vec()) };
+    let line = |lines: &[&[u8]], number: Option<u32>| -> Vec<u8> {
+        number
+            .and_then(|n| lines.get((n as usize).checked_sub(1)?))
+            .map_or(Vec::new(), |line| line.to_vec())
+    };
     let mut out = Vec::new();
     let mut next = 1;
     for (h, hunk) in hunks.iter().enumerate() {
@@ -180,7 +290,9 @@ fn compose(head: &[u8], work: &[u8], hunks: &[Hunk], chosen: impl Fn(usize, usiz
         for (i, diff_line) in hunk.lines.iter().enumerate() {
             match diff_line.kind {
                 LineKind::Context => push(&mut out, &line(&head, diff_line.old_no)),
-                LineKind::Removed if !chosen(h, i) => push(&mut out, &line(&head, diff_line.old_no)),
+                LineKind::Removed if !chosen(h, i) => {
+                    push(&mut out, &line(&head, diff_line.old_no))
+                }
                 LineKind::Added if chosen(h, i) => push(&mut out, &line(&work, diff_line.new_no)),
                 _ => {}
             }
@@ -210,8 +322,20 @@ impl Staged {
             parse_diff(raw)
                 .into_iter()
                 .map(|file| {
-                    let numbers = file.hunks.iter().flat_map(|hunk| &hunk.lines).filter(|line| line.kind == kind);
-                    let numbers = numbers.filter_map(|line| if kind == LineKind::Removed { line.old_no } else { line.new_no }).collect();
+                    let numbers = file
+                        .hunks
+                        .iter()
+                        .flat_map(|hunk| &hunk.lines)
+                        .filter(|line| line.kind == kind);
+                    let numbers = numbers
+                        .filter_map(|line| {
+                            if kind == LineKind::Removed {
+                                line.old_no
+                            } else {
+                                line.new_no
+                            }
+                        })
+                        .collect();
                     (file.path, numbers)
                 })
                 .collect()
@@ -228,21 +352,29 @@ impl Staged {
     }
 
     pub fn is_staged(&self, path: &str, line: &DiffLine) -> bool {
-        let has = |lines: &HashMap<String, HashSet<u32>>, number: Option<u32>| number.is_some_and(|n| lines.get(path).is_some_and(|lines| lines.contains(&n)));
+        let has = |lines: &HashMap<String, HashSet<u32>>, number: Option<u32>| {
+            number.is_some_and(|n| lines.get(path).is_some_and(|lines| lines.contains(&n)))
+        };
         match line.kind {
             LineKind::Context => true,
             LineKind::Removed => has(&self.removed, line.old_no),
-            LineKind::Added => !self.untracked.contains(path) && !has(&self.unstaged_added, line.new_no),
+            LineKind::Added => {
+                !self.untracked.contains(path) && !has(&self.unstaged_added, line.new_no)
+            }
         }
     }
 
     pub fn is_file_staged(&self, path: &str) -> bool {
-        self.staged_files.contains(path) && !self.unstaged_files.contains(path) && !self.untracked.contains(path)
+        self.staged_files.contains(path)
+            && !self.unstaged_files.contains(path)
+            && !self.untracked.contains(path)
     }
 }
 
 fn added_file_diff(path: &str, file: &Path) -> String {
-    let Ok(bytes) = fs::read(file) else { return String::new() };
+    let Ok(bytes) = fs::read(file) else {
+        return String::new();
+    };
     let mut out = format!("diff --git a/{path} b/{path}\nnew file mode 100644\n");
     if bytes.contains(&0) {
         out.push_str(&format!("Binary files /dev/null and b/{path} differ\n"));
@@ -253,7 +385,10 @@ fn added_file_diff(path: &str, file: &Path) -> String {
         return out;
     }
     let lines: Vec<&str> = text.lines().collect();
-    out.push_str(&format!("--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n", lines.len()));
+    out.push_str(&format!(
+        "--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n",
+        lines.len()
+    ));
     for line in lines {
         out.push('+');
         out.push_str(line);
@@ -271,15 +406,23 @@ fn run(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, Strin
         .args(["-c", "core.quotepath=false"])
         .args(args)
         .current_dir(dir)
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("failed to run git: {e}"))?;
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
-        stdin.write_all(input).map_err(|e| format!("failed to run git: {e}"))?;
+        stdin
+            .write_all(input)
+            .map_err(|e| format!("failed to run git: {e}"))?;
     }
-    let output = child.wait_with_output().map_err(|e| format!("failed to run git: {e}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -326,10 +469,22 @@ impl Hunk {
     pub fn ranges(&self) -> (Range<u32>, Range<u32>) {
         let range = |start: u32, count: usize| {
             let count = count as u32;
-            if count == 0 { start + 1..start + 1 } else { start..start + count }
+            if count == 0 {
+                start + 1..start + 1
+            } else {
+                start..start + count
+            }
         };
-        let old = self.lines.iter().filter(|line| line.old_no.is_some()).count();
-        let new = self.lines.iter().filter(|line| line.new_no.is_some()).count();
+        let old = self
+            .lines
+            .iter()
+            .filter(|line| line.old_no.is_some())
+            .count();
+        let new = self
+            .lines
+            .iter()
+            .filter(|line| line.new_no.is_some())
+            .count();
         (range(self.old_start, old), range(self.new_start, new))
     }
 }
@@ -378,19 +533,40 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
                     LineKind::Added => (None, Some(new_no)),
                     LineKind::Removed => (Some(old_no), None),
                 };
-                if o.is_some() { old_no += 1 }
-                if n.is_some() { new_no += 1 }
-                hunk.lines.push(DiffLine { kind, old_no: o, new_no: n, text: text.to_string() });
+                if o.is_some() {
+                    old_no += 1
+                }
+                if n.is_some() {
+                    new_no += 1
+                }
+                hunk.lines.push(DiffLine {
+                    kind,
+                    old_no: o,
+                    new_no: n,
+                    text: text.to_string(),
+                });
                 continue;
             }
         }
 
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            let path = rest.split_once(" b/").map(|(_, b)| b).unwrap_or(rest).to_string();
-            files.push(FileDiff { path, old_path: None, status: FileStatus::Modified, binary: false, hunks: Vec::new() });
+            let path = rest
+                .split_once(" b/")
+                .map(|(_, b)| b)
+                .unwrap_or(rest)
+                .to_string();
+            files.push(FileDiff {
+                path,
+                old_path: None,
+                status: FileStatus::Modified,
+                binary: false,
+                hunks: Vec::new(),
+            });
             continue;
         }
-        let Some(file) = files.last_mut() else { continue };
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
 
         if line.starts_with("new file mode") {
             file.status = FileStatus::Added;
@@ -415,7 +591,11 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
             file.binary = true;
         } else if line.starts_with("@@") {
             (old_no, new_no) = parse_hunk_start(line);
-            file.hunks.push(Hunk { old_start: old_no, new_start: new_no, lines: Vec::new() });
+            file.hunks.push(Hunk {
+                old_start: old_no,
+                new_start: new_no,
+                lines: Vec::new(),
+            });
             in_hunk = true;
         }
     }
@@ -453,31 +633,79 @@ pub mod tests {
 
     pub fn commit_all(repo: &Repo) {
         git(&repo.root, &["add", "--all"]).unwrap();
-        git(&repo.root, &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "test"]).unwrap();
+        git(
+            &repo.root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--quiet",
+                "-m",
+                "test",
+            ],
+        )
+        .unwrap();
     }
 
     #[test]
     fn lists_project_files_without_ignored_ones() {
-        let (repo, _dir) = temp_repo("list-files", &[("src/main.rs", ""), ("README.md", ""), (".gitignore", "/target\n"), ("target/debug/editor", "")]);
-        assert_eq!(repo.list_files().unwrap(), [".gitignore", "README.md", "src/main.rs"]);
+        let (repo, _dir) = temp_repo(
+            "list-files",
+            &[
+                ("src/main.rs", ""),
+                ("README.md", ""),
+                (".gitignore", "/target\n"),
+                ("target/debug/editor", ""),
+            ],
+        );
+        assert_eq!(
+            repo.list_files().unwrap(),
+            [".gitignore", "README.md", "src/main.rs"]
+        );
     }
 
     #[test]
     fn diffs_new_files_as_git_does() {
-        let (repo, _dir) = temp_repo("added", &[("a.txt", "one\r\ntwo"), ("dir/b.bin", "\0\u{1}"), ("empty", "")]);
+        let (repo, _dir) = temp_repo(
+            "added",
+            &[
+                ("a.txt", "one\r\ntwo"),
+                ("dir/b.bin", "\0\u{1}"),
+                ("empty", ""),
+            ],
+        );
         let git_diff = |path: &str| {
-            let output = Command::new("git").args(["diff", "--no-color", "--no-index", "--", "/dev/null", path]).current_dir(&repo.root).output().unwrap();
+            let output = Command::new("git")
+                .args(["diff", "--no-color", "--no-index", "--", "/dev/null", path])
+                .current_dir(&repo.root)
+                .output()
+                .unwrap();
             format!("{:?}", parse_diff(&String::from_utf8_lossy(&output.stdout)))
         };
         for path in ["a.txt", "dir/b.bin", "empty"] {
-            assert_eq!(format!("{:?}", parse_diff(&added_file_diff(path, &repo.root.join(path)))), git_diff(path), "{path}");
+            assert_eq!(
+                format!(
+                    "{:?}",
+                    parse_diff(&added_file_diff(path, &repo.root.join(path)))
+                ),
+                git_diff(path),
+                "{path}"
+            );
         }
         let files = parse_diff(&repo.changes().unwrap().diff);
-        assert_eq!(files.iter().map(|file| (file.path.as_str(), file.status, file.binary)).collect::<Vec<_>>(), [
-            ("a.txt", FileStatus::Added, false),
-            ("dir/b.bin", FileStatus::Added, true),
-            ("empty", FileStatus::Added, false)
-        ]);
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| (file.path.as_str(), file.status, file.binary))
+                .collect::<Vec<_>>(),
+            [
+                ("a.txt", FileStatus::Added, false),
+                ("dir/b.bin", FileStatus::Added, true),
+                ("empty", FileStatus::Added, false)
+            ]
+        );
     }
 
     fn diff_of(repo: &Repo, path: &str) -> FileDiff {
@@ -491,9 +719,25 @@ pub mod tests {
     fn staged_lines(repo: &Repo, path: &str) -> Vec<String> {
         let staged = Staged::new(&repo.changes().unwrap());
         let diff = diff_of(repo, path);
-        let lines = diff.hunks.iter().flat_map(|hunk| &hunk.lines).filter(|line| line.kind != LineKind::Context);
+        let lines = diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.kind != LineKind::Context);
         let staged = lines.filter(|line| staged.is_staged(path, line));
-        staged.map(|line| format!("{}{}", if line.kind == LineKind::Added { "+" } else { "-" }, line.text)).collect()
+        staged
+            .map(|line| {
+                format!(
+                    "{}{}",
+                    if line.kind == LineKind::Added {
+                        "+"
+                    } else {
+                        "-"
+                    },
+                    line.text
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -501,11 +745,16 @@ pub mod tests {
         let raw = "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -2 +2 @@\n-b\n+B\n@@ -4,0 +5 @@\n+e\n";
         let hunks = &parse_diff(raw)[0].hunks;
         let (head, work) = (b"a\r\nb\r\nc\r\nd", b"a\r\nB\r\nc\r\nd\r\ne\r\n");
-        let compose = |chosen: &[(usize, usize)]| String::from_utf8(compose(head, work, hunks, |h, i| chosen.contains(&(h, i)))).unwrap();
+        let compose = |chosen: &[(usize, usize)]| {
+            String::from_utf8(compose(head, work, hunks, |h, i| chosen.contains(&(h, i)))).unwrap()
+        };
         assert_eq!(compose(&[]), "a\r\nb\r\nc\r\nd");
         assert_eq!(compose(&[(0, 0)]), "a\r\nc\r\nd");
         assert_eq!(compose(&[(0, 1), (1, 0)]), "a\r\nb\r\nB\r\nc\r\nd\ne\r\n");
-        assert_eq!(compose(&[(0, 0), (0, 1), (1, 0)]).replace("d\n", "d\r\n"), String::from_utf8(work.to_vec()).unwrap());
+        assert_eq!(
+            compose(&[(0, 0), (0, 1), (1, 0)]).replace("d\n", "d\r\n"),
+            String::from_utf8(work.to_vec()).unwrap()
+        );
     }
 
     #[test]
@@ -528,7 +777,11 @@ pub mod tests {
 
         dir.write("a.txt", "a\nB\nc\nD\ne\n");
         assert_eq!(staged_lines(&repo, "a.txt"), ["-b", "+B", "+e"]);
-        assert!(repo.stage_lines(&diff, |_, _| false).unwrap_err().contains("changed in the meantime"));
+        assert!(
+            repo.stage_lines(&diff, |_, _| false)
+                .unwrap_err()
+                .contains("changed in the meantime")
+        );
     }
 
     #[test]
@@ -537,11 +790,21 @@ pub mod tests {
         commit_all(&repo);
         fs::remove_file(dir.path().join("old.txt")).unwrap();
         dir.write("new.txt", "x\ny\n");
-        let tracked = |path: &str| !git(&repo.root, &["ls-files", "--", path]).unwrap().is_empty();
+        let tracked = |path: &str| {
+            !git(&repo.root, &["ls-files", "--", path])
+                .unwrap()
+                .is_empty()
+        };
 
         let new = diff_of(&repo, "new.txt");
         repo.stage_lines(&new, |_, i| i == 1).unwrap();
-        assert_eq!((staged(&repo, "new.txt").as_str(), staged_lines(&repo, "new.txt")), ("y\n", vec!["+y".to_string()]));
+        assert_eq!(
+            (
+                staged(&repo, "new.txt").as_str(),
+                staged_lines(&repo, "new.txt")
+            ),
+            ("y\n", vec!["+y".to_string()])
+        );
         repo.stage_lines(&new, |_, _| false).unwrap();
         assert!(!tracked("new.txt"));
 
@@ -553,7 +816,8 @@ pub mod tests {
         assert_eq!(staged_lines(&repo, "old.txt"), ["-one", "-two"]);
 
         dir.write("image.bin", "\0");
-        let staged_file = |repo: &Repo| Staged::new(&repo.changes().unwrap()).is_file_staged("image.bin");
+        let staged_file =
+            |repo: &Repo| Staged::new(&repo.changes().unwrap()).is_file_staged("image.bin");
         repo.stage_file("image.bin", true).unwrap();
         assert!(staged_file(&repo));
         repo.stage_file("image.bin", false).unwrap();
@@ -597,16 +861,25 @@ deleted file mode 100644
         assert_eq!(main.status, FileStatus::Modified);
         let lines = &main.hunks[0].lines;
         assert_eq!(lines.len(), 5);
-        assert_eq!((lines[1].kind, lines[1].old_no, lines[1].new_no), (LineKind::Removed, Some(2), None));
+        assert_eq!(
+            (lines[1].kind, lines[1].old_no, lines[1].new_no),
+            (LineKind::Removed, Some(2), None)
+        );
         assert_eq!((lines[3].kind, lines[3].new_no), (LineKind::Added, Some(3)));
         assert_eq!((lines[4].old_no, lines[4].new_no), (Some(3), Some(4)));
 
         let new = &files[1];
-        assert_eq!((new.path.as_str(), new.status), ("new.txt", FileStatus::Added));
+        assert_eq!(
+            (new.path.as_str(), new.status),
+            ("new.txt", FileStatus::Added)
+        );
         assert_eq!(new.hunks[0].lines[0].text, "--- not a header");
 
         let old = &files[2];
-        assert_eq!((old.path.as_str(), old.status), ("old.txt", FileStatus::Deleted));
+        assert_eq!(
+            (old.path.as_str(), old.status),
+            ("old.txt", FileStatus::Deleted)
+        );
         assert_eq!(old.hunks[0].lines[0].text, "bye");
 
         assert_eq!(main.hunks[0].ranges(), (1..4, 1..5));
