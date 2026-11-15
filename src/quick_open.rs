@@ -2,11 +2,9 @@ use eframe::egui::{self, Align2, Key};
 
 const MAX_RESULTS: usize = 20;
 
-/// The "open file by name" popup.
 #[derive(Default)]
 pub struct QuickOpen {
     query: String,
-    /// The query the results were found for, to search only when it changes.
     searched: Option<String>,
     results: Vec<String>,
     selected: usize,
@@ -18,7 +16,6 @@ pub enum Outcome {
 }
 
 impl QuickOpen {
-    /// Shows the popup. Returns something once the user picked a file or dismissed the popup.
     pub fn ui(&mut self, ctx: &egui::Context, files: &[String]) -> Option<Outcome> {
         if self.searched.as_ref() != Some(&self.query) {
             self.results = find(files, &self.query, MAX_RESULTS).into_iter().map(str::to_string).collect();
@@ -53,7 +50,6 @@ impl QuickOpen {
     }
 }
 
-/// The files matching the query, best match first.
 fn find<'a>(files: &'a [String], query: &str, limit: usize) -> Vec<&'a str> {
     let query: String = query.chars().filter(|c| !c.is_whitespace()).collect();
     if query.is_empty() {
@@ -64,14 +60,11 @@ fn find<'a>(files: &'a [String], query: &str, limit: usize) -> Vec<&'a str> {
     found.into_iter().take(limit).map(|(_, path)| path).collect()
 }
 
-/// A match in the file name is worth more than one spread over the directories.
 fn path_score(path: &str, query: &str) -> Option<i32> {
     let name = path.rsplit('/').next().unwrap_or(path);
     score(name, query).map(|score| score + 100).or_else(|| score(path, query))
 }
 
-/// How well the query matches the text as a case-insensitive subsequence, or `None` if it doesn't.
-/// Consecutive characters and characters at the start of a word count for more.
 fn score(text: &str, query: &str) -> Option<i32> {
     let mut wanted = query.chars().peekable();
     let mut score = 0;

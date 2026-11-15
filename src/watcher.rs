@@ -8,10 +8,8 @@ use eframe::egui;
 
 use crate::git::{Changes, Repo};
 
-/// How often the working tree is looked at, so changes made by an agent show up on their own.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
-/// What the editor shows of the working tree.
 #[derive(Clone, PartialEq)]
 pub struct Snapshot {
     pub changes: Changes,
@@ -24,9 +22,7 @@ impl Snapshot {
     }
 }
 
-/// Runs git on a background thread, so a slow repository never blocks the UI.
 pub struct Watcher {
-    /// The snapshots, each with the number of refreshes asked for before it was started.
     snapshots: Receiver<(u64, Result<Snapshot, String>)>,
     wake: Sender<()>,
     refreshes: Arc<AtomicU64>,
@@ -58,9 +54,6 @@ impl Watcher {
         Self { snapshots, wake, refreshes }
     }
 
-    /// The newest snapshot, if the working tree changed since the last call. Snapshots started
-    /// before the last refresh was asked for are left out: they may miss what the editor just
-    /// changed, such as what is staged.
     pub fn changed(&self) -> Option<Result<Snapshot, String>> {
         let refreshes = self.refreshes.load(Ordering::SeqCst);
         self.snapshots.try_iter().filter(|(started_after, _)| *started_after == refreshes).last().map(|(_, snapshot)| snapshot)

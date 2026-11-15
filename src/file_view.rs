@@ -9,22 +9,16 @@ use crate::buffer::{Buffer, Pos};
 use crate::editor::Editor;
 use crate::highlight::Highlighter;
 
-/// Files larger than this aren't shown, to keep the editor responsive.
 const MAX_SIZE: u64 = 20 * 1024 * 1024;
 
-/// Edits are saved on their own once nothing was typed for this long, so that agents and build
-/// tools always see what the editor shows.
 const SAVE_DELAY: Duration = Duration::from_millis(500);
 
-/// The files that are open in tabs.
 pub struct OpenFiles {
     root: PathBuf,
     files: HashMap<String, OpenFile>,
-    /// The file whose editor had the keyboard last.
     last_active: Option<String>,
 }
 
-/// What is selected in a file, or where the cursor is when nothing is.
 pub struct Selection {
     pub path: String,
     pub start: Pos,
@@ -34,15 +28,10 @@ pub struct Selection {
 
 struct OpenFile {
     path: PathBuf,
-    /// When the file on disk was changed, as of the last time it was read or saved.
     modified: Option<SystemTime>,
-    /// The text of the file, or why it can't be shown.
     buffer: Result<Buffer, String>,
-    /// Colors the text; shared by everything that shows it, as it follows the edits of the text.
     highlighter: Option<Highlighter>,
-    /// The editor of the file's tab.
     editor: Editor,
-    /// The revision of the text when it was edited last and the time of that, to save it after a while.
     edited: (u64, Instant),
     save_error: Option<String>,
 }
@@ -56,10 +45,6 @@ impl OpenFiles {
         self.files.entry(path.to_string()).or_insert_with(|| OpenFile::open(self.root.join(path)))
     }
 
-    /// The text of a file and what colors it, to show and edit it elsewhere than in its tab, as
-    /// the review does; edits are saved as they are in the tab. A file that doesn't exist, as
-    /// it was deleted, starts empty when `missing_is_empty` is set. Fails with why the file
-    /// can't be shown.
     pub fn text(&mut self, path: &str, missing_is_empty: bool) -> Result<(&mut Buffer, Option<&mut Highlighter>), &str> {
         let file = self.file(path);
         if missing_is_empty && file.buffer.is_err() && !file.path.exists() {
@@ -71,18 +56,15 @@ impl OpenFiles {
         }
     }
 
-    /// Makes the editor of the file take the keyboard when it is shown next.
     pub fn focus(&mut self, path: &str) {
         self.file(path).editor.focus();
     }
 
-    /// The text selected on one line in the editor that has the keyboard.
     pub fn selected_text(&self) -> Option<String> {
         let file = self.files.values().find(|file| file.editor.is_active())?;
         file.buffer.as_ref().ok()?.selected_text().filter(|text| !text.contains('\n'))
     }
 
-    /// What is selected in the file edited last.
     pub fn selection(&self) -> Option<Selection> {
         let path = self.last_active.as_ref()?;
         let buffer = self.files.get(path)?.buffer.as_ref().ok()?;
@@ -90,8 +72,6 @@ impl OpenFiles {
         Some(Selection { path: path.clone(), start, end, text: buffer.selected_text().unwrap_or_default() })
     }
 
-    /// Selects a place in the file and shows it in the middle of the editor, which takes the
-    /// keyboard when `focus` is set.
     pub fn reveal(&mut self, path: &str, start: Pos, end: Pos, focus: bool) {
         let file = self.file(path);
         if let Ok(buffer) = &mut file.buffer {
@@ -100,14 +80,12 @@ impl OpenFiles {
         }
     }
 
-    /// Takes over what changed on disk, for example when an agent edited an open file.
     pub fn reload_changed(&mut self) {
         for file in self.files.values_mut() {
             file.reload_if_changed();
         }
     }
 
-    /// Saves the files that were edited a while ago.
     pub fn save_edited(&mut self, ctx: &egui::Context) {
         for file in self.files.values_mut() {
             let Ok(buffer) = &file.buffer else { continue };
@@ -124,7 +102,6 @@ impl OpenFiles {
         }
     }
 
-    /// Saves every file that has unsaved edits.
     pub fn save_all(&mut self) {
         for file in self.files.values_mut() {
             file.save();
@@ -137,8 +114,6 @@ impl OpenFiles {
         }
     }
 
-    /// Shows the file for editing. Returns the line of the cursor, numbered from 0, when its
-    /// changes are asked to be shown in the review with Cmd+Shift+R.
     pub fn ui(&mut self, ui: &mut egui::Ui, path: &str) -> Option<usize> {
         let file = self.file(path);
         if let Some(error) = &file.save_error {
@@ -150,7 +125,6 @@ impl OpenFiles {
                 file.editor.ui(ui, path, buffer, file.highlighter.as_mut());
                 let line = review.then(|| buffer.cursor().line);
                 if review {
-                    // the keys are for the review then
                     ui.memory_mut(|m| m.focused().map(|id| m.surrender_focus(id)));
                 }
                 if file.editor.is_active() {
@@ -197,8 +171,6 @@ impl OpenFile {
         self.modified = on_disk;
         match (&mut self.buffer, read(&self.path)) {
             (Ok(buffer), Ok(text)) if buffer.text() == text => {}
-            // Edits that aren't saved yet win over the change on disk: they were made in the
-            // last moment and are about to be saved.
             (Ok(buffer), _) if buffer.is_dirty() => {}
             (Ok(buffer), Ok(text)) => {
                 buffer.set_text(&text);
@@ -209,7 +181,6 @@ impl OpenFile {
     }
 }
 
-/// The text of a file, unless it is binary or too large to show.
 pub fn read(path: &Path) -> Result<String, String> {
     let size = fs::metadata(path).map_err(|e| format!("Cannot open file: {e}"))?.len();
     if size > MAX_SIZE {
@@ -242,7 +213,6 @@ mod tests {
         files.file(name).buffer.as_mut().unwrap()
     }
 
-    /// Writes the file as another program would: at a later time than the editor read it.
     fn write_later(dir: &TempDir, name: &str, content: &str) {
         let path = dir.write(name, content);
         let later = SystemTime::now() + Duration::from_secs(5);

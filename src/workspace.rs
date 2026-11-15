@@ -8,11 +8,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Tab {
-    /// The review of the changes of one file, by its path; none until a file is chosen.
     Review(Option<String>),
-    /// A project file, by its path relative to the repository root.
     File(String),
-    /// A terminal, by an id of its own.
     Terminal(u64),
 }
 
@@ -27,7 +24,6 @@ impl Tab {
         }
     }
 
-    /// The project file the tab is about.
     pub fn path(&self) -> Option<&str> {
         match self {
             Tab::Review(path) => path.as_deref(),
@@ -45,10 +41,8 @@ pub enum Sidebar {
     Search,
 }
 
-/// Where the pointer holds a window that was created by dragging a tab out, from its top left corner.
 const NEW_WINDOW_GRIP: egui::Vec2 = egui::vec2(60.0, 40.0);
 
-/// Height of the bar with the titles of a group of tabs, as egui_tiles draws it.
 const TAB_BAR_HEIGHT: f32 = 24.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -59,29 +53,21 @@ enum Side {
     Bottom,
 }
 
-/// Where a tab dropped on a window lands.
 #[derive(PartialEq, Debug)]
 pub struct DropTarget {
-    /// The group of tabs under the pointer.
     tabs: TileId,
-    /// The side of the group the tab is placed on as a new split; none when it joins the group.
     side: Option<Side>,
-    /// The part of the window the tab is going to take up.
     pub rect: egui::Rect,
 }
 
-/// One OS window with its own arrangement of tabs and splits.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Window {
     pub id: u64,
     pub tree: Tree<Tab>,
-    /// Position of the window on screen and the size of its content, to restore it where it was.
     pub position: Option<egui::Pos2>,
     pub size: Option<egui::Vec2>,
-    /// Where the content of the window is on the screen at the moment.
     #[serde(skip)]
     pub screen_rect: Option<egui::Rect>,
-    /// The tab used last; new tabs open next to it.
     #[serde(skip)]
     pub focused: Option<TileId>,
 }
@@ -92,7 +78,6 @@ impl Window {
         Self { id, tree, position: None, size: None, screen_rect: None, focused: None }
     }
 
-    /// The tabs of the window in the order they were opened.
     pub fn tabs(&self) -> Vec<&Tab> {
         let mut tabs: Vec<(&TileId, &Tab)> = self
             .tree
@@ -107,12 +92,10 @@ impl Window {
         tabs.into_iter().map(|(_, tab)| tab).collect()
     }
 
-    /// Brings an already open tab to the front. Returns false when the tab isn't in this window.
     fn activate(&mut self, tab: &Tab) -> bool {
         self.tree.make_active(|_, tile| matches!(tile, Tile::Pane(t) if t == tab))
     }
 
-    /// The group of tabs a new tab joins: the one used last, otherwise the first one.
     fn target_tabs(&self) -> Option<TileId> {
         let is_tabs = |id: &TileId| self.is_tabs(id);
         let focused = self.focused.and_then(|tile| self.tree.tiles.parent_of(tile)).filter(is_tabs);
@@ -123,9 +106,6 @@ impl Window {
         matches!(self.tree.tiles.get_container(*tile), Some(Container::Tabs(_)))
     }
 
-    /// Where a tab dropped at the given point of the screen lands: in the group of tabs that
-    /// is there when dropped on its middle or its titles, next to the group when dropped
-    /// towards one of its sides.
     pub fn drop_target(&self, point: egui::Pos2) -> Option<DropTarget> {
         let point = point - self.screen_rect?.min.to_vec2();
         let tiles = &self.tree.tiles;
@@ -142,7 +122,6 @@ impl Window {
         })
     }
 
-    /// Adds the tab where the target says.
     fn add_at(&mut self, target: DropTarget, tab: Tab) {
         let Some(side) = target.side else { return self.add_to(Some(target.tabs), tab) };
         let tiles = &mut self.tree.tiles;
@@ -151,7 +130,6 @@ impl Window {
         let new_tabs = tiles.insert_tab_tile(vec![tile]);
         let children = if matches!(side, Side::Left | Side::Top) { vec![new_tabs, target.tabs] } else { vec![target.tabs, new_tabs] };
         let split = if matches!(side, Side::Left | Side::Right) { tiles.insert_horizontal_tile(children) } else { tiles.insert_vertical_tile(children) };
-        // the split takes the place of the group
         let place = match parent.map(|parent| tiles.get_mut(parent)) {
             None => self.tree.root.as_mut(),
             Some(Some(Tile::Container(Container::Linear(linear)))) => linear.children.iter_mut().find(|child| **child == target.tabs),
@@ -163,7 +141,6 @@ impl Window {
         self.focused = Some(tile);
     }
 
-    /// Shows another tab in place of the one in the given tile.
     fn replace(&mut self, tile: TileId, tab: Tab) {
         if let Some(Tile::Pane(pane)) = self.tree.tiles.get_mut(tile) {
             *pane = tab;
@@ -176,7 +153,6 @@ impl Window {
         self.add_to(self.target_tabs(), tab);
     }
 
-    /// Adds the tab to the given group of tabs.
     fn add_to(&mut self, tabs: Option<TileId>, tab: Tab) {
         let tile = self.tree.tiles.insert_pane(tab);
         match tabs.and_then(|id| self.tree.tiles.get_mut(id)) {
@@ -185,7 +161,6 @@ impl Window {
                 tabs.set_active(tile);
             }
             _ => {
-                // an empty window, or one without a group of tabs: start a new group at the root
                 let children = self.tree.root.into_iter().chain([tile]).collect();
                 let root = self.tree.tiles.insert_tab_tile(children);
                 if let Some(Tile::Container(Container::Tabs(tabs))) = self.tree.tiles.get_mut(root) {
@@ -205,17 +180,13 @@ impl Window {
     }
 }
 
-/// Everything about the arrangement of the editor that survives a restart.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Workspace {
-    /// The first window is the main one: it has the sidebar and is never removed.
     pub windows: Vec<Window>,
     pub sidebar: Sidebar,
     pub expanded_dirs: BTreeSet<String>,
-    /// The directories closed in the tree of changed files, where they are open by default.
     pub collapsed_changes: BTreeSet<String>,
-    /// The review tab used last, where the changes of a file chosen in the tree are shown.
     #[serde(skip)]
     pub last_review: Option<Tab>,
 }
@@ -245,8 +216,6 @@ impl Workspace {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// Shows the tab, opening it in the given window unless it is already open somewhere.
-    /// Returns the index of the window the tab is in.
     pub fn open(&mut self, tab: Tab, window: usize) -> usize {
         if let Some(existing) = self.windows.iter_mut().position(|w| w.activate(&tab)) {
             return existing;
@@ -255,26 +224,21 @@ impl Workspace {
         window
     }
 
-    /// Adds a tab to the given group of tabs of a window, or next to the tab used last.
     pub fn add_tab(&mut self, window: usize, tabs: Option<TileId>, tab: Tab) {
         let window = &mut self.windows[window];
         window.add_to(tabs.or_else(|| window.target_tabs()), tab);
     }
 
-    /// Opens a new terminal in the given group of tabs of a window, or next to the tab used
-    /// last. Returns its id.
     pub fn open_terminal(&mut self, window: usize, tabs: Option<TileId>) -> u64 {
         let id = self.windows.iter().flat_map(|window| window.tabs()).filter_map(|tab| if let Tab::Terminal(id) = tab { Some(*id) } else { None }).max().unwrap_or(0) + 1;
         self.add_tab(window, tabs, Tab::Terminal(id));
         id
     }
 
-    /// The window and the tile a tab is in.
     fn find(&self, tab: &Tab) -> Option<(usize, TileId)> {
         self.windows.iter().enumerate().find_map(|(index, window)| Some((index, window.tree.tiles.find_pane(tab)?)))
     }
 
-    /// The review tab used last, otherwise the review tab opened first.
     fn review_tab(&self) -> Option<(usize, TileId)> {
         let first = || {
             self.windows.iter().enumerate().find_map(|(index, window)| {
@@ -285,9 +249,6 @@ impl Workspace {
         self.last_review.as_ref().and_then(|tab| self.find(tab)).or_else(first)
     }
 
-    /// Shows the changes of a file: in the review tab that shows them already, otherwise in
-    /// the review tab used last, or in a new one when `new_tab` is set or there is none.
-    /// Returns the index of the window the review is in.
     pub fn show_review(&mut self, path: &str, new_tab: bool) -> usize {
         let tab = Tab::Review(Some(path.to_string()));
         let window = match self.find(&tab) {
@@ -309,7 +270,6 @@ impl Workspace {
         window
     }
 
-    /// Moves a tab to another window, or pops it out into a new one when `to` is `None`.
     pub fn move_tab(&mut self, from: usize, tile: TileId, to: Option<usize>) {
         let Some(tab) = self.windows[from].remove(tile) else { return };
         match to {
@@ -326,19 +286,15 @@ impl Workspace {
         self.windows.last_mut().unwrap()
     }
 
-    /// The window shown at the given point of the screen, other than the one the tab is dragged from.
     pub fn window_at(&self, point: egui::Pos2, from: usize) -> Option<usize> {
         let is_there = |window: &Window| window.screen_rect.is_some_and(|rect| rect.contains(point));
         (0..self.windows.len()).find(|&index| index != from && is_there(&self.windows[index]))
     }
 
-    /// Drops a tab that was dragged out of its window at the given point of the screen: into
-    /// the window that is there, otherwise into a new window. Returns the index of the window
-    /// the tab is in now.
     pub fn drop_tab(&mut self, from: usize, tile: TileId, point: egui::Pos2) -> usize {
         let to = self.window_at(point, from);
         if to.is_none() && from > 0 && self.windows[from].tabs().len() == 1 {
-            return from; // the tab already has a window of its own
+            return from;
         }
         let Some(tab) = self.windows[from].remove(tile) else { return from };
         match to {
@@ -357,7 +313,6 @@ impl Workspace {
         }
     }
 
-    /// Closes a popped out window, bringing its tabs back to the main window.
     pub fn close_window(&mut self, index: usize) {
         if index == 0 {
             return;
@@ -368,7 +323,6 @@ impl Workspace {
         }
     }
 
-    /// Removes popped out windows that have no tabs left.
     pub fn prune(&mut self) {
         let mut index = 0;
         self.windows.retain(|window| {
@@ -440,7 +394,6 @@ mod tests {
         assert_eq!(tabs(&workspace.windows[0]), ["Review"]);
         assert_eq!(tabs(&workspace.windows[1]), ["a.rs"]);
 
-        // a tab that is open in another window is shown there instead of being opened twice
         assert_eq!(workspace.open(file("a.rs"), 0), 1);
         assert_eq!(workspace.open(file("b.rs"), 1), 1);
 
@@ -483,7 +436,6 @@ mod tests {
         assert_eq!(tabs(&workspace.windows[1]), ["a.rs"]);
         assert_eq!(workspace.windows[1].position, Some(egui::pos2(500.0, 300.0) - NEW_WINDOW_GRIP));
 
-        // the only tab of a popped out window stays where it is
         let tile = tile_of(&workspace.windows[1], &file("a.rs"));
         workspace.drop_tab(1, tile, egui::pos2(900.0, 300.0));
         assert_eq!(workspace.windows.len(), 2);
@@ -580,19 +532,16 @@ mod tests {
         workspace.show_review("src/a.rs", false);
         assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs"]);
 
-        // a second review tab, on purpose, next to the first one
         workspace.show_review("src/b.rs", true);
         assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs", "Review: b.rs"]);
         let first = tile_of(&workspace.windows[0], &review("src/a.rs"));
         let second = tile_of(&workspace.windows[0], &review("src/b.rs"));
         assert_eq!(workspace.windows[0].tree.tiles.parent_of(first), workspace.windows[0].tree.tiles.parent_of(second));
 
-        // the file goes to the tab used last
         workspace.show_review("src/c.rs", false);
         assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs", "Review: c.rs"]);
         assert!(is_active(&workspace.windows[0], &review("src/c.rs")));
 
-        // a file shown in a review tab already is shown there, wherever the tab is
         workspace.move_tab(0, first, None);
         assert_eq!(workspace.show_review("src/a.rs", false), 1);
         assert_eq!(workspace.last_review, Some(review("src/a.rs")));

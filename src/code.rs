@@ -1,6 +1,5 @@
 use eframe::egui::{self, Align2, Color32, FontId, Painter, TextStyle, Ui};
 
-/// The shared look of code rows in diffs and files: monospace text next to a gutter of line numbers.
 pub struct CodeStyle {
     pub font: FontId,
     pub row_height: f32,
@@ -26,7 +25,6 @@ impl CodeStyle {
         }
     }
 
-    /// Paints a line number so that it ends at `right`.
     pub fn number(&self, painter: &Painter, right: f32, top: f32, number: Option<u32>) {
         if let Some(number) = number {
             painter.text(egui::pos2(right, top), Align2::RIGHT_TOP, number, self.font.clone(), self.weak_color);

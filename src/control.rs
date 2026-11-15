@@ -10,23 +10,18 @@ use std::time::Duration;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-/// The variable that tells programs in the editor's terminals where to reach the editor.
 pub const SOCKET_VARIABLE: &str = "EDITOR_SOCKET";
 
-/// A directory younger than this may belong to an editor that is starting and isn't listening yet.
 const STARTING: Duration = Duration::from_secs(10);
 
-/// How long a program waits for the editor to answer.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// What the editor answers.
 #[derive(Serialize, Deserialize)]
 struct Answer {
     ok: bool,
     output: String,
 }
 
-/// A command a program sent to the editor, waiting for its answer.
 pub struct Request {
     pub args: Vec<String>,
     reply: Sender<Result<String, String>>,
@@ -38,9 +33,6 @@ impl Request {
     }
 }
 
-/// Lets programs in the editor's terminals, such as agents, ask the editor for what it shows
-/// and have it do things, with `editor ctl`. The editor listens on a socket in a directory of
-/// its own, which also has the `editor` command in it for the terminals' PATH.
 pub struct Control {
     dir: PathBuf,
     requests: Receiver<Request>,
@@ -72,12 +64,10 @@ impl Control {
         self.dir.join("control.sock")
     }
 
-    /// The directory with the `editor` command in it.
     pub fn bin_dir(&self) -> PathBuf {
         self.dir.join("bin")
     }
 
-    /// The commands sent since the last call.
     pub fn requests(&self) -> Vec<Request> {
         self.requests.try_iter().collect()
     }
@@ -89,8 +79,6 @@ impl Drop for Control {
     }
 }
 
-/// Removes the directories of editors that ended without removing their own, as when they were
-/// killed: nothing listens on their sockets any more. Directories younger than `starting` are left.
 fn remove_stale(parent: &Path, starting: Duration) {
     let Ok(entries) = fs::read_dir(parent) else { return };
     for entry in entries.flatten() {
@@ -103,7 +91,6 @@ fn remove_stale(parent: &Path, starting: Duration) {
     }
 }
 
-/// Reads one command from a program, has the editor answer it and passes the answer on.
 fn serve(stream: UnixStream, sender: &Sender<Request>, ctx: &egui::Context) {
     let mut line = String::new();
     if BufReader::new(&stream).read_line(&mut line).is_err() {
@@ -125,7 +112,6 @@ fn serve(stream: UnixStream, sender: &Sender<Request>, ctx: &egui::Context) {
     let _ = writeln!(&stream, "{}", serde_json::to_string(&answer).unwrap_or_default());
 }
 
-/// Sends a command to the editor listening on the socket and returns its answer.
 pub fn ask(socket: &Path, args: &[String]) -> Result<String, String> {
     let stream = UnixStream::connect(socket).map_err(|e| format!("Cannot reach the editor at {}: {e}", socket.display()))?;
     writeln!(&stream, "{}", serde_json::to_string(args).unwrap_or_default()).map_err(|e| e.to_string())?;
@@ -135,8 +121,6 @@ pub fn ask(socket: &Path, args: &[String]) -> Result<String, String> {
     if answer.ok { Ok(answer.output) } else { Err(answer.output) }
 }
 
-/// Runs `editor ctl` with the arguments that follow it, printing the editor's answer. Returns
-/// the exit code.
 pub fn run_command(args: &[String]) -> i32 {
     let Some(socket) = std::env::var_os(SOCKET_VARIABLE) else {
         eprintln!("editor ctl works in the terminals of the editor only (no {SOCKET_VARIABLE} set)");
@@ -166,8 +150,6 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             dir
         };
-        // its editor was killed: its socket is left, but nobody listens on it. Not made by
-        // binding a socket, as a process started by another test may hold on to it for a moment
         fs::write(dir("editor-1-0").join("control.sock"), "").unwrap();
         let _running = UnixListener::bind(dir("editor-2-0").join("control.sock")).unwrap();
         dir("editor-notes");

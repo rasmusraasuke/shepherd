@@ -1,11 +1,7 @@
 use crate::git::{DiffLine, Hunk, LineKind};
 
-/// Above this many differences two texts are not matched line by line, to stay quick while
-/// typing; everything between their common start and end is then changed.
 const MAX_DIFFERENCES: usize = 2000;
 
-/// The changes from the old lines to the new ones, as git gives them without unchanged lines:
-/// each run of changed lines is a hunk, its removed lines before its added ones.
 pub fn diff<A: AsRef<str>, B: AsRef<str>>(old: &[A], new: &[B]) -> Vec<Hunk> {
     let same = |i: usize, j: usize| old[i].as_ref() == new[j].as_ref();
     let mut start = 0;
@@ -27,7 +23,6 @@ pub fn diff<A: AsRef<str>, B: AsRef<str>>(old: &[A], new: &[B]) -> Vec<Hunk> {
             let (i0, j0) = (start + i, start + j);
             let mut lines: Vec<DiffLine> = (i0..start + next_i).map(|at| DiffLine { kind: LineKind::Removed, old_no: Some(at as u32 + 1), new_no: None, text: old[at].as_ref().to_string() }).collect();
             lines.extend((j0..start + next_j).map(|at| DiffLine { kind: LineKind::Added, old_no: None, new_no: Some(at as u32 + 1), text: new[at].as_ref().to_string() }));
-            // as in a header of git: a side without lines starts at the line before them
             let first = |at: usize, count: usize| if count == 0 { at as u32 } else { at as u32 + 1 };
             hunks.push(Hunk { old_start: first(i0, next_i - i), new_start: first(j0, next_j - j), lines });
         }
@@ -36,15 +31,11 @@ pub fn diff<A: AsRef<str>, B: AsRef<str>>(old: &[A], new: &[B]) -> Vec<Hunk> {
     hunks
 }
 
-/// The lines kept from the first sequence in the second, as pairs of their indices: a longest
-/// common sequence, found as Myers does. None when there are too many differences.
 fn matching(n: usize, m: usize, same: impl Fn(usize, usize) -> bool) -> Option<Vec<(usize, usize)>> {
     let (n, m) = (n as isize, m as isize);
     let max = (n + m).min(MAX_DIFFERENCES as isize);
-    // how far along x each diagonal k = x - y reaches, at index k + offset
     let offset = max + 1;
     let mut reach = vec![0isize; 2 * offset as usize + 1];
-    // for each number of differences d, the reach of the diagonals from -d - 1 to d + 1 before it
     let mut trace = Vec::new();
     for d in 0..=max {
         trace.push(reach[(offset - d - 1) as usize..=(offset + d + 1) as usize].to_vec());
@@ -64,8 +55,6 @@ fn matching(n: usize, m: usize, same: impl Fn(usize, usize) -> bool) -> Option<V
     None
 }
 
-/// The matching lines on the way back from the ends of both sequences through the reaches
-/// that `trace` holds.
 fn backtrack(trace: &[Vec<isize>], n: isize, m: isize) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
     let (mut x, mut y) = (n, m);
@@ -90,7 +79,6 @@ fn backtrack(trace: &[Vec<isize>], n: isize, m: isize) -> Vec<(usize, usize)> {
 mod tests {
     use super::*;
 
-    /// The hunks as git shows them, in short: their headers and lines.
     fn shown(hunks: &[Hunk]) -> Vec<String> {
         hunks
             .iter()
@@ -123,7 +111,6 @@ mod tests {
                 _ => assert_eq!(new[line.new_no.unwrap() as usize - 1], line.text),
             }
         }
-        // what is left of the old lines without the removed ones is what is left of the new without the added ones
         let numbers = |kind: LineKind| hunks.iter().flat_map(|hunk| &hunk.lines).filter(|line| line.kind == kind).filter_map(|line| line.old_no.or(line.new_no)).collect::<Vec<u32>>();
         let (removed, added) = (numbers(LineKind::Removed), numbers(LineKind::Added));
         let kept = |lines: &[String], changed: &[u32]| lines.iter().enumerate().filter(|(at, _)| !changed.contains(&(*at as u32 + 1))).map(|(_, line)| line.clone()).collect::<Vec<_>>();

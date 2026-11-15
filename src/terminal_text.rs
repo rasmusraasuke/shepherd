@@ -1,6 +1,3 @@
-//! How terminals draw text. The fonts are the ones macOS terminals use, so that the symbols
-//! programs such as agents draw look as they meant them; box drawing, block and braille
-//! characters are drawn as shapes that fill their cells, so that lines and blocks join up.
 
 use std::fs;
 use std::sync::Arc;
@@ -8,15 +5,10 @@ use std::sync::Arc;
 use eframe::egui::epaint::QuadraticBezierShape;
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Painter, Pos2, Rect, Stroke, Vec2};
 
-/// Menlo, the font of Terminal and iTerm2, with its regular, bold, italic and bold italic faces.
 const MENLO: &str = "/System/Library/Fonts/Menlo.ttc";
 
-/// The fonts macOS falls back to from Menlo for symbols it lacks, such as ⏺ and ⎿, before
-/// it turns to colored emoji. Each is moved down by a fraction of the font size, so that its
-/// symbols sit in the middle of the line like the letters around them.
 const FALLBACKS: [(&str, f32); 2] = [("/System/Library/Fonts/Supplemental/STIXTwoMath.otf", 0.25), ("/System/Library/Fonts/Apple Symbols.ttf", 0.15)];
 
-/// The font family for terminal text. Until the terminal fonts are in, the editor's monospace font.
 pub fn family(fonts_ready: bool, bold: bool, italic: bool) -> FontFamily {
     if !fonts_ready {
         return FontFamily::Monospace;
@@ -30,8 +22,6 @@ pub fn family(fonts_ready: bool, bold: bool, italic: bool) -> FontFamily {
     FontFamily::Name(name.into())
 }
 
-/// Whether the terminal fonts are in. The first call adds them, which takes effect with the
-/// next frame.
 pub fn fonts_ready(ctx: &egui::Context) -> bool {
     if ctx.fonts(|fonts| fonts.definitions().families.contains_key(&family(true, false, false))) {
         return true;
@@ -43,8 +33,6 @@ pub fn fonts_ready(ctx: &egui::Context) -> bool {
     false
 }
 
-/// Adds the font families of terminals. Without Menlo, as on other systems than macOS, they
-/// are the editor's monospace font.
 fn install_fonts(ctx: &egui::Context) {
     let mut definitions = FontDefinitions::default();
     let mut fallbacks: Vec<String> = FALLBACKS
@@ -70,8 +58,6 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(definitions);
 }
 
-/// Draws a box drawing, block or braille character so that it fills its cell. Returns false for other
-/// characters, which are text. `pixel` is the size of a pixel, to keep lines sharp.
 pub fn draw(painter: &Painter, cell: Rect, c: char, color: Color32, pixel: f32) -> bool {
     let cell = Rect::from_min_max(snap(cell.min, pixel), snap(cell.max, pixel));
     match c {
@@ -102,14 +88,10 @@ fn snap(pos: Pos2, pixel: f32) -> Pos2 {
     Pos2::new((pos.x / pixel).round() * pixel, (pos.y / pixel).round() * pixel)
 }
 
-/// The width of a light line: about an eighth of the cell, and at least a pixel.
 fn line_width(cell: Rect, pixel: f32) -> f32 {
     (cell.width() / 8.0 / pixel).round().max(1.0) * pixel
 }
 
-/// For each character from U+2500 to U+257F, the lines from the middle of the cell up, right,
-/// down and left: 0 none, 1 light, 2 heavy, 3 double. Dashed lines are drawn whole.
-/// Made from the Unicode names of the characters, such as "DOWN LIGHT AND RIGHT HEAVY".
 const BOX_ARMS: &[u8] = b"\
     0101 0202 1010 2020 0101 0202 1010 2020 0101 0202 1010 2020 0110 0210 0120 0220 \
     0011 0012 0021 0022 1100 1200 2100 2200 1001 1002 2001 2002 1110 1210 2110 1120 \
@@ -126,13 +108,10 @@ fn box_arms(c: char) -> [u8; 4] {
     [arms[0] - b'0', arms[1] - b'0', arms[2] - b'0', arms[3] - b'0']
 }
 
-/// Draws lines from the middle of the cell to its sides; they meet the lines of the cells around.
 fn draw_lines(painter: &Painter, cell: Rect, arms: [u8; 4], color: Color32, pixel: f32) {
     let light = line_width(cell, pixel);
     let center = snap(cell.center(), pixel);
-    // double lines are two light ones, a light line apart
     let gap = light * 1.5;
-    // lines reach past the middle, so that they meet the ones going the other way
     let reach = if arms.contains(&3) { gap + light / 2.0 } else { light * if arms.contains(&2) { 1.0 } else { 0.5 } };
     let ends = [cell.top(), cell.right(), cell.bottom(), cell.left()];
     for (side, (weight, end)) in arms.into_iter().zip(ends).enumerate() {
@@ -144,7 +123,6 @@ fn draw_lines(painter: &Painter, cell: Rect, arms: [u8; 4], color: Color32, pixe
         };
         for offset in offsets {
             let rect = if side % 2 == 0 {
-                // up or down
                 let x = center.x + offset;
                 let (from, to) = if side == 0 { (end, center.y + reach) } else { (center.y - reach, end) };
                 Rect::from_min_max(Pos2::new(x - width / 2.0, from), Pos2::new(x + width / 2.0, to))
@@ -158,7 +136,6 @@ fn draw_lines(painter: &Painter, cell: Rect, arms: [u8; 4], color: Color32, pixe
     }
 }
 
-/// Draws a rounded corner, ╭ ╮ ╯ ╰, between the middles of two sides of the cell.
 fn draw_arc(painter: &Painter, cell: Rect, c: char, color: Color32, pixel: f32) {
     let center = snap(cell.center(), pixel);
     let vertical = Pos2::new(center.x, if matches!(c, '╭' | '╮') { cell.bottom() } else { cell.top() });
@@ -167,8 +144,6 @@ fn draw_arc(painter: &Painter, cell: Rect, c: char, color: Color32, pixel: f32) 
     painter.add(QuadraticBezierShape::from_points_stroke([vertical, center, horizontal], false, Color32::TRANSPARENT, stroke));
 }
 
-/// Draws the dots of a braille character, two columns of four, as programs use them for
-/// spinners and small charts.
 fn draw_braille(painter: &Painter, cell: Rect, c: char, color: Color32) {
     let radius = (cell.width() / 4.0).min(cell.height() / 8.0) * 0.7;
     for (row, column) in braille_dots(c) {
@@ -177,32 +152,24 @@ fn draw_braille(painter: &Painter, cell: Rect, c: char, color: Color32) {
     }
 }
 
-/// The rows and columns of the dots of a braille character. Its bits are the dots in the
-/// order of braille: down the left column, down the right one, then the bottom row.
 fn braille_dots(c: char) -> Vec<(usize, usize)> {
     const DOTS: [(usize, usize); 8] = [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1), (3, 0), (3, 1)];
     let bits = c as u32 - 0x2800;
     DOTS.into_iter().enumerate().filter(|(bit, _)| bits & (1 << bit) != 0).map(|(_, dot)| dot).collect()
 }
 
-/// The parts of the cell a block character fills, as fractions of the cell, with how much of
-/// the color they take.
 fn block_parts(c: char) -> Vec<(Rect, f32)> {
     let part = |left: f32, top: f32, right: f32, bottom: f32| (Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom)), 1.0);
     let eighth = |n: u32| n as f32 / 8.0;
     match c as u32 {
         0x2580 => vec![part(0.0, 0.0, 1.0, 0.5)],
-        // lower one eighth to the full block
         code @ 0x2581..=0x2588 => vec![part(0.0, 1.0 - eighth(code - 0x2580), 1.0, 1.0)],
-        // left seven eighths to left one eighth
         code @ 0x2589..=0x258F => vec![part(0.0, 0.0, eighth(0x2590 - code), 1.0)],
         0x2590 => vec![part(0.5, 0.0, 1.0, 1.0)],
-        // light, medium and dark shade
         code @ 0x2591..=0x2593 => vec![(Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), (code - 0x2590) as f32 / 4.0)],
         0x2594 => vec![part(0.0, 0.0, 1.0, eighth(1))],
         0x2595 => vec![part(eighth(7), 0.0, 1.0, 1.0)],
         code @ 0x2596..=0x259F => {
-            // quadrants: upper left, upper right, lower left, lower right
             const QUADRANTS: [u8; 10] = [0b0100, 0b1000, 0b0001, 0b1101, 0b1001, 0b0111, 0b1011, 0b0010, 0b0110, 0b1110];
             let quadrants = QUADRANTS[(code - 0x2596) as usize];
             [(0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5)]

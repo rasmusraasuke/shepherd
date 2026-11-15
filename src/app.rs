@@ -19,37 +19,27 @@ use crate::terminal::{Activity, Terminals};
 use crate::watcher::{Snapshot, Watcher};
 use crate::workspace::{Sidebar, Tab, Window, Workspace};
 
-/// How often a changed layout is written to disk.
 const SAVE_INTERVAL: Duration = Duration::from_secs(1);
 
 const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(1200.0, 800.0);
 
-/// Room around the title of a dragged tab for its shadow.
 const DRAG_TITLE_SHADOW: i8 = 16;
 
 pub struct App {
     repo: Repo,
     watcher: Watcher,
-    /// Where agents reach the editor, unless that failed.
     control: Option<Control>,
     content: Content,
     workspace: Workspace,
-    /// The workspace as it was last written to disk.
     saved: Workspace,
     layout_path: PathBuf,
     last_save: Instant,
-    /// How each popped out window was created. Kept as it was, so that a window isn't moved
-    /// or resized by the editor while the user does the same.
     viewports: HashMap<u64, ViewportBuilder>,
-    /// The quick open popup and the id of the window it is shown in.
     quick_open: Option<(u64, QuickOpen)>,
-    /// The tab that is being dragged outside of its window.
     drag: Option<Drag>,
-    /// What the user asked for during this frame; done once all windows are drawn.
     action: Option<Action>,
 }
 
-/// What the tabs and the sidebar show.
 struct Content {
     root: PathBuf,
     review: Review,
@@ -62,34 +52,22 @@ struct Content {
 }
 
 enum Action {
-    /// Show the tab, opening it in the given window if it isn't open yet.
     Open(Tab, usize),
-    /// Open a new terminal in a window, in the given group of tabs or next to the tab used last.
     NewTerminal(usize, Option<TileId>),
-    /// Open a new review tab in a window, in the given group of tabs or next to the tab used last.
     NewReview(usize, Option<TileId>),
-    /// Show the changes of a file in a review tab, in a new one when `new_tab` is set.
     Review { path: String, new_tab: bool },
-    /// Show the changes of a file in a review tab, at the change nearest to a line numbered from 0.
     ReviewLine { path: String, line: usize },
-    /// Send text to the agent in a terminal.
     Send { terminal: u64, text: String },
-    /// Search across the project, in the sidebar of the main window.
     Search,
-    /// Open the file and select a place in it.
     Reveal(Reveal),
-    /// Move a tab to another window, or to a new one.
     Move { from: usize, tile: TileId, to: Option<usize> },
-    /// Drop a tab that was dragged out of its window.
     Drop(Drag),
     CloseWindow(usize),
 }
 
 struct Drag {
-    /// Index of the window the tab is dragged from.
     from: usize,
     tile: TileId,
-    /// Where the pointer is on the screen.
     point: egui::Pos2,
 }
 
@@ -106,7 +84,6 @@ editor ctl: ask the editor what the user sees, or have it show something.
                                   Open a file, selecting the lines
   editor ctl review [<path>]      Show the changes of a file for review, or of the next file to review";
 
-/// A path with an optional line or range of lines, as in \"src/main.rs:12-14\".
 fn parse_place(place: &str) -> (&str, Option<(usize, usize)>) {
     let Some((path, lines)) = place.rsplit_once(':') else { return (place, None) };
     let (first, last) = lines.split_once('-').unwrap_or((lines, lines));
@@ -116,7 +93,6 @@ fn parse_place(place: &str) -> (&str, Option<(usize, usize)>) {
     }
 }
 
-/// The title and placement of a window as it is first shown.
 pub fn viewport(root: &Path, window: &Window) -> ViewportBuilder {
     let builder = ViewportBuilder::default()
         .with_title(format!("editor — {}", root.display()))
@@ -127,14 +103,12 @@ pub fn viewport(root: &Path, window: &Window) -> ViewportBuilder {
     }
 }
 
-/// The frame around the title of a dragged tab.
 fn drag_title_frame(style: &egui::Style) -> egui::Frame {
     let mut frame = egui::Frame::popup(style).outer_margin(DRAG_TITLE_SHADOW);
-    frame.fill = frame.fill.gamma_multiply(0.5); // see-through
+    frame.fill = frame.fill.gamma_multiply(0.5);
     frame
 }
 
-/// The title of a dragged tab as it follows the pointer.
 fn drag_title(ui: &mut egui::Ui, title: &str) {
     drag_title_frame(ui.style()).show(ui, |ui| ui.add(egui::Label::new(title).extend()));
 }
@@ -157,7 +131,6 @@ impl App {
             root: repo.root.clone(),
         };
         if let Some(control) = &control {
-            // the programs in the terminals find `editor ctl` and the socket it talks to
             let path = std::env::var("PATH").unwrap_or_default();
             content.terminals.set_env("PATH", format!("{}:{path}", control.bin_dir().display()));
             content.terminals.set_env(control::SOCKET_VARIABLE, control.socket().display().to_string());
@@ -237,7 +210,6 @@ impl App {
         }
     }
 
-    /// Shows the tabs of one window, filling the given ui.
     fn window_ui(&mut self, ui: &mut egui::Ui, index: usize) {
         let ctx = ui.ctx().clone();
         let window_count = self.workspace.windows.len();
@@ -251,7 +223,6 @@ impl App {
         if close_requested && index > 0 {
             self.action = Some(Action::CloseWindow(index));
         }
-        // before the tabs, where Cmd+F would take it
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
             self.action = Some(Action::Search);
         }
@@ -268,7 +239,6 @@ impl App {
             self.watcher.refresh_now();
         }
 
-        // a tab dragged out of the window is dropped where the pointer is on the screen
         let pointer = ctx.input(|i| i.pointer.interact_pos());
         if let (Some(tile), Some(pointer)) = (window.tree.dragged_id(&ctx), pointer) {
             let point = inner.map(|inner| inner.min + pointer.to_vec2()).filter(|point| inner.is_some_and(|inner| !inner.contains(*point)));
@@ -276,7 +246,6 @@ impl App {
             if ctx.input(|i| i.pointer.any_released()) && let Some(drag) = self.drag.take() {
                 self.action = Some(Action::Drop(drag));
             } else if self.drag.is_none() && let Some(tab) = window.tree.tiles.get_pane(&tile) {
-                // not kept inside the window, so that the title leaves it together with the pointer
                 let area = egui::Area::new(egui::Id::unique("drag title")).order(egui::Order::Tooltip).interactable(false).constrain(false);
                 area.pivot(egui::Align2::CENTER_CENTER).current_pos(pointer).show(&ctx, |ui| drag_title(ui, &tab.title()));
             }
@@ -305,7 +274,6 @@ impl App {
             window.tree.ui(&mut behavior, ui);
         });
 
-        // show where a tab dragged here from another window would land
         if let Some(drag) = self.drag.as_ref().filter(|drag| self.workspace.window_at(drag.point, drag.from) == Some(index)) {
             let rect = self.workspace.windows[index].drop_target(drag.point).map_or(panel.response.rect, |target| target.rect);
             let stroke = ui.visuals().selection.stroke;
@@ -374,7 +342,6 @@ impl App {
         }
     }
 
-    /// Answers a command of `editor ctl`, sent by a program in a terminal such as an agent.
     fn answer(&mut self, args: &[String], ctx: &egui::Context) -> Result<String, String> {
         let arg = |index: usize| args.get(index).map(String::as_str);
         let content = &self.content;
@@ -413,7 +380,6 @@ impl App {
         }
     }
 
-    /// Everything the editor shows, for an agent.
     fn context(&self) -> String {
         let tabs: Vec<String> = self.workspace.windows.iter().flat_map(|window| window.tabs()).map(|tab| match tab {
             Tab::Review(path) => format!("- review of {}", path.as_deref().unwrap_or("no file yet")),
@@ -476,13 +442,10 @@ impl App {
         if lines.is_empty() { "Terminals: none".to_string() } else { format!("Terminals (`editor ctl terminal <id>` shows one):\n{}", lines.join("\n")) }
     }
 
-    /// Brings the window to the front.
     fn focus(&self, window: usize, ctx: &egui::Context) {
         ctx.send_viewport_cmd_to(viewport_id(&self.workspace.windows[window]), ViewportCommand::Focus);
     }
 
-    /// Shows the title of the tab that is dragged outside of its window at the pointer.
-    /// It is a small window of its own, as nothing can be drawn outside of a window.
     fn drag_title(&self, ctx: &egui::Context) {
         let Some(drag) = &self.drag else { return };
         let Some(tab) = self.workspace.windows[drag.from].tree.tiles.get_pane(&drag.tile) else { return };
@@ -498,7 +461,6 @@ impl App {
             .with_resizable(false)
             .with_taskbar(false)
             .with_always_on_top()
-            // the window with the dragged tab keeps the pointer and the keyboard
             .with_active(false)
             .with_mouse_passthrough(true);
         ctx.show_viewport_immediate(ViewportId::from_hash_of("drag title"), builder, |ui, _| {
@@ -518,17 +480,12 @@ impl App {
     }
 }
 
-/// Tells the tiles of a window how to show its tabs.
 struct TabBehavior<'a> {
     content: &'a mut Content,
-    /// The terminals that review comments can be sent to.
     agents: &'a [review::Agent],
-    /// The font of the titles of the tabs.
     font: egui::FontId,
-    /// Index of the window the tabs are in.
     window: usize,
     window_count: usize,
-    /// Whether a tab of the window is being dragged outside of it.
     dragged_out: bool,
     focused: &'a mut Option<TileId>,
     last_review: &'a mut Option<Tab>,
@@ -543,7 +500,6 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                 *self.last_review = Some(tab.clone());
             }
         }
-        // the review keys go to the review tab used last
         let active = self.last_review.as_ref().is_none_or(|last| last == tab);
         match tab {
             Tab::Review(path) => {
@@ -572,7 +528,6 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         let Tab::Terminal(id) = tab else { return tab.title().into() };
         let terminals = &self.content.terminals;
         let title = terminals.title(*id).unwrap_or_else(|| tab.title());
-        // a dot in front tells what the program is doing: blue while it works, orange once it stopped
         let dot = match terminals.activity(*id) {
             Some(Activity::Working) => egui::Color32::from_rgb(90, 150, 230),
             Some(Activity::Waiting) => egui::Color32::from_rgb(230, 150, 50),
@@ -580,7 +535,6 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         };
         let mut job = egui::text::LayoutJob::default();
         job.append("● ", 0.0, egui::TextFormat::simple(self.font.clone(), dot));
-        // the color of the title is the one of the tab
         job.append(&title, 0.0, egui::TextFormat::simple(self.font.clone(), egui::Color32::PLACEHOLDER));
         job.into()
     }
@@ -637,12 +591,11 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
     }
 
     fn drag_ui(&mut self, _tiles: &Tiles<Tab>, _ui: &mut egui::Ui, _tile_id: TileId) {
-        // the title of the dragged tab is shown by the window, also outside of it
     }
 
     fn paint_drag_preview(&self, visuals: &egui::Visuals, painter: &egui::Painter, parent_rect: Option<egui::Rect>, preview_rect: egui::Rect) {
         if self.dragged_out {
-            return; // the tab isn't going to land in this window
+            return;
         }
         let stroke = self.drag_preview_stroke(visuals);
         if let Some(parent_rect) = parent_rect {
@@ -657,7 +610,6 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
 }
 
 impl App {
-    /// Shows the main window in the given ui, and the popped out windows next to it.
     fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if let Some(snapshot) = self.watcher.changed() {
@@ -702,7 +654,6 @@ impl eframe::App for App {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // nothing behind what is drawn, for the see-through title of a dragged tab
         [0.0; 4]
     }
 
@@ -736,7 +687,6 @@ mod tests {
         harness.state().workspace.windows.iter().map(|window| window.tabs().into_iter().cloned().collect()).collect()
     }
 
-    /// Runs frames until a label shows up, for what is done in the background.
     fn wait_for(harness: &mut Harness<'_, App>, label: &str) {
         for _ in 0..200 {
             harness.run();
@@ -762,7 +712,6 @@ mod tests {
         harness.run();
 
         assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("src/main.rs")]]);
-        // once in the tree and once as the title of the tab
         assert_eq!(harness.query_all_by_label("main.rs").count(), 2);
     }
 
@@ -789,7 +738,6 @@ mod tests {
         let (mut harness, _dir) = harness("changes");
         harness.get_by_label("Changes").click();
         harness.run();
-        // changed directories are open
         harness.get_by_label("main.rs").click();
         harness.run();
         assert_eq!(open_tabs(&harness), [vec![review("src/main.rs")]]);
@@ -799,13 +747,11 @@ mod tests {
         harness.run();
         assert_eq!(open_tabs(&harness), [vec![review("README.md")]]);
 
-        // with Cmd in a new review tab
         harness.state_mut().action = None;
         harness.get_by_label("main.rs").click_modifiers(Modifiers::COMMAND);
         harness.run();
         assert_eq!(open_tabs(&harness), [vec![review("README.md"), review("src/main.rs")]]);
 
-        // a new empty review tab takes the next file chosen
         harness.state_mut().action = Some(Action::NewReview(0, None));
         harness.run();
         harness.get_by_label("Choose a file under Changes to review it");
@@ -870,7 +816,6 @@ mod tests {
         harness.run();
 
         assert_eq!(open_tabs(&harness), [vec![Tab::Review(None)], vec![file("README.md")]]);
-        // both windows are drawn: the file is in the tree and is the title of a tab in the new window
         harness.get_by_label("Review");
         assert_eq!(harness.query_all_by_role_and_label(egui::Role::Button, "README.md").count(), 2);
 
@@ -890,13 +835,11 @@ mod tests {
         window.screen_rect = Some(egui::Rect::from_min_size(on_screen.to_pos2(), egui::vec2(1000.0, 700.0)));
         let tile = window.tree.tiles.find_pane(&file("README.md")).unwrap();
 
-        // outside of every window
         let point = egui::pos2(1500.0, 300.0);
         harness.state_mut().action = Some(Action::Drop(Drag { from: 0, tile, point }));
         harness.run();
         assert_eq!(open_tabs(&harness), [vec![Tab::Review(None)], vec![file("README.md")]]);
 
-        // onto the review in the main window
         let windows = &harness.state().workspace.windows;
         let review = windows[0].tree.tiles.find_pane(&Tab::Review(None)).unwrap();
         let point = windows[0].tree.tiles.rect(review).unwrap().center() + on_screen;
@@ -920,7 +863,6 @@ mod tests {
             harness.state_mut().action = Some(Action::Move { from: 0, tile, to: None });
             harness.run();
 
-            // dropped near the right and then the bottom edge of the review
             let windows = &harness.state().workspace.windows;
             let review = windows[0].tree.tiles.find_pane(&Tab::Review(None)).unwrap();
             let rect = windows[0].tree.tiles.rect(review).unwrap();
@@ -956,7 +898,6 @@ mod tests {
         harness.run();
         assert_eq!(titles(&harness), before + 1);
 
-        // giving up the drag leaves the tab where it was
         harness.key_press(Key::Escape);
         harness.run();
         assert_eq!(titles(&harness), before);
@@ -978,7 +919,6 @@ mod tests {
         harness.run();
         assert_eq!(on_disk(), "Hello\n# Readme\n");
 
-        // the keys of the review don't reach it while a file is edited
         harness.event(egui::Event::Text("j".to_string()));
         harness.key_press(Key::J);
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
@@ -994,7 +934,6 @@ mod tests {
         harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
         harness.run();
         let editor = harness.get_by_role(egui::Role::MultilineTextInput).rect();
-        // far to the right of the first line: the cursor goes to its end
         let end_of_line = egui::pos2(editor.right() - 20.0, editor.top() + 5.0);
         harness.event(egui::Event::PointerMoved(end_of_line));
         for pressed in [true, false] {
@@ -1012,12 +951,10 @@ mod tests {
         let (mut harness, dir) = harness("edit-highlighted");
         harness.state_mut().action = Some(Action::Open(file("src/main.rs"), 0));
         harness.run();
-        // lines come and go while the colors of the visible ones are kept
         for text in ["// one", "\n", "let s = \"two", "\n\n", "\";"] {
             harness.event(egui::Event::Text(text.to_string()));
             harness.run();
         }
-        // the line breaks and what was typed after them are undone as one word
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
         harness.run();
         harness.state_mut().content.open_files.save_all();
@@ -1031,12 +968,9 @@ mod tests {
         fs::write(dir.path().join("README.md"), &long_line).unwrap();
         harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
         harness.run();
-        // to the end of the line, which scrolls the text to the left
         harness.key_press(Key::End);
         harness.run();
 
-        // a click on the line numbers goes to the first character that can be seen, not under them
-        // the editor itself now starts outside of the window; the tabs start where its pane does
         let pane_left = harness.get_by_role_and_label(egui::Role::Button, "Review").rect().left();
         let editor = harness.get_by_role(egui::Role::MultilineTextInput).rect();
         let gutter = egui::pos2(pane_left + 10.0, editor.top() + 5.0);
@@ -1076,7 +1010,6 @@ mod tests {
         harness.run();
         harness.get_by_label("1/1");
 
-        // closing the bar gives the keyboard back to the text, where the last found place is selected
         harness.key_press(Key::Escape);
         harness.run();
         harness.event(egui::Event::Text("3".to_string()));
@@ -1089,7 +1022,6 @@ mod tests {
     fn searches_the_project_and_opens_a_place_found() {
         let (mut harness, dir) = harness("project-search");
         fs::write(dir.path().join("src/main.rs"), "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
-        // from the word selected in a file
         let readme = Reveal { path: "README.md".to_string(), start: Pos::new(0, 2), end: Pos::new(0, 8), focus: true };
         harness.state_mut().action = Some(Action::Reveal(readme));
         harness.run();
@@ -1098,7 +1030,6 @@ mod tests {
         assert_eq!(harness.get_by_role(egui::Role::TextInput).value().as_deref(), Some("Readme"));
         wait_for(&mut harness, "1 found in 1 files");
 
-        // a query of its own; capitals make the letter case matter
         let search_for = |harness: &mut Harness<'_, App>, query: &str, expected: &str| {
             harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
             harness.event(egui::Event::Text(query.to_string()));
@@ -1106,7 +1037,6 @@ mod tests {
         };
         search_for(&mut harness, "HELLO", "0 found in 0 files");
         search_for(&mut harness, "hello", "1 found in 1 files");
-        // Down shows the place in its file while the keyboard stays in the search, Enter goes there
         harness.key_press(Key::ArrowDown);
         harness.run();
         assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("README.md"), file("src/main.rs")]]);
@@ -1114,7 +1044,6 @@ mod tests {
         harness.key_press(Key::Enter);
         harness.run();
 
-        // the place found is selected: typing replaces it
         harness.event(egui::Event::Text("bye".to_string()));
         harness.run();
         harness.state_mut().content.open_files.save_all();
@@ -1130,18 +1059,15 @@ mod tests {
         assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), Tab::Terminal(1)]]);
         assert!(harness.get_by_role(egui::Role::Terminal).is_focused());
 
-        // the keys of the review and of the editor go to the program instead
         harness.event(egui::Event::Text("j hello".to_string()));
         harness.key_press(Key::Enter);
         let start = std::time::Instant::now();
-        // cat repeats the line after the terminal echoed it
         while harness.state().content.terminals.screen(1).unwrap() != "j hello\nj hello" {
             assert!(start.elapsed() < Duration::from_secs(5), "{:?}", harness.state().content.terminals.screen(1).unwrap());
             harness.run();
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        // a second one opens next to it; closing a tab ends its program
         harness.get_by_label("+").click();
         harness.run();
         harness.get_by_label("New terminal (Cmd+T)").click();
@@ -1155,7 +1081,6 @@ mod tests {
         assert!(harness.state().content.terminals.is_open(2));
     }
 
-    /// Has the editor answer a command of `editor ctl`, as sent from a terminal.
     fn ask(harness: &mut Harness<'_, App>, args: &[&str]) -> Result<String, String> {
         let socket = harness.state().control.as_ref().unwrap().socket();
         let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
@@ -1174,7 +1099,6 @@ mod tests {
         assert_eq!(open_tabs(&harness), [vec![Tab::Review(None), file("README.md")]]);
         assert!(ask(&mut harness, &["open", "missing.rs"]).is_err());
 
-        // the line selected is the selection
         harness.key_press(Key::Escape);
         harness.state_mut().action = Some(Action::Reveal(Reveal { path: "README.md".to_string(), start: Pos::new(0, 2), end: Pos::new(0, 8), focus: true }));
         harness.run();

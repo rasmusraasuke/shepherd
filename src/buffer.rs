@@ -1,6 +1,5 @@
 use tree_sitter::{InputEdit, Point};
 
-/// A place in the text: a line and the number of characters before the place on that line.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct Pos {
     pub line: usize,
@@ -13,53 +12,39 @@ impl Pos {
     }
 }
 
-/// Where the cursor can be sent.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Move {
     Left,
     Right,
-    /// Down by this many rows, up when negative.
     Rows(isize),
     WordLeft,
     WordRight,
-    /// The first character of the line that isn't whitespace, or the very start when already there.
     LineStart,
     LineEnd,
     Start,
     End,
 }
 
-/// One change of the text, kept to be undone: `removed` was replaced by `inserted` at `start`.
 struct Edit {
     start: Pos,
     removed: String,
     inserted: String,
-    /// The cursor and the anchor before the change.
     selection: (Pos, Pos),
-    /// The revisions of the text before and after the change.
     revisions: (u64, u64),
 }
 
-/// The text of a file being edited, with a cursor, a selection and the history of changes.
 pub struct Buffer {
-    /// Never empty; a text that ends with a line break has an empty last line.
     lines: Vec<String>,
-    /// Whether the lines of the file end with "\r\n".
     crlf: bool,
     cursor: Pos,
-    /// The other end of the selection; where the cursor is when nothing is selected.
     anchor: Pos,
-    /// The column the cursor returns to when moving over shorter lines.
     goal_col: Option<usize>,
     undo: Vec<Edit>,
     redo: Vec<Edit>,
-    /// Identifies the current text; it changes with every edit and comes back with undo.
     revision: u64,
     last_revision: u64,
     saved_revision: u64,
-    /// Where typing continues the previous edit, so that a word is undone at once.
     typing_at: Option<Pos>,
-    /// The changes of the text since they were taken last, for the syntax tree to follow them.
     changes: Vec<InputEdit>,
 }
 
@@ -67,12 +52,10 @@ fn chars(line: &str) -> usize {
     line.chars().count()
 }
 
-/// The byte offset of a column.
 fn byte(line: &str, col: usize) -> usize {
     line.char_indices().nth(col).map_or(line.len(), |(index, _)| index)
 }
 
-/// Where a text inserted at `start` ends.
 fn end_of(start: Pos, text: &str) -> Pos {
     match text.rsplit_once('\n') {
         Some((before, last)) => Pos::new(start.line + before.matches('\n').count() + 1, chars(last)),
@@ -80,8 +63,6 @@ fn end_of(start: Pos, text: &str) -> Pos {
     }
 }
 
-/// The columns of every place the query is found in the line. Letter case matters only when
-/// the query has capital letters.
 pub fn find_in_line(line: &str, query: &str) -> Vec<std::ops::Range<usize>> {
     if query.is_empty() || line.len() < query.len() {
         return Vec::new();
@@ -156,7 +137,6 @@ impl Buffer {
         self.cursor
     }
 
-    /// The start and the end of the selection, if anything is selected.
     pub fn selection(&self) -> Option<(Pos, Pos)> {
         (self.cursor != self.anchor).then(|| (self.cursor.min(self.anchor), self.cursor.max(self.anchor)))
     }
@@ -165,7 +145,6 @@ impl Buffer {
         self.selection().map(|(start, end)| self.slice(start, end))
     }
 
-    /// Whether the text differs from what was saved last.
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
     }
@@ -174,7 +153,6 @@ impl Buffer {
         self.saved_revision = self.revision;
     }
 
-    /// Identifies the current text; it changes with every edit.
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -187,7 +165,6 @@ impl Buffer {
         Pos::new(self.lines.len() - 1, self.line_len(self.lines.len() - 1))
     }
 
-    /// The nearest place that exists in the text.
     pub fn clamp(&self, pos: Pos) -> Pos {
         let line = pos.line.min(self.lines.len() - 1);
         Pos::new(line, pos.col.min(self.line_len(line)))
@@ -209,8 +186,6 @@ impl Buffer {
         text
     }
 
-    /// The changes of the text since this was called last, with positions in bytes of the
-    /// lines joined by "\n".
     pub fn take_changes(&mut self) -> Vec<InputEdit> {
         std::mem::take(&mut self.changes)
     }
@@ -219,12 +194,10 @@ impl Buffer {
         Point::new(pos.line, byte(&self.lines[pos.line], pos.col))
     }
 
-    /// The byte offset of a place in the lines joined by "\n".
     fn offset(&self, pos: Pos) -> usize {
         self.lines[..pos.line].iter().map(|line| line.len() + 1).sum::<usize>() + self.point(pos).column
     }
 
-    /// Replaces the text between two places without recording it. Returns what was there.
     fn splice(&mut self, start: Pos, end: Pos, text: &str) -> String {
         let (start_byte, start_position) = (self.offset(start), self.point(start));
         let new_end_position = match text.rsplit_once('\n') {
@@ -246,7 +219,6 @@ impl Buffer {
         removed
     }
 
-    /// Replaces the text between two places, leaving the cursor after the new text.
     fn edit(&mut self, start: Pos, end: Pos, text: &str) {
         if start == end && text.is_empty() {
             return;
@@ -284,13 +256,11 @@ impl Buffer {
         self.undo.push(edit);
     }
 
-    /// Replaces the selection with the text, or inserts it at the cursor.
     pub fn insert(&mut self, text: &str) {
         let (start, end) = self.selection().unwrap_or((self.cursor, self.cursor));
         self.edit(start, end, &text.replace("\r\n", "\n"));
     }
 
-    /// Inserts what was typed. Characters typed one after another are undone together, a word at a time.
     pub fn type_text(&mut self, text: &str) {
         let continues = self.typing_at == Some(self.cursor) && self.selection().is_none() && !text.starts_with(char::is_whitespace);
         if continues && !self.undo.is_empty() {
@@ -310,21 +280,18 @@ impl Buffer {
         self.typing_at = Some(self.cursor);
     }
 
-    /// Starts a new line with the indentation of the current one.
     pub fn newline(&mut self) {
         let line = &self.lines[self.selection().map_or(self.cursor, |(start, _)| start).line];
         let indent: String = line.chars().take(indent_of(line).min(self.cursor.col)).collect();
         self.insert(&format!("\n{indent}"));
     }
 
-    /// Deletes the selection, or what is between the cursor and the place the move takes it to.
     pub fn delete(&mut self, to: Move) {
         let (selection, edits) = ((self.cursor, self.anchor), self.undo.len());
         if self.selection().is_none() {
             self.move_cursor(to, true);
         }
         self.insert("");
-        // undoing puts the cursor back where it was, with nothing selected
         if let Some(edit) = self.undo.get_mut(edits) {
             edit.selection = selection;
         }
@@ -347,7 +314,6 @@ impl Buffer {
         self.select(Pos::default(), self.last_pos());
     }
 
-    /// Selects the word, or the run of other characters, the place is in.
     pub fn select_word(&mut self, pos: Pos) {
         let pos = self.clamp(pos);
         let line: Vec<char> = self.lines[pos.line].chars().collect();
@@ -358,19 +324,16 @@ impl Buffer {
         self.select(Pos::new(pos.line, start), Pos::new(pos.line, end));
     }
 
-    /// Selects the whole line with its line break.
     pub fn select_line(&mut self, line: usize) {
         let line = line.min(self.lines.len() - 1);
         let end = if line + 1 < self.lines.len() { Pos::new(line + 1, 0) } else { self.last_pos() };
         self.select(Pos::new(line, 0), end);
     }
 
-    /// Moves the cursor; the selection is extended to it or dropped.
     pub fn move_cursor(&mut self, to: Move, extend: bool) {
         let cursor = self.cursor;
         let goal_col = self.goal_col;
         let pos = match (to, self.selection()) {
-            // leaving a selection puts the cursor at its end in the direction of the move
             (Move::Left, Some((start, _))) if !extend => start,
             (Move::Right, Some((_, end))) if !extend => end,
             (Move::Left, _) if cursor.col > 0 => Pos::new(cursor.line, cursor.col - 1),
@@ -426,12 +389,10 @@ impl Buffer {
         Pos::new(from.line, from.col + end)
     }
 
-    /// What one step of indentation is in this file.
     fn indent_unit(&self) -> &'static str {
         if self.lines.iter().any(|line| line.starts_with('\t')) { "\t" } else { "    " }
     }
 
-    /// Indents the selected lines, or moves the rest of the line to the next step of indentation.
     pub fn indent(&mut self) {
         let unit = self.indent_unit();
         match self.selection().filter(|(start, end)| start.line != end.line) {
@@ -444,7 +405,6 @@ impl Buffer {
         }
     }
 
-    /// Takes one step of indentation off the selected lines, or the line of the cursor.
     pub fn outdent(&mut self) {
         let width = self.indent_unit().len();
         self.change_lines(|line| {
@@ -453,11 +413,9 @@ impl Buffer {
         });
     }
 
-    /// Changes each line the selection touches, as one edit that keeps the selection on the same text.
     fn change_lines(&mut self, change: impl Fn(&str) -> String) {
         let (cursor, anchor) = (self.cursor, self.anchor);
         let (start, end) = (cursor.min(anchor), cursor.max(anchor));
-        // a selection that ends at the start of a line doesn't include that line
         let last = if end.line > start.line && end.col == 0 { end.line - 1 } else { end.line };
         let changed: Vec<String> = self.lines[start.line..=last].iter().map(|line| change(line)).collect();
         let moved = |pos: Pos| match pos.line.checked_sub(start.line).and_then(|index| changed.get(index)) {
@@ -469,14 +427,11 @@ impl Buffer {
         self.select(anchor, cursor);
     }
 
-    /// Every place the query is found, in the order of the text. Letter case matters only
-    /// when the query has capital letters.
     pub fn find(&self, query: &str) -> Vec<(Pos, Pos)> {
         let found = self.lines.iter().enumerate().flat_map(|(index, line)| find_in_line(line, query).into_iter().map(move |cols| (index, cols)));
         found.map(|(index, cols)| (Pos::new(index, cols.start), Pos::new(index, cols.end))).collect()
     }
 
-    /// Replaces everything the query finds, as one edit. Returns how many places were replaced.
     pub fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
         let found = self.find(query);
         let (Some(first), Some(last)) = (found.first(), found.last()) else { return 0 };
@@ -491,21 +446,18 @@ impl Buffer {
         found.len()
     }
 
-    /// Puts `with` in place of the lines in `range`, as one edit that is undone at once.
     pub fn replace_lines(&mut self, range: std::ops::Range<usize>, with: &[String]) {
         let (start, end, text) = if range.end < self.lines.len() {
             (Pos::new(range.start, 0), Pos::new(range.end, 0), with.iter().map(|line| format!("{line}\n")).collect())
         } else if range.start == 0 {
             (Pos::default(), self.last_pos(), with.join("\n"))
         } else {
-            // up to the end of a text without a line break at its end
             let before = range.start - 1;
             (Pos::new(before, self.line_len(before)), self.last_pos(), with.iter().map(|line| format!("\n{line}")).collect())
         };
         self.edit(start, end, &text);
     }
 
-    /// Replaces the whole text, as it changed on disk, keeping the cursor where it was.
     pub fn set_text(&mut self, text: &str) {
         let cursor = self.cursor;
         let new = Buffer::new(text);
@@ -519,7 +471,6 @@ impl Buffer {
 mod tests {
     use super::*;
 
-    /// A buffer with the cursor where the text has a `|`.
     fn buffer(text: &str) -> Buffer {
         let mut buffer = Buffer::new(&text.replace('|', ""));
         let before = text.split('|').next().unwrap();
@@ -527,7 +478,6 @@ mod tests {
         buffer
     }
 
-    /// The text with a `|` at the cursor and, when something is selected, a `^` at the other end.
     fn shown(buffer: &Buffer) -> String {
         let mut marks = vec![(buffer.cursor, '|')];
         if buffer.selection().is_some() {
@@ -553,7 +503,6 @@ mod tests {
         buffer.undo();
         buffer.undo();
         assert_eq!(buffer.text(), "a\nb\nc\n");
-        // to the end of a text without a line break there
         let mut buffer = Buffer::new("a\nb");
         buffer.replace_lines(1..2, &[]);
         assert_eq!(buffer.text(), "a");
@@ -689,7 +638,6 @@ mod tests {
         buffer.redo();
         assert_eq!(shown(&buffer), "one 2\n|");
 
-        // a new edit drops what could be redone
         buffer.undo();
         buffer.type_text("x");
         buffer.redo();
@@ -709,7 +657,6 @@ mod tests {
         buffer.redo();
         assert_eq!(shown(&buffer), "let it|");
 
-        // moving the cursor away and back starts a new edit
         buffer.type_text("s");
         buffer.move_cursor(Move::Left, false);
         buffer.move_cursor(Move::Right, false);

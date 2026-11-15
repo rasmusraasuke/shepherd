@@ -5,20 +5,13 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Hash of the empty tree, used as the diff base in repos without commits.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-/// A diff in the form the parser expects, whatever the user's git configuration says. Without
-/// unchanged lines, so that each run of changed lines is a hunk of its own. Renames are left
-/// out, as a rename is staged as a deleted and an added file.
 const DIFF: &[&str] = &["diff", "--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--unified=0"];
 
-/// What changed in the working tree.
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct Changes {
-    /// The diff of the working tree against HEAD, with the untracked files.
     pub diff: String,
-    /// The diffs of HEAD to the index and of the index to the working tree.
     pub staged: String,
     pub unstaged: String,
     pub untracked: Vec<String>,
@@ -41,7 +34,6 @@ impl Repo {
         self.git_dir.join("editor-layout.json")
     }
 
-    /// Paths of all project files relative to the root: tracked ones plus untracked ones that aren't ignored.
     pub fn list_files(&self) -> Result<Vec<String>, String> {
         let out = git(&self.root, &["ls-files", "--cached", "--others", "--exclude-standard", "-z"])?;
         let mut files: Vec<String> = out.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
@@ -50,12 +42,10 @@ impl Repo {
         Ok(files)
     }
 
-    /// The name of the branch checked out, or why there is none.
     pub fn branch(&self) -> String {
         git(&self.root, &["symbolic-ref", "--short", "-q", "HEAD"]).map_or_else(|_| "none (detached HEAD)".to_string(), |name| name.trim().to_string())
     }
 
-    /// HEAD, or the empty tree in a repository without commits.
     fn base(&self) -> &'static str {
         if git(&self.root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() { "HEAD" } else { EMPTY_TREE }
     }
@@ -77,7 +67,6 @@ impl Repo {
         Ok(Changes { diff, staged, unstaged, untracked })
     }
 
-    /// The diff of one file of the working tree against HEAD, as it is now.
     fn file_diff(&self, path: &str) -> Result<Option<FileDiff>, String> {
         let mut raw = git(&self.root, &[DIFF, &[self.base(), "--", path]].concat())?;
         if raw.is_empty() && !self.untracked(&[path])?.is_empty() {
@@ -86,7 +75,6 @@ impl Repo {
         Ok(parse_diff(&raw).pop())
     }
 
-    /// Fails when the file changed since `diff` was taken.
     fn check_unchanged(&self, diff: &FileDiff) -> Result<(), String> {
         let path = diff.path.as_str();
         if self.file_diff(path)?.is_none_or(|now| now.hunks != diff.hunks) {
@@ -95,9 +83,6 @@ impl Repo {
         Ok(())
     }
 
-    /// Stages the changed lines of a file that are `chosen`, by the index of their hunk and their
-    /// index in it, and unstages the others: the index gets the version of HEAD with just those
-    /// changes made. Fails when the file changed since `diff` was taken.
     pub fn stage_lines(&self, diff: &FileDiff, chosen: impl Fn(usize, usize) -> bool) -> Result<(), String> {
         self.check_unchanged(diff)?;
         let path = diff.path.as_str();
@@ -105,7 +90,6 @@ impl Repo {
         self.stage_version(path, version(diff.status, &head, &self.read_work(path), &diff.hunks, chosen).as_deref())
     }
 
-    /// Puts a version of a file into the index, or takes the file out of it when there is none.
     pub fn stage_version(&self, path: &str, content: Option<&[u8]>) -> Result<(), String> {
         let Some(content) = content else {
             return git(&self.root, &["update-index", "--force-remove", "--", path]).map(drop);
@@ -114,17 +98,14 @@ impl Repo {
         git(&self.root, &["update-index", "--add", "--cacheinfo", &format!("{},{hash},{path}", self.mode(path))]).map(drop)
     }
 
-    /// The text of a file as committed, or none when it isn't.
     pub fn committed(&self, path: &str) -> Option<String> {
         git(&self.root, &["show", &format!("{}:{path}", self.base())]).ok()
     }
 
-    /// The text of a file as staged, or none when it isn't in the index.
     pub fn staged(&self, path: &str) -> Option<String> {
         git(&self.root, &["show", &format!(":{path}")]).ok()
     }
 
-    /// Stages or unstages all of a file, for changes without lines, such as of a binary file.
     pub fn stage_file(&self, path: &str, staged: bool) -> Result<(), String> {
         let args: &[&str] = match (staged, self.base()) {
             (true, _) => &["add", "--all", "--"],
@@ -134,7 +115,6 @@ impl Repo {
         git(&self.root, &[args, &[path]].concat()).map(drop)
     }
 
-    /// The content of a file in the working tree as git sees it: for a link, where it points.
     fn read_work(&self, path: &str) -> Vec<u8> {
         let file = self.root.join(path);
         match fs::read_link(&file) {
@@ -143,7 +123,6 @@ impl Repo {
         }
     }
 
-    /// The mode git gives the file: as it is in the working tree, or in HEAD when it is gone.
     fn mode(&self, path: &str) -> String {
         match fs::symlink_metadata(self.root.join(path)) {
             Ok(meta) if meta.is_symlink() => "120000".to_string(),
@@ -168,10 +147,6 @@ fn is_executable(_meta: &fs::Metadata) -> bool {
     false
 }
 
-/// The version of a file made from its committed version `head` with the changed lines of the
-/// diff to the working tree's version `work` that are `chosen`, by the index of their hunk and
-/// their index in it. None when there is no file then: one that isn't committed gets none of
-/// its lines, or one gone from the working tree all of its removals.
 pub fn version(status: FileStatus, head: &[u8], work: &[u8], hunks: &[Hunk], chosen: impl Fn(usize, usize) -> bool) -> Option<Vec<u8>> {
     let changed = |kind: LineKind| hunks.iter().enumerate().flat_map(move |(h, hunk)| hunk.lines.iter().enumerate().filter(move |(_, line)| line.kind == kind).map(move |(i, _)| (h, i)));
     let gone = match status {
@@ -182,11 +157,8 @@ pub fn version(status: FileStatus, head: &[u8], work: &[u8], hunks: &[Hunk], cho
     (!gone).then(|| compose(head, work, hunks, chosen))
 }
 
-/// The version of a file made from HEAD's version with the `chosen` changes of the diff to the
-/// working tree's version, which give the added lines. The lines keep their endings.
 fn compose(head: &[u8], work: &[u8], hunks: &[Hunk], chosen: impl Fn(usize, usize) -> bool) -> Vec<u8> {
     fn push(out: &mut Vec<u8>, line: &[u8]) {
-        // a line that had none at the end of its file gets one when more follows
         if out.last().is_some_and(|&last| last != b'\n') {
             out.push(b'\n');
         }
@@ -198,7 +170,6 @@ fn compose(head: &[u8], work: &[u8], hunks: &[Hunk], chosen: impl Fn(usize, usiz
     let (head, work) = (split(head), split(work));
     let line = |lines: &[&[u8]], number: Option<u32>| -> Vec<u8> { number.and_then(|n| lines.get((n as usize).checked_sub(1)?)).map_or(Vec::new(), |line| line.to_vec()) };
     let mut out = Vec::new();
-    // the first line of HEAD not taken yet, numbered from 1
     let mut next = 1;
     for (h, hunk) in hunks.iter().enumerate() {
         let start = hunk.ranges().0.start as usize;
@@ -224,14 +195,10 @@ fn compose(head: &[u8], work: &[u8], hunks: &[Hunk], chosen: impl Fn(usize, usiz
     out
 }
 
-/// Which of the changes in the working tree are staged.
 #[derive(Default)]
 pub struct Staged {
-    /// For each file: the lines of HEAD whose removal is staged, and the lines of the working
-    /// tree whose addition isn't.
     removed: HashMap<String, HashSet<u32>>,
     unstaged_added: HashMap<String, HashSet<u32>>,
-    /// The files with staged changes, and with unstaged ones.
     staged_files: HashSet<String>,
     unstaged_files: HashSet<String>,
     untracked: HashSet<String>,
@@ -260,7 +227,6 @@ impl Staged {
         }
     }
 
-    /// Whether a changed line of a file in the diff of the working tree to HEAD is staged.
     pub fn is_staged(&self, path: &str, line: &DiffLine) -> bool {
         let has = |lines: &HashMap<String, HashSet<u32>>, number: Option<u32>| number.is_some_and(|n| lines.get(path).is_some_and(|lines| lines.contains(&n)));
         match line.kind {
@@ -270,16 +236,12 @@ impl Staged {
         }
     }
 
-    /// Whether all changes of a file are staged, for changes without lines.
     pub fn is_file_staged(&self, path: &str) -> bool {
         self.staged_files.contains(path) && !self.unstaged_files.contains(path) && !self.untracked.contains(path)
     }
 }
 
-/// The diff of a new file, as git gives it. Made here rather than by git, as running git for
-/// each of many new files takes long.
 fn added_file_diff(path: &str, file: &Path) -> String {
-    // gone already, or not a file
     let Ok(bytes) = fs::read(file) else { return String::new() };
     let mut out = format!("diff --git a/{path} b/{path}\nnew file mode 100644\n");
     if bytes.contains(&0) {
@@ -304,7 +266,6 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     run(dir, args, None).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
-/// Runs git with the `input` on its standard input, returning what it writes out.
 fn run(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let mut child = Command::new("git")
         .args(["-c", "core.quotepath=false"])
@@ -349,7 +310,6 @@ pub struct DiffLine {
 }
 
 impl DiffLine {
-    /// The number of the line where a review shows it: in the new file, or in the old one when removed.
     pub fn number(&self) -> u32 {
         self.new_no.or(self.old_no).unwrap_or(0)
     }
@@ -357,15 +317,12 @@ impl DiffLine {
 
 #[derive(Debug, PartialEq)]
 pub struct Hunk {
-    /// The first old and new line numbers, as the header gives them.
     pub old_start: u32,
     pub new_start: u32,
     pub lines: Vec<DiffLine>,
 }
 
 impl Hunk {
-    /// The old and the new lines the hunk covers, numbered from 1. A hunk without lines on
-    /// one side sits right after the line its header gives for that side.
     pub fn ranges(&self) -> (Range<u32>, Range<u32>) {
         let range = |start: u32, count: usize| {
             let count = count as u32;
@@ -408,7 +365,7 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
                 Some(b' ') => (LineKind::Context, &line[1..]),
                 Some(b'+') => (LineKind::Added, &line[1..]),
                 Some(b'-') => (LineKind::Removed, &line[1..]),
-                Some(b'\\') => continue, // "\ No newline at end of file"
+                Some(b'\\') => continue,
                 None => (LineKind::Context, ""),
                 _ => {
                     in_hunk = false;
@@ -449,7 +406,6 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
                 file.path = path.to_string();
             }
         } else if let Some(from) = line.strip_prefix("--- ") {
-            // deleted files have "+++ /dev/null", so their path comes from here
             if file.status == FileStatus::Deleted {
                 if let Some(path) = from.strip_prefix("a/") {
                     file.path = path.to_string();
@@ -466,7 +422,6 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
     files
 }
 
-/// Parses "@@ -12,5 +12,7 @@ fn context" into the first old and new line numbers.
 fn parse_hunk_start(header: &str) -> (u32, u32) {
     let mut parts = header.split_whitespace().skip(1);
     let mut start = |prefix: char| -> u32 {
@@ -487,7 +442,6 @@ pub mod tests {
     use super::*;
     use crate::testing::TempDir;
 
-    /// Creates a repository without commits that has the given files in its working tree.
     pub fn temp_repo(name: &str, files: &[(&str, &str)]) -> (Repo, TempDir) {
         let dir = TempDir::new(name);
         for (path, content) in files {
@@ -497,7 +451,6 @@ pub mod tests {
         (Repo::open(dir.path()).unwrap(), dir)
     }
 
-    /// Commits everything in the working tree.
     pub fn commit_all(repo: &Repo) {
         git(&repo.root, &["add", "--all"]).unwrap();
         git(&repo.root, &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "test"]).unwrap();
@@ -513,7 +466,6 @@ pub mod tests {
     fn diffs_new_files_as_git_does() {
         let (repo, _dir) = temp_repo("added", &[("a.txt", "one\r\ntwo"), ("dir/b.bin", "\0\u{1}"), ("empty", "")]);
         let git_diff = |path: &str| {
-            // --no-index exits with 1 when files differ
             let output = Command::new("git").args(["diff", "--no-color", "--no-index", "--", "/dev/null", path]).current_dir(&repo.root).output().unwrap();
             format!("{:?}", parse_diff(&String::from_utf8_lossy(&output.stdout)))
         };
@@ -528,17 +480,14 @@ pub mod tests {
         ]);
     }
 
-    /// The diff of the working tree of one file against HEAD.
     fn diff_of(repo: &Repo, path: &str) -> FileDiff {
         repo.file_diff(path).unwrap().unwrap()
     }
 
-    /// The version of a file in the index.
     fn staged(repo: &Repo, path: &str) -> String {
         git(&repo.root, &["show", &format!(":{path}")]).unwrap()
     }
 
-    /// Which changed lines of a file are staged, as their texts with the sign of the change.
     fn staged_lines(repo: &Repo, path: &str) -> Vec<String> {
         let staged = Staged::new(&repo.changes().unwrap());
         let diff = diff_of(repo, path);
@@ -567,7 +516,6 @@ pub mod tests {
         let diff = diff_of(&repo, "a.txt");
         assert!(staged_lines(&repo, "a.txt").is_empty());
 
-        // only the removal of a replaced line
         repo.stage_lines(&diff, |h, i| (h, i) == (0, 0)).unwrap();
         assert_eq!(staged(&repo, "a.txt"), "a\nc\nd\n");
         assert_eq!(staged_lines(&repo, "a.txt"), ["-b"]);
@@ -578,7 +526,6 @@ pub mod tests {
         assert_eq!(staged(&repo, "a.txt"), "a\nB\nc\nd\ne\n");
         assert_eq!(staged_lines(&repo, "a.txt"), ["-b", "+B", "+e"]);
 
-        // a change made after staging is not staged
         dir.write("a.txt", "a\nB\nc\nD\ne\n");
         assert_eq!(staged_lines(&repo, "a.txt"), ["-b", "+B", "+e"]);
         assert!(repo.stage_lines(&diff, |_, _| false).unwrap_err().contains("changed in the meantime"));
@@ -605,7 +552,6 @@ pub mod tests {
         assert!(!tracked("old.txt"));
         assert_eq!(staged_lines(&repo, "old.txt"), ["-one", "-two"]);
 
-        // files without lines are staged whole
         dir.write("image.bin", "\0");
         let staged_file = |repo: &Repo| Staged::new(&repo.changes().unwrap()).is_file_staged("image.bin");
         repo.stage_file("image.bin", true).unwrap();

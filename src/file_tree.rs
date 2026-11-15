@@ -3,27 +3,19 @@ use std::collections::BTreeSet;
 
 use eframe::egui::{self, Align2, Color32, Sense, TextStyle, Vec2};
 
-/// Files as a tree of directories, of which only the open ones show their content.
 #[derive(Default)]
 pub struct FileTree {
-    /// Paths relative to the project root, ordered the way the tree shows them.
     files: Vec<String>,
-    /// The rows currently visible, kept so that drawing costs nothing for closed directories.
     rows: Vec<Row>,
-    /// Whether directories show their content until they are closed, rather than once opened.
     open_by_default: bool,
 }
 
-/// What is shown for a file or a directory when it is right-clicked.
 pub type Menu<'a> = &'a mut dyn FnMut(&mut egui::Ui, &str);
 
-/// How a file or a directory is shown in the tree besides its name.
 #[derive(Default)]
 pub struct FileLook {
     pub color: Option<Color32>,
-    /// Text at the right end of the row.
     pub detail: Option<String>,
-    /// A dot of this color in front of the detail, to draw attention.
     pub dot: Option<Color32>,
 }
 
@@ -45,15 +37,12 @@ impl FileTree {
         Self { open_by_default: true, ..Self::default() }
     }
 
-    /// Sets the files to show. `toggled` holds the directories that were opened, or closed
-    /// when directories are open by default.
     pub fn set_files(&mut self, mut files: Vec<String>, toggled: &BTreeSet<String>) {
         files.sort_by(|a, b| tree_order(a, b));
         self.files = files;
         self.update_rows(toggled);
     }
 
-    /// The files, in the order the tree shows them.
     pub fn files(&self) -> &[String] {
         &self.files
     }
@@ -66,8 +55,6 @@ impl FileTree {
         self.rows = rows(&self.files, |dir| self.is_open(dir, toggled));
     }
 
-    /// Shows the tree with the selected file highlighted, and the `menu` for a file or a
-    /// directory on a right click. Returns the file that was clicked, if any.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -134,7 +121,6 @@ impl FileTree {
     }
 }
 
-/// Orders paths so that in every directory the subdirectories come before the files.
 fn tree_order(a: &str, b: &str) -> Ordering {
     let (mut a, mut b) = (a.split('/').peekable(), b.split('/').peekable());
     loop {
@@ -147,14 +133,12 @@ fn tree_order(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// The visible rows for files given in tree order.
 fn rows(files: &[String], is_open: impl Fn(&str) -> bool) -> Vec<Row> {
     fn dirs(path: &str) -> impl Iterator<Item = &str> {
         path.rsplit_once('/').into_iter().flat_map(|(dir, _)| dir.split('/'))
     }
 
     let mut rows = Vec::new();
-    // for each directory leading to the previous file: is its content visible?
     let mut open: Vec<bool> = Vec::new();
     let mut previous = "";
     for file in files {

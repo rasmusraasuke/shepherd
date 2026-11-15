@@ -11,27 +11,21 @@ use eframe::egui::{self, Align2, EventFilter, Key, Modifiers, Sense, TextStyle, 
 use crate::buffer::{Pos, find_in_line};
 use crate::file_view;
 
-/// More than this many places found are left out, to keep the results quick to show.
 const MAX_FOUND: usize = 2000;
 
-/// What a query finds in one file.
 #[derive(Debug, PartialEq)]
 pub struct FileFound {
     pub path: String,
     pub found: Vec<Found>,
 }
 
-/// A place the query is found.
 #[derive(Debug, PartialEq)]
 pub struct Found {
     pub line: usize,
-    /// The columns of the place on the line.
     pub cols: Range<usize>,
     pub text: String,
 }
 
-/// Finds the query in the files, in their order. Stops early, with what was found so far,
-/// once there are too many places or the search is no longer wanted.
 pub fn search(root: &Path, files: &[String], query: &str, cancel: &AtomicBool) -> (Vec<FileFound>, bool) {
     let mut results = Vec::new();
     let mut count = 0;
@@ -39,7 +33,6 @@ pub fn search(root: &Path, files: &[String], query: &str, cancel: &AtomicBool) -
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        // binary and very large files are left out
         let Ok(text) = file_view::read(&root.join(path)) else { continue };
         let found: Vec<Found> = text
             .lines()
@@ -58,43 +51,33 @@ pub fn search(root: &Path, files: &[String], query: &str, cancel: &AtomicBool) -
     (results, false)
 }
 
-/// A place found that is to be shown in its file.
 #[derive(Debug, PartialEq)]
 pub struct Reveal {
     pub path: String,
     pub start: Pos,
     pub end: Pos,
-    /// Whether the editor takes the keyboard, or it stays in the search to go on to the next place.
     pub focus: bool,
 }
 
-/// A row of the results: the name of a file, or a place found in it.
 #[derive(Clone, Copy)]
 enum Row {
     File(usize),
     Found(usize, usize),
 }
 
-/// The search across the files of the project, shown in the sidebar.
 #[derive(Default)]
 pub struct ProjectSearch {
     query: String,
-    /// Put the keyboard into the query when shown next.
     focus: bool,
-    /// Search again when shown next.
     stale: bool,
-    /// What the query found last and whether that was cut short.
     results: (Vec<FileFound>, bool),
     rows: Vec<Row>,
-    /// The row of the place chosen with the keyboard or the mouse.
     selected: Option<usize>,
     scroll_to_selected: bool,
-    /// The search running in the background, and the switch to stop it.
     running: Option<(Receiver<(Vec<FileFound>, bool)>, Arc<AtomicBool>)>,
 }
 
 impl ProjectSearch {
-    /// Puts the keyboard into the query when shown next, with the given text if there is any.
     pub fn focus(&mut self, query: Option<String>) {
         self.focus = true;
         if let Some(query) = query {
@@ -103,12 +86,10 @@ impl ProjectSearch {
         }
     }
 
-    /// Searches again when shown next, as the files changed.
     pub fn files_changed(&mut self) {
         self.stale |= !self.query.is_empty();
     }
 
-    /// Searches the files in the background; what was found before stays until then.
     fn start(&mut self, root: &Path, files: &[String], ctx: &egui::Context) {
         if let Some((_, cancel)) = self.running.take() {
             cancel.store(true, Ordering::Relaxed);
@@ -128,14 +109,12 @@ impl ProjectSearch {
     }
 
     fn set_results(&mut self, results: (Vec<FileFound>, bool)) {
-        // the place chosen stays chosen when the files are searched again
         let selected = self.selected.and_then(|row| self.place(row));
         self.rows = results.0.iter().enumerate().flat_map(|(file, found)| [Row::File(file)].into_iter().chain((0..found.found.len()).map(move |index| Row::Found(file, index)))).collect();
         self.results = results;
         self.selected = selected.and_then(|(path, line, col)| (0..self.rows.len()).find(|&row| self.place(row) == Some((path.clone(), line, col))));
     }
 
-    /// The file, line and column of the place in a row.
     fn place(&self, row: usize) -> Option<(String, usize, usize)> {
         match self.rows.get(row)? {
             Row::Found(file, index) => {
@@ -146,7 +125,6 @@ impl ProjectSearch {
         }
     }
 
-    /// Chooses the next place, or the previous one, from the one chosen now.
     fn step(&mut self, forward: bool) {
         let found = |row: &usize| matches!(self.rows[*row], Row::Found(..));
         let next = match (self.selected, forward) {
@@ -166,14 +144,12 @@ impl ProjectSearch {
         Some(Reveal { path: file.path.clone(), start: Pos::new(found.line, found.cols.start), end: Pos::new(found.line, found.cols.end), focus })
     }
 
-    /// Shows the query and the results. Returns the place to show when one was chosen.
     pub fn ui(&mut self, ui: &mut egui::Ui, root: &Path, files: &[String]) -> Option<Reveal> {
         if let Some(results) = self.running.as_ref().and_then(|(receiver, _)| receiver.try_recv().ok()) {
             self.running = None;
             self.set_results(results);
         }
 
-        // Up and Down go through the places found while the keyboard stays in the query
         let id = egui::Id::unique("project search query");
         let mut reveal = None;
         if ui.memory(|m| m.has_focus(id)) {
@@ -221,7 +197,6 @@ impl ProjectSearch {
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::both().auto_shrink(false).show_rows(ui, row_height, self.rows.len(), |ui, range| {
             if let Some(selected) = self.selected.filter(|_| std::mem::take(&mut self.scroll_to_selected)) {
-                // the chosen row may be out of sight, where no row is drawn: find it from the first one that is
                 let top = ui.cursor().top() + row_height * (selected as f32 - range.start as f32);
                 let rect = egui::Rect::from_min_size(egui::pos2(ui.cursor().left(), top), Vec2::new(1.0, row_height));
                 ui.scroll_to_rect(rect, None);
@@ -264,7 +239,6 @@ impl ProjectSearch {
     }
 }
 
-/// The line of a place found, without its indentation, with the place marked.
 fn found_line(number: &str, found: &Found, font: &egui::FontId, visuals: &egui::Visuals) -> LayoutJob {
     let indent = found.text.chars().take_while(|c| c.is_whitespace()).count().min(found.cols.start);
     let chars: Vec<char> = found.text.chars().collect();
@@ -340,7 +314,6 @@ mod tests {
         search.step(false);
         assert_eq!(search.reveal(false), Some(Reveal { path: "a".to_string(), start: Pos::new(1, 0), end: Pos::new(1, 1), focus: false }));
 
-        // searched again after the files changed, the same place stays chosen while it is still found
         dir.write("b", "y\nx");
         search.set_results(search_for(&dir, &files, "x"));
         assert_eq!(chosen(&search), Some(("a".to_string(), 1, 0)));

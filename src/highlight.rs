@@ -10,16 +10,12 @@ use tree_sitter_language::LanguageFn;
 
 use crate::buffer::Buffer;
 
-/// Larger texts aren't highlighted, to keep typing in them responsive.
 const MAX_SIZE: usize = 2 * 1024 * 1024;
 
-/// A language the editor can highlight.
 struct Definition {
     extensions: &'static [&'static str],
     language: LanguageFn,
-    /// Highlight queries, joined in this order: when patterns capture the same node, the first one wins.
     queries: &'static [&'static str],
-    /// Made on first use, as making the query takes a moment.
     grammar: OnceLock<Grammar>,
 }
 
@@ -67,10 +63,7 @@ impl Definition {
     }
 }
 
-/// The colors of the parts of the code, by the names highlight queries give them. A name like
-/// "function.method" takes the color of "function" when it has none of its own.
 const COLORS: &[(&str, [u8; 3], [u8; 3])] = &[
-    // name, dark, light
     ("keyword", [0xCC, 0x78, 0x32], [0x00, 0x33, 0xB3]),
     ("label", [0xCC, 0x78, 0x32], [0x00, 0x33, 0xB3]),
     ("variable.builtin", [0xCC, 0x78, 0x32], [0x00, 0x33, 0xB3]),
@@ -94,7 +87,6 @@ const COLORS: &[(&str, [u8; 3], [u8; 3])] = &[
     ("tag", [0xE8, 0xBF, 0x6A], [0x00, 0x33, 0xB3]),
 ];
 
-/// The color of a highlight name, if it has one. `None` leaves the text in the color of plain code.
 pub fn color(name: &str, dark: bool) -> Option<Color32> {
     let mut name = name;
     loop {
@@ -106,23 +98,18 @@ pub fn color(name: &str, dark: bool) -> Option<Color32> {
     }
 }
 
-/// The parts of one line to color: byte ranges in the line and their highlight names.
 pub type Spans = Vec<(Range<usize>, &'static str)>;
 
-/// Keeps the syntax tree of a text up to date as it changes and finds the parts of it to color.
 pub struct Highlighter {
     grammar: &'static Grammar,
     parser: Parser,
     tree: Option<Tree>,
-    /// The text the tree is for: the lines joined by "\n", and where each line starts.
     text: String,
     line_starts: Vec<usize>,
-    /// The spans found last and the lines they are for.
     found: Option<(Range<usize>, Vec<Spans>)>,
 }
 
 impl Highlighter {
-    /// A highlighter for the language of the file, if it is one the editor knows.
     pub fn for_path(path: &Path) -> Option<Self> {
         let extension = path.extension()?.to_str()?;
         let definition = DEFINITIONS.iter().find(|definition| definition.extensions.contains(&extension))?;
@@ -132,7 +119,6 @@ impl Highlighter {
         Some(Self { grammar, parser, tree: None, text: String::new(), line_starts: Vec::new(), found: None })
     }
 
-    /// Brings the tree up to date with the text of the buffer. Only what changed is parsed again.
     pub fn update(&mut self, buffer: &mut Buffer) {
         let changes = buffer.take_changes();
         if self.tree.is_some() && changes.is_empty() {
@@ -150,14 +136,12 @@ impl Highlighter {
         self.found = None;
     }
 
-    /// The parts to color on each line of a text that doesn't change, such as a side of a diff.
     pub fn spans_of(path: &Path, lines: &[String]) -> Vec<Spans> {
         let Some(mut highlighter) = Self::for_path(path) else { return vec![Vec::new(); lines.len()] };
         highlighter.update(&mut Buffer::new(&lines.join("\n")));
         highlighter.find(0..lines.len())
     }
 
-    /// The parts to color on each of the given lines.
     pub fn spans(&mut self, lines: Range<usize>) -> &[Spans] {
         if self.found.as_ref().is_none_or(|(found_for, _)| *found_for != lines) {
             self.found = Some((lines.clone(), self.find(lines)));
@@ -171,7 +155,6 @@ impl Highlighter {
         let start = self.line_starts.get(lines.start).copied().unwrap_or(self.text.len());
         let end = lines.end.checked_sub(1).map_or(start, line_end).max(start);
 
-        // the name for each byte; nodes inside others come later and paint over them
         let names = self.grammar.query.capture_names();
         let mut byte_names: Vec<Option<&'static str>> = vec![None; end - start];
         let mut painted = HashSet::new();
@@ -180,7 +163,6 @@ impl Highlighter {
         let mut captures = cursor.captures(&self.grammar.query, tree.root_node(), self.text.as_bytes());
         while let Some((found, index)) = captures.next() {
             let capture = found.captures()[*index];
-            // the first pattern that captures a node decides its color
             if !painted.insert(capture.node.id()) {
                 continue;
             }
@@ -206,8 +188,6 @@ impl Highlighter {
     }
 }
 
-/// A line of code laid out in the colors of its spans, with the `marked` parts on a background
-/// of the `mark` color.
 pub fn layout_job(line: &str, spans: &[(Range<usize>, &str)], marked: &[Range<usize>], mark: Color32, font: &FontId, text_color: Color32, dark: bool) -> LayoutJob {
     let mut cuts: Vec<usize> = spans.iter().map(|(range, _)| range).chain(marked).flat_map(|range| [range.start, range.end]).chain([0, line.len()]).collect();
     cuts.sort_unstable();
@@ -234,7 +214,6 @@ mod tests {
         }
     }
 
-    /// The highlight name of each piece of the line, other than the ones without.
     fn names(highlighter: &mut Highlighter, lines: &[String], line: usize) -> Vec<(String, &'static str)> {
         let spans = highlighter.spans(line..line + 1)[0].clone();
         spans.into_iter().map(|(range, name)| (lines[line][range].to_string(), name)).collect()

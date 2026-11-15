@@ -1,14 +1,9 @@
 use std::ops::Range;
 
-/// Above this many pairs of differing words the words of a line are not matched one by one,
-/// to keep very long lines quick; everything between the common start and end is then changed.
 const MAX_PAIRS: usize = 250_000;
 
 pub type Ranges = Vec<Range<usize>>;
 
-/// The byte ranges that changed between two versions of a line, in the old and in the new one.
-/// Lines with less than half of their words in common get none: marking nearly all of a line
-/// only gets in the way.
 pub fn changed_ranges(old: &str, new: &str) -> Option<(Ranges, Ranges)> {
     let (a, b) = (words(old), words(new));
     let (a_kept, b_kept) = common(&a, &b, old, new);
@@ -20,7 +15,6 @@ pub fn changed_ranges(old: &str, new: &str) -> Option<(Ranges, Ranges)> {
     Some((changed(&a, a_kept, old), changed(&b, b_kept, new)))
 }
 
-/// Splits a line into runs of letters and digits, runs of spaces, and single other characters.
 fn words(text: &str) -> Vec<Range<usize>> {
     let class = |c: char| if c.is_alphanumeric() || c == '_' { 1 } else if c.is_whitespace() { 2 } else { 0 };
     let mut words: Vec<Range<usize>> = Vec::new();
@@ -40,7 +34,6 @@ fn is_space(word: &str) -> bool {
     word.chars().all(char::is_whitespace)
 }
 
-/// Which words of each line are kept in the other: a longest common sequence of them.
 fn common(a: &[Range<usize>], b: &[Range<usize>], old: &str, new: &str) -> (Vec<bool>, Vec<bool>) {
     let same = |i: usize, j: usize| old[a[i].clone()] == new[b[j].clone()];
     let mut start = 0;
@@ -62,7 +55,6 @@ fn common(a: &[Range<usize>], b: &[Range<usize>], old: &str, new: &str) -> (Vec<
     if n * m > MAX_PAIRS {
         return (a_kept, b_kept);
     }
-    // lengths[i][j]: the longest common sequence of the middle words from i and from j on
     let mut lengths = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
@@ -84,7 +76,6 @@ fn common(a: &[Range<usize>], b: &[Range<usize>], old: &str, new: &str) -> (Vec<
     (a_kept, b_kept)
 }
 
-/// The ranges of the words not kept, joined where only spaces are between them.
 fn changed(words: &[Range<usize>], mut kept: Vec<bool>, text: &str) -> Ranges {
     for i in 1..words.len().saturating_sub(1) {
         if is_space(&text[words[i].clone()]) && !kept[i - 1] && !kept[i + 1] {
@@ -108,7 +99,6 @@ fn changed(words: &[Range<usize>], mut kept: Vec<bool>, text: &str) -> Ranges {
 mod tests {
     use super::*;
 
-    /// The changed parts of each line.
     fn changes(old: &str, new: &str) -> Option<(Vec<String>, Vec<String>)> {
         let (a, b) = changed_ranges(old, new)?;
         Some((a.into_iter().map(|r| old[r].to_string()).collect(), b.into_iter().map(|r| new[r].to_string()).collect()))

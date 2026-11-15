@@ -19,37 +19,28 @@ use eframe::egui::{self, Color32, Event, EventFilter, Key, Modifiers, Sense, Vec
 use crate::code::CodeStyle;
 use crate::terminal_text;
 
-/// Room around the text of a terminal.
 const PADDING: f32 = 4.0;
 
-/// Answers a program that asked for the clipboard.
 type ClipboardAnswer = Arc<dyn Fn(&str) -> String + Sync + Send>;
 
-/// A program is working while it writes to the terminal, as agents keep drawing while they work.
 const BUSY: Duration = Duration::from_millis(1500);
 
-/// Output this soon after a key press is the terminal showing what was typed, not work.
 const ECHO: Duration = Duration::from_millis(1000);
 
-/// What the program in a terminal is doing.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Activity {
     Working,
-    /// It stopped writing since the terminal had the keyboard last: an agent is done or waits
-    /// for an answer.
     Waiting,
     Idle,
     Ended,
 }
 
-/// What the program wrote lately, as seen from the thread that reads it.
 #[derive(Default)]
 struct Output {
     last: Option<Instant>,
     ended: bool,
 }
 
-/// The size of a terminal in cells.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Size {
     columns: usize,
@@ -70,7 +61,6 @@ impl Dimensions for Size {
     }
 }
 
-/// Passes what the terminal reports on to the editor and has it drawn again.
 #[derive(Clone)]
 struct Listener {
     events: Sender<TermEvent>,
@@ -92,19 +82,13 @@ impl EventListener for Listener {
     }
 }
 
-/// The terminals open in tabs, by the id of their tab.
 pub struct Terminals {
     root: PathBuf,
-    /// The program terminals run; the user's shell when not set.
     shell: Option<Shell>,
     terminals: HashMap<u64, Result<Terminal, String>>,
-    /// Terminals that take the keyboard once they are started.
     focus_on_start: HashSet<u64>,
-    /// Reads the text on the clipboard for programs that are allowed to.
     read_clipboard: fn() -> Option<String>,
-    /// The terminal that had the keyboard last.
     last_used: Option<u64>,
-    /// Variables the programs get besides the editor's own.
     env: HashMap<String, String>,
 }
 
@@ -112,7 +96,6 @@ fn read_clipboard() -> Option<String> {
     arboard::Clipboard::new().ok()?.get_text().ok()
 }
 
-/// The size in cells that fits the space.
 fn size_for(rect: egui::Rect, style: &CodeStyle) -> Size {
     Size {
         columns: (((rect.width() - 2.0 * PADDING) / style.digit_width) as usize).max(2),
@@ -125,7 +108,6 @@ impl Terminals {
         Self { root, shell: None, terminals: HashMap::new(), focus_on_start: HashSet::new(), read_clipboard, last_used: None, env: HashMap::new() }
     }
 
-    /// Gives the programs started from now on a variable.
     pub fn set_env(&mut self, name: &str, value: String) {
         self.env.insert(name.to_string(), value);
     }
@@ -134,8 +116,6 @@ impl Terminals {
         self.terminals.iter().filter_map(|(id, terminal)| Some((*id, terminal.as_ref().ok()?)))
     }
 
-    /// Takes note of what the programs in the terminals are doing, also in the ones not shown,
-    /// and has the editor drawn again while one is working to see when it stops.
     pub fn update(&mut self, ctx: &egui::Context) {
         let mut working = false;
         for terminal in self.terminals.values_mut().flatten() {
@@ -151,15 +131,12 @@ impl Terminals {
         Some(self.terminals.get(&id)?.as_ref().ok()?.activity)
     }
 
-    /// The terminals whose program still runs, by their id and title; the one used last first.
     pub fn agents(&self) -> Vec<(u64, String)> {
         let mut agents: Vec<(u64, String)> = self.running().filter(|(_, terminal)| terminal.activity != Activity::Ended).map(|(id, _)| (id, self.title(id).unwrap_or_else(|| "Terminal".to_string()))).collect();
         agents.sort_by_key(|(id, _)| (Some(*id) != self.last_used, *id));
         agents
     }
 
-    /// Sends text to the program in the terminal as if it was pasted and Enter pressed, which
-    /// has an agent act on it.
     pub fn send(&mut self, id: u64, text: &str) {
         if let Some(Ok(terminal)) = self.terminals.get_mut(&id) {
             let mode = *terminal.term.lock().mode();
@@ -170,14 +147,12 @@ impl Terminals {
         }
     }
 
-    /// The title the program in the terminal gave it, if any.
     pub fn title(&self, id: u64) -> Option<String> {
         let terminal = self.terminals.get(&id)?.as_ref().ok()?;
         let title = terminal.title.clone().filter(|title| !title.is_empty());
         if terminal.activity == Activity::Ended { Some(format!("{} (exited)", title.as_deref().unwrap_or("Terminal"))) } else { title }
     }
 
-    /// Makes the terminal take the keyboard when it is shown next.
     pub fn focus(&mut self, id: u64) {
         match self.terminals.get_mut(&id) {
             Some(Ok(terminal)) => terminal.focus = true,
@@ -187,12 +162,10 @@ impl Terminals {
         }
     }
 
-    /// Ends the program of the terminal.
     pub fn close(&mut self, id: u64) {
         self.terminals.remove(&id);
     }
 
-    /// Shows the terminal, starting it the first time.
     pub fn ui(&mut self, ui: &mut egui::Ui, id: u64) {
         let size = egui::TextStyle::Monospace.resolve(ui.style()).size;
         let fonts_ready = terminal_text::fonts_ready(ui.ctx());
@@ -206,7 +179,6 @@ impl Terminals {
                     self.last_used = Some(id);
                 }
                 if terminal.restart {
-                    // the same program again, in a terminal of its own
                     let terminal = Terminal::spawn(&self.root, self.shell.clone(), &self.env, size, &style, ui.ctx(), true);
                     self.terminals.insert(id, terminal);
                 }
@@ -217,7 +189,6 @@ impl Terminals {
         }
     }
 
-    /// Has terminals run the program instead of the user's shell, for tests.
     #[cfg(test)]
     pub fn run(&mut self, program: &str, args: &[&str]) {
         self.shell = Some(Shell::new(program.to_string(), args.iter().map(|arg| arg.to_string()).collect()));
@@ -228,7 +199,6 @@ impl Terminals {
         self.terminals.contains_key(&id)
     }
 
-    /// What the terminal shows, one line per row.
     pub fn screen(&self, id: u64) -> Option<String> {
         let terminal = self.terminals.get(&id)?.as_ref().ok()?;
         Some(screen_text(&terminal.term.lock()))
@@ -242,23 +212,15 @@ struct Terminal {
     title: Option<String>,
     output: Arc<Mutex<Output>>,
     activity: Activity,
-    /// When a key was pressed or text was sent to the program last.
     last_input: Option<Instant>,
-    /// Whether the program worked since the terminal had the keyboard last.
     worked: bool,
     size: Size,
-    /// Take the keyboard when shown next.
     focus: bool,
-    /// Scrolling of less than a line, kept until it adds up to one.
     scroll: f32,
-    /// A program that asked for the clipboard, waiting for the user to allow it.
     clipboard_request: Option<ClipboardAnswer>,
-    /// The user allowed programs in this terminal to read the clipboard.
     clipboard_allowed: bool,
-    /// For programs that asked for the mouse: the button held and the cell the mouse was in last.
     mouse_button: Option<u8>,
     mouse_cell: Option<(usize, usize)>,
-    /// Start the program again, after it ended.
     restart: bool,
 }
 
@@ -275,7 +237,6 @@ impl Terminal {
         let (sender, events) = mpsc::channel();
         let output = Arc::new(Mutex::new(Output::default()));
         let listener = Listener { events: sender, ctx: ctx.clone(), output: output.clone() };
-        // reading the clipboard is let through here and asked about in the editor
         let config = Config { osc52: Osc52::CopyPaste, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, listener.clone())));
         let event_loop = EventLoop::new(term.clone(), listener, pty, true, false).map_err(|e| format!("Cannot start the terminal: {e}"))?;
@@ -317,7 +278,6 @@ impl Terminal {
         };
     }
 
-    /// Answers what the program in the terminal asked for and takes note of what it reported.
     fn handle_reports(&mut self, ctx: &egui::Context, style: &CodeStyle, palette: &Palette, read_clipboard: fn() -> Option<String>) {
         for event in self.events.try_iter().collect::<Vec<_>>() {
             match event {
@@ -339,8 +299,6 @@ impl Terminal {
         }
     }
 
-    /// Asks the user whether the program may read the clipboard, as any program could read
-    /// what was copied, also passwords, without the user knowing.
     fn clipboard_bar(&mut self, ui: &mut egui::Ui) {
         if self.clipboard_request.is_none() {
             return;
@@ -364,7 +322,6 @@ impl Terminal {
         }
     }
 
-    /// Shows the terminal. Returns whether it has the keyboard.
     fn ui(&mut self, ui: &mut egui::Ui, id: u64, style: &CodeStyle, fonts_ready: bool, read_clipboard: fn() -> Option<String>) -> bool {
         let palette = Palette::new(ui.visuals());
         self.update_activity();
@@ -387,14 +344,12 @@ impl Terminal {
             info
         });
 
-        // the cell under the pointer on the screen, and the half of it
         let screen_cell = |pos: egui::Pos2| {
             let x = ((pos.x - origin.x) / style.digit_width).max(0.0);
             let row = (((pos.y - origin.y) / style.row_height).max(0.0) as usize).min(size.lines - 1);
             ((x as usize).min(size.columns - 1), row, if x.fract() < 0.5 { Side::Left } else { Side::Right })
         };
         let mode = *term.mode();
-        // programs that asked for the mouse get it, unless Shift is held to select text
         let mouse_reports = mode.intersects(TermMode::MOUSE_MODE) && !ui.input(|i| i.modifiers.shift);
         if mouse_reports {
             let mut input = Vec::new();
@@ -418,7 +373,6 @@ impl Terminal {
                         let wanted = mode.contains(TermMode::MOUSE_MOTION) || (mode.contains(TermMode::MOUSE_DRAG) && self.mouse_button.is_some());
                         if moved && wanted {
                             self.mouse_cell = Some((column, row));
-                            // 3 is moving without a button held
                             let modifiers = ui.input(|i| i.modifiers);
                             input.extend(mouse_bytes(self.mouse_button.unwrap_or(3) + 32, modifiers, (column, row), true, mode));
                         }
@@ -432,7 +386,6 @@ impl Terminal {
                 term = self.term.lock();
             }
         } else if let Some(pointer) = response.interact_pointer_pos() {
-            // selecting text
             let (column, row, side) = screen_cell(pointer);
             let point = Point::new(Line(row as i32 - term.grid().display_offset() as i32), Column(column));
             if ui.input(|i| i.pointer.primary_pressed()) {
@@ -457,12 +410,10 @@ impl Terminal {
             self.scroll -= lines as f32;
             if lines != 0 {
                 let bytes = if mouse_reports {
-                    // the wheel is a button for programs that asked for the mouse: 64 up, 65 down
                     let (column, row, _) = screen_cell(ui.input(|i| i.pointer.hover_pos()).unwrap_or(origin));
                     let modifiers = ui.input(|i| i.modifiers);
                     Some(mouse_bytes(if lines > 0 { 64 } else { 65 }, modifiers, (column, row), true, mode))
                 } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
-                    // full screen programs scroll their own content with the arrow keys
                     key_bytes(if lines > 0 { Key::ArrowUp } else { Key::ArrowDown }, Modifiers::NONE, mode)
                 } else {
                     term.scroll_display(Scroll::Delta(lines));
@@ -477,7 +428,6 @@ impl Terminal {
         }
 
         if response.has_focus() {
-            // every key is for the program in the terminal, also the ones that would move the focus
             let filter = EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true };
             ui.memory_mut(|m| m.set_focus_lock_filter(response.id, filter));
             let mode = *term.mode();
@@ -502,11 +452,9 @@ impl Terminal {
                     _ => {}
                 }
             }
-            // what the program does is seen
             self.worked = false;
             if !input.is_empty() {
                 self.last_input = Some(Instant::now());
-                // typing shows the end of the output and leaves what was selected
                 term.scroll_display(Scroll::Bottom);
                 term.selection = None;
                 drop(term);
@@ -531,12 +479,10 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        // the event loop ends and ends the program with it
         let _ = self.notifier.0.send(Msg::Shutdown);
     }
 }
 
-/// Draws the cells of the terminal, the selection and the cursor.
 #[allow(clippy::too_many_arguments)]
 fn paint(ui: &egui::Ui, term: &Term<Listener>, rect: egui::Rect, origin: egui::Pos2, style: &CodeStyle, palette: &Palette, focused: bool, fonts_ready: bool) {
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
@@ -601,7 +547,6 @@ fn paint(ui: &egui::Ui, term: &Term<Listener>, rect: egui::Rect, origin: egui::P
     }
 }
 
-/// What the terminal shows, one line per row, without the spaces at the ends of the lines.
 fn screen_text(term: &Term<Listener>) -> String {
     let grid = term.grid();
     let mut lines = Vec::new();
@@ -613,8 +558,6 @@ fn screen_text(term: &Term<Listener>) -> String {
     lines.join("\n").trim_end().to_string()
 }
 
-/// The colors of the terminal: the 16 named ones are close to those of Alacritty, the others
-/// are the standard 256 colors. Programs can change them, which `Term::colors` keeps.
 struct Palette {
     dark: bool,
     foreground: Color32,
@@ -637,8 +580,6 @@ impl Palette {
         Self { dark: visuals.dark_mode, foreground: visuals.text_color(), background: visuals.panel_fill }
     }
 
-    /// The color at an index of the palette: 0-255 are the 256 colors, the named ones such as
-    /// the foreground come after.
     fn standard(&self, index: usize) -> Color32 {
         let named = if self.dark { DARK_COLORS } else { LIGHT_COLORS };
         match index {
@@ -661,7 +602,6 @@ impl Palette {
         }
     }
 
-    /// A color as the terminal shows it: as the program set it, or from the palette.
     fn color(&self, term: &Term<Listener>, color: Color, index: usize) -> Color32 {
         match color {
             Color::Spec(Rgb { r, g, b }) => Color32::from_rgb(r, g, b),
@@ -669,8 +609,6 @@ impl Palette {
         }
     }
 
-    /// The color of the text or of the background of a cell. Bold text in one of the eight
-    /// base colors is shown in its bright variant, and faint text is dimmed.
     fn cell_color(&self, term: &Term<Listener>, color: Color, flags: Flags, foreground: bool) -> Color32 {
         let index = match color {
             Color::Named(named) => named as usize,
@@ -683,16 +621,12 @@ impl Palette {
     }
 }
 
-/// What a mouse button sends to a program that asked for the mouse, following xterm. The
-/// buttons are 0 to 2 for left, middle and right, 3 for none, 64 and 65 for the wheel, and 32
-/// more when the mouse moves. The cell is the column and the row, from 0.
 fn mouse_bytes(button: u8, modifiers: Modifiers, (column, row): (usize, usize), pressed: bool, mode: TermMode) -> Vec<u8> {
     let modifiers = 4 * modifiers.shift as u8 + 8 * modifiers.alt as u8 + 16 * modifiers.ctrl as u8;
     if mode.contains(TermMode::SGR_MOUSE) {
         let end = if pressed { 'M' } else { 'm' };
         return format!("\x1b[<{};{};{}{end}", button + modifiers, column + 1, row + 1).into_bytes();
     }
-    // the old encoding has no release of a particular button, and no cells past 222
     let button = if pressed { button } else { 3 };
     if column > 222 || row > 222 {
         return Vec::new();
@@ -700,27 +634,22 @@ fn mouse_bytes(button: u8, modifiers: Modifiers, (column, row): (usize, usize), 
     vec![0x1b, b'[', b'M', 32 + button + modifiers, 33 + column as u8, 33 + row as u8]
 }
 
-/// What a pasted text is sent as: line breaks as Enter, and marked as pasted when the program asks for it.
 fn paste_bytes(text: &str, mode: TermMode) -> Vec<u8> {
     let text = text.replace("\r\n", "\r").replace('\n', "\r");
     if mode.contains(TermMode::BRACKETED_PASTE) {
-        // the end marker can't be part of the text, or the rest of it would run as commands
         format!("\x1b[200~{}\x1b[201~", text.replace("\x1b[201~", "")).into_bytes()
     } else {
         text.into_bytes()
     }
 }
 
-/// What a key sends to the program in the terminal, following xterm.
 fn key_bytes(key: Key, modifiers: Modifiers, mode: TermMode) -> Option<Vec<u8>> {
     let mac = cfg!(target_os = "macos");
-    // the xterm number for the modifiers, as in "\x1b[1;5A" for Ctrl+Up
     let code = 1 + modifiers.shift as u8 + 2 * modifiers.alt as u8 + 4 * modifiers.ctrl as u8;
     let csi = |end: &str| if code > 1 { format!("\x1b[1;{code}{end}") } else { format!("\x1b[{end}") };
     let cursor = |end: &str| if code == 1 && mode.contains(TermMode::APP_CURSOR) { format!("\x1bO{end}") } else { csi(end) };
     let tilde = |number: u8| if code > 1 { format!("\x1b[{number};{code}~") } else { format!("\x1b[{number}~") };
     let only_alt = modifiers.alt && !modifiers.ctrl && !modifiers.shift && !modifiers.command;
-    // Cmd on macOS goes to the ends of the line, and Option by words, as in other macOS terminals
     let text = match key {
         Key::ArrowLeft if mac && modifiers.mac_cmd => "\x01".to_string(),
         Key::ArrowRight if mac && modifiers.mac_cmd => "\x05".to_string(),
@@ -750,8 +679,6 @@ fn key_bytes(key: Key, modifiers: Modifiers, mode: TermMode) -> Option<Vec<u8>> 
         Key::F10 => tilde(21),
         Key::F11 => tilde(23),
         Key::F12 => tilde(24),
-        // with Shift or Option, Enter goes as Escape and Enter, which agents take as a new line
-        // instead of sending the message
         Key::Enter if modifiers.shift || modifiers.alt => "\x1b\r".to_string(),
         Key::Enter => "\r".to_string(),
         Key::Tab if modifiers.shift => "\x1b[Z".to_string(),
@@ -762,7 +689,6 @@ fn key_bytes(key: Key, modifiers: Modifiers, mode: TermMode) -> Option<Vec<u8>> 
         Key::Escape => "\x1b".to_string(),
         Key::Space if modifiers.ctrl => "\0".to_string(),
         _ if modifiers.ctrl => {
-            // Ctrl with a letter sends its control character, Ctrl+C is 3
             let letter = key.name().chars().next().filter(|c| key.name().len() == 1 && c.is_ascii_alphabetic())?;
             let control = (letter.to_ascii_uppercase() as u8) & 0x1f;
             if modifiers.alt { format!("\x1b{}", control as char) } else { (control as char).to_string() }
@@ -839,17 +765,14 @@ mod tests {
         assert_eq!(palette.standard(NamedColor::Background as usize), Color32::BLACK);
     }
 
-    /// A terminal that runs the shell script in a directory of its own.
     fn harness(name: &str, script: &str) -> (Harness<'static, Terminals>, TempDir) {
         let dir = TempDir::new(name);
         let mut terminals = Terminals::new(dir.path().to_path_buf());
         terminals.run("/bin/sh", &["-c", script]);
-        // the terminal fonts take a few frames to come in
         let harness = Harness::builder().with_size(Vec2::new(600.0, 400.0)).with_max_steps(8).build_ui_state(|ui, terminals: &mut Terminals| terminals.ui(ui, 1), terminals);
         (harness, dir)
     }
 
-    /// Shows the terminal until the condition holds.
     fn wait(harness: &mut Harness<'_, Terminals>, what: &str, done: impl Fn(&Harness<'_, Terminals>) -> bool) {
         let start = Instant::now();
         while !done(harness) {
@@ -863,14 +786,12 @@ mod tests {
         wait(harness, text, |harness| harness.state().screen(1).unwrap().contains(text));
     }
 
-    /// Lets the program read the input byte by byte and shows what it got.
     const SHOW_INPUT: &str = "stty -icanon -echo; dd bs=1 count=COUNT 2>/dev/null | od -An -c; sleep 5";
 
     #[test]
     fn runs_a_program_in_the_project_and_shows_its_output() {
         let (mut harness, dir) = harness("terminal", "pwd; printf '\\033]0;working\\007\\033[31mred\\033[0m'; read line; echo got $line");
         wait_for_screen(&mut harness, "red");
-        // the path is long enough to wrap
         assert!(harness.state().screen(1).unwrap().replace('\n', "").starts_with(&dir.path().canonicalize().unwrap().display().to_string()));
         wait(&mut harness, "title", |harness| harness.state().title(1).as_deref() == Some("working"));
 
@@ -907,7 +828,6 @@ mod tests {
         harness.get_by_label("Restart").click();
         wait(&mut harness, "new start", |harness| harness.state().screen(1).unwrap().starts_with("started-") && harness.state().screen(1).unwrap() != first);
 
-        // Enter in an ended terminal starts it again as well
         wait(&mut harness, "end", |harness| harness.state().title(1).is_some_and(|title| title.ends_with("(exited)")));
         let second = harness.state().screen(1).unwrap();
         harness.key_press(Key::Enter);
@@ -921,7 +841,6 @@ mod tests {
         harness.state_mut().read_clipboard = || Some("hi".to_string());
         wait(&mut harness, "question", |harness| harness.query_by_label("Allow").is_some());
         harness.get_by_label("Allow").click();
-        // the answer has the text in base64
         wait_for_screen(&mut harness, "a   G   k   =");
         assert!(harness.query_by_label("Allow").is_none());
 
@@ -937,19 +856,16 @@ mod tests {
     fn mouse_clicks_go_to_programs_that_asked_for_them() {
         let script = format!("printf '\\033[?1000h\\033[?1006h'; {}", SHOW_INPUT.replace("COUNT", "18"));
         let (mut harness, _dir) = harness("terminal-mouse", &script);
-        // the program asks for the mouse before it shows anything; give it a moment
         let start = Instant::now();
         while !harness.state().terminals[&1].as_ref().unwrap().term.lock().mode().contains(TermMode::SGR_MOUSE) {
             assert!(start.elapsed() < Duration::from_secs(5), "the program didn't ask for the mouse");
             harness.run();
         }
-        // inside the first cell
         let cell = harness.get_by_role(egui::Role::Terminal).rect().min + Vec2::splat(PADDING + 2.0);
         harness.event(Event::PointerMoved(cell));
         for pressed in [true, false] {
             harness.event(Event::PointerButton { pos: cell, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
         }
-        // the press and the release of the left button in column 1, row 1, as od shows them
         let sent = "033[<0;1;1M033[<0;1;1m";
         wait(&mut harness, sent, |harness| harness.state().screen(1).unwrap().split_whitespace().collect::<String>().contains(sent));
     }
