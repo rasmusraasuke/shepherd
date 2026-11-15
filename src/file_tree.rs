@@ -3,6 +3,10 @@ use std::collections::BTreeSet;
 
 use eframe::egui::{self, Align2, Color32, Sense, TextStyle, Vec2};
 
+use crate::icons::{self, FileType, Icon};
+
+const ICON_SIZE: f32 = 15.0;
+
 #[derive(Default)]
 pub struct FileTree {
     files: Vec<String>,
@@ -118,10 +122,24 @@ impl FileTree {
                             egui::Stroke::NONE,
                         ));
                     }
+                    let icon = if row.is_dir {
+                        Icon::Folder {
+                            open: self.is_open(&row.path, toggled),
+                        }
+                    } else {
+                        Icon::File(FileType::of(&row.path))
+                    };
+                    icons::paint(
+                        &painter,
+                        egui::pos2(x + indent + ICON_SIZE / 2.0, y),
+                        ICON_SIZE,
+                        icon,
+                        ui.visuals().weak_text_color(),
+                    );
                     let look = look(&row.path);
                     let color = look.color.unwrap_or(ui.visuals().text_color());
                     painter.text(
-                        egui::pos2(x + indent, y),
+                        egui::pos2(x + indent + ICON_SIZE + 6.0, y),
                         Align2::LEFT_CENTER,
                         row.name(),
                         font.clone(),

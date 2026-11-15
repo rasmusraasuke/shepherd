@@ -265,7 +265,7 @@ impl App {
                 ui.painter()
                     .rect_filled(bar, 1.0, theme::palette(visuals.dark_mode).accent);
             }
-            icons::paint(ui.painter(), rect.center(), icon, color);
+            icons::paint(ui.painter(), rect.center(), icons::BAR_SIZE, icon, color);
             response.on_hover_text(label).clicked()
         };
         ui.add_space(6.0);

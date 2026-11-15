@@ -32,6 +32,10 @@ Without a path the current directory is opened. The path must be inside a git re
   what is already shown closes the sidebar, leaving the icons; any icon opens it again.
 - **Keyboard shortcuts.** The keyboard icon at the bottom of the bar, or Cmd+/, shows all the
   keys in one place. Esc or a click outside closes it.
+- **Icons in the trees.** Folders show as folders, open or closed, and files by their type,
+  in its own color: Kotlin, Java, Rust, JavaScript, TypeScript, Python, Go, JSON, YAML, TOML,
+  Markdown, HTML, XML, CSS and shell scripts. Any other file, plain text included, shows a
+  page with lines.
 - **Files.** Click a file in the tree to open it as a tab. A file that is already open is
   brought to the front instead, in whichever window it is.
 - **Quick open.** Cmd+P (Ctrl+P outside macOS) finds a file by name: type a few characters,
