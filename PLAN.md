@@ -30,7 +30,7 @@ CLI agents, and a review of one file at a time, chosen from the tree of changed 
 context shown on request, highlighted diffs with changes within lines, progress per
 directory and moving on to the next file to review. README.md describes the features.
 
-Next is milestone 4: agents in the loop.
+Next is milestone 4: reviewed means staged.
 
 ## Milestones
 
@@ -83,7 +83,24 @@ The review becomes good enough to review real agent output in every day.
 
 Done when: reviewing an agent's change here is nicer than in IntelliJ's diff view.
 
-### 4. Agents in the loop
+### 4. Reviewed means staged
+
+The review marks become git's staging area, and work line by line.
+
+- Marking a change as reviewed stages it, and taking the mark away unstages it. What is
+  staged shows as reviewed, also when it was staged elsewhere; the editor keeps no review
+  state of its own
+- A change made after it was reviewed shows up as unreviewed on top of the reviewed version,
+  as git keeps the staged and the working tree versions apart
+- Lines within a hunk are marked one by one: the hunk as a whole by default, or only the
+  selected lines, removed and added ones independently. Marking only the removed lines of a
+  replaced line stages just the removal
+- The changes tree and the progress count lines that are staged, by file and directory
+
+Done when: reviewing an agent's change leaves exactly the reviewed lines staged, ready to be
+committed.
+
+### 5. Agents in the loop
 
 The review turns from reading into steering.
 
@@ -101,7 +118,7 @@ The review turns from reading into steering.
 Done when: a full round of "agent writes, user comments on lines, agent fixes" happens
 without copying anything by hand.
 
-### 5. Editing inside the diff
+### 6. Editing inside the diff
 
 - Edit the new side of any hunk directly in the review
 - Revert a hunk or selected lines
@@ -109,10 +126,10 @@ without copying anything by hand.
 
 Done when: small fixes during review never require leaving the review.
 
-### 6. Git flow: commit, push, sync
+### 7. Git flow: commit, push, sync
 
-- Choose what goes into a commit by file, hunk or line; reviewed state helps here
-  ("commit what I have reviewed")
+- Commit what is reviewed, as it is staged; or choose by file, hunk or line in the commit
+  itself
 - Commit message written in place, with an agent able to draft it
 - Commit and push as one streamlined action
 - Fetch and pull as one "sync" action, with a clear picture of ahead/behind
@@ -121,7 +138,7 @@ Done when: small fixes during review never require leaving the review.
 
 Done when: a normal day of commits, pushes and pulls needs no other git tool.
 
-### 7. Merge conflicts in the same view
+### 8. Merge conflicts in the same view
 
 - Conflicts appear in the file's review as a special kind of hunk, during merge, rebase,
   pull and stash apply
@@ -132,7 +149,7 @@ Done when: a normal day of commits, pushes and pulls needs no other git tool.
 
 Done when: a conflicting pull is resolved without leaving the review.
 
-### 8. Reviewing commits
+### 9. Reviewing commits
 
 - History list of commits for the branch
 - Open one commit, or a range, in the same review, one file at a time, with the same
@@ -141,7 +158,7 @@ Done when: a conflicting pull is resolved without leaving the review.
 
 Done when: work an agent has already committed can be reviewed the same way as uncommitted work.
 
-### 9. Comfortable Kotlin editing
+### 10. Comfortable Kotlin editing
 
 The step that lets IntelliJ be closed for good.
 
@@ -156,7 +173,7 @@ The step that lets IntelliJ be closed for good.
 
 Done when: a day of Kotlin work happens here without missing IntelliJ.
 
-### 10. Run configurations
+### 11. Run configurations
 
 - Run configurations stored as plain files in the repository, so they can be committed and
   shared with the team
@@ -199,5 +216,9 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
   trees serve selection by syntax node, outline and folding later.
 - **Terminals on alacritty_terminal.** The terminal emulation and the processes come from
   Alacritty's core, as in Zed; drawing and keyboard handling are the editor's own.
+- **Reviewed means staged.** A review mark is the change being in git's index, so marks need
+  no storage of their own, survive anything that keeps the index, and what is committed is
+  what was reviewed. Staging done outside the editor, for example by an agent running
+  `git add`, counts as reviewed.
 - **Language server first.** Code understanding comes from the Kotlin language server.
   Deeper analysis is considered only when a concrete review feature needs it.
