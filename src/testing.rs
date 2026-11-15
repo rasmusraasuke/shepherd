@@ -8,7 +8,7 @@ impl TempDir {
     pub fn new(name: &str) -> Self {
         static CREATED: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
-            "editor-test-{}-{}-{name}",
+            "shepherd-test-{}-{}-{name}",
             std::process::id(),
             CREATED.fetch_add(1, Ordering::SeqCst)
         ));

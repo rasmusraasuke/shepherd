@@ -85,17 +85,17 @@ struct Drag {
 }
 
 const CONTROL_HELP: &str = "\
-editor ctl: ask the editor what the user sees, or have it show something.
+shepherd ctl: ask the editor what the user sees, or have it show something.
 
-  editor ctl context              All of the below in one go
-  editor ctl selection            The place and the text selected in the file edited last
-  editor ctl comments             The user's review comments on the uncommitted changes
-  editor ctl review-state         Which changed lines are reviewed, by file; reviewed means staged
-  editor ctl terminals            The terminals and what their programs are doing
-  editor ctl terminal <id>        What a terminal shows
-  editor ctl open <path>[:<line>[-<line>]]
+  shepherd ctl context              All of the below in one go
+  shepherd ctl selection            The place and the text selected in the file edited last
+  shepherd ctl comments             The user's review comments on the uncommitted changes
+  shepherd ctl review-state         Which changed lines are reviewed, by file; reviewed means staged
+  shepherd ctl terminals            The terminals and what their programs are doing
+  shepherd ctl terminal <id>        What a terminal shows
+  shepherd ctl open <path>[:<line>[-<line>]]
                                   Open a file, selecting the lines
-  editor ctl review [<path>]      Show the changes of a file for review, or of the next file to review";
+  shepherd ctl review [<path>]      Show the changes of a file for review, or of the next file to review";
 
 fn parse_place(place: &str) -> (&str, Option<(usize, usize)>) {
     let Some((path, lines)) = place.rsplit_once(':') else {
@@ -110,7 +110,7 @@ fn parse_place(place: &str) -> (&str, Option<(usize, usize)>) {
 
 pub fn viewport(root: &Path, window: &Window) -> ViewportBuilder {
     let builder = ViewportBuilder::default()
-        .with_title(format!("editor — {}", root.display()))
+        .with_title(format!("Shepherd — {}", root.display()))
         .with_inner_size(window.size.unwrap_or(DEFAULT_WINDOW_SIZE));
     match window.position {
         Some(position) => builder.with_position(position),
@@ -540,7 +540,7 @@ impl App {
             format!(
                 "Review comments: {comments}{}",
                 if comments > 0 {
-                    " (`editor ctl comments` shows them)"
+                    " (`shepherd ctl comments` shows them)"
                 } else {
                     ""
                 }
@@ -616,7 +616,7 @@ impl App {
             "Terminals: none".to_string()
         } else {
             format!(
-                "Terminals (`editor ctl terminal <id>` shows one):\n{}",
+                "Terminals (`shepherd ctl terminal <id>` shows one):\n{}",
                 lines.join("\n")
             )
         }
@@ -970,6 +970,13 @@ mod tests {
             .build_ui_state(|ui, app: &mut App| app.show(ui), app);
         harness.run();
         (harness, dir)
+    }
+
+    #[test]
+    fn windows_are_titled_with_the_name_of_the_editor_and_the_project() {
+        let workspace = Workspace::default();
+        let builder = viewport(Path::new("/work/shop"), &workspace.windows[0]);
+        assert_eq!(builder.title.as_deref(), Some("Shepherd — /work/shop"));
     }
 
     fn open_tabs(harness: &Harness<'_, App>) -> Vec<Vec<Tab>> {

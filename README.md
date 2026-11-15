@@ -1,4 +1,4 @@
-# editor
+# Shepherd
 
 A lightweight code editor for the AI era: agents write most of the code, the human steers,
 reviews, fixes and ships. See [PLAN.md](PLAN.md) for where this is going.
@@ -33,7 +33,7 @@ Without a path the current directory is opened. The path must be inside a git re
 - **Quick open.** Cmd+P (Ctrl+P outside macOS) finds a file by name: type a few characters,
   pick with the arrow keys, open with Enter. The file opens in the window the popup is in.
 - **Restored on restart.** Windows with their position and size, splits, open tabs, the
-  sidebar and the expanded directories are saved per repository in `.git/editor-layout.json`.
+  sidebar and the expanded directories are saved per repository in `.git/shepherd-layout.json`.
 
 ### Editing
 
@@ -187,20 +187,20 @@ The keys work in the review tab used last, while no text field or terminal has t
 - **Which agent.** Text goes to a terminal tab, pasted as if typed and followed by Enter, so
   any CLI agent works. With several terminals open, the buttons become menus listing them,
   the one used last first.
-- **`editor ctl`.** Programs in the editor's terminals can ask the editor what the user sees
-  and have it show things, with the `editor ctl` command that is on the PATH there. Tell
+- **`shepherd ctl`.** Programs in the editor's terminals can ask the editor what the user sees
+  and have it show things, with the `shepherd ctl` command that is on the PATH there. Tell
   your agent about it, for example in `CLAUDE.md` or `AGENTS.md`:
 
   | Command | What it does |
   |---------|--------------|
-  | `editor ctl context` | All of the below in one go |
-  | `editor ctl selection` | The place and the text selected in the file edited last |
-  | `editor ctl comments` | The review comments on the uncommitted changes |
-  | `editor ctl review-state` | Which changed lines are reviewed (staged), by file |
-  | `editor ctl terminals` | The terminals and what their programs are doing |
-  | `editor ctl terminal <id>` | What a terminal shows |
-  | `editor ctl open <path>[:<line>[-<line>]]` | Opens a file, selecting the lines |
-  | `editor ctl review [<path>]` | Shows a file's changes for review, or the next file to review |
+  | `shepherd ctl context` | All of the below in one go |
+  | `shepherd ctl selection` | The place and the text selected in the file edited last |
+  | `shepherd ctl comments` | The review comments on the uncommitted changes |
+  | `shepherd ctl review-state` | Which changed lines are reviewed (staged), by file |
+  | `shepherd ctl terminals` | The terminals and what their programs are doing |
+  | `shepherd ctl terminal <id>` | What a terminal shows |
+  | `shepherd ctl open <path>[:<line>[-<line>]]` | Opens a file, selecting the lines |
+  | `shepherd ctl review [<path>]` | Shows a file's changes for review, or the next file to review |
 
 ## Development
 

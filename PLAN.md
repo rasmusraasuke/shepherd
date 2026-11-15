@@ -30,7 +30,7 @@ CLI agents, and a review of one file at a time, chosen from the tree of changed 
 context shown on request, highlighted diffs with changes within lines, progress per
 directory and moving on to the next file to review, review marks that are git's staging
 area, line by line, and agents in the loop: comments on lines sent to agents in terminal tabs,
-the state of the agents in the tab titles, new changes marked, and `editor ctl` for agents to
+the state of the agents in the tab titles, new changes marked, and `shepherd ctl` for agents to
 read what the editor shows and have it show files and reviews, and fixing in the review:
 the review is the file and is edited anywhere, with the changes found again as they are
 typed, reverting hunks or lines as edits that are undone with Cmd+Z, and jumping between a
@@ -173,7 +173,7 @@ The step that lets IntelliJ be closed for good.
 - Kotlin language server set up automatically for Gradle projects
 - The same intelligence inside the review: go to definition and find usages from a diff line,
   diagnostics shown on changed lines
-- Diagnostics given to agents through `editor ctl`
+- Diagnostics given to agents through `shepherd ctl`
 - Structural editing helpers from the syntax tree: selection by syntax node, outline,
   folding, sensible indentation
 - Other languages come for free where a language server exists
@@ -233,7 +233,7 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
   what was reviewed. Staging done outside the editor, for example by an agent running
   `git add`, counts as reviewed.
 - **Agents through the terminal.** Text for an agent is pasted into its terminal, and agents
-  reach the editor with the `editor ctl` command over a socket, so any CLI agent works without
+  reach the editor with the `shepherd ctl` command over a socket, so any CLI agent works without
   a plugin or a protocol of its own.
 - **Language server first.** Code understanding comes from the Kotlin language server.
   Deeper analysis is considered only when a concrete review feature needs it.

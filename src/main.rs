@@ -48,7 +48,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "editor",
+        "Shepherd",
         options,
         Box::new(|cc| {
             cc.egui_ctx

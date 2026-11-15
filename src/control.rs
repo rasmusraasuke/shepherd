@@ -10,7 +10,7 @@ use std::time::Duration;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-pub const SOCKET_VARIABLE: &str = "EDITOR_SOCKET";
+pub const SOCKET_VARIABLE: &str = "SHEPHERD_SOCKET";
 
 const STARTING: Duration = Duration::from_secs(10);
 
@@ -43,7 +43,7 @@ impl Control {
         static STARTED: AtomicUsize = AtomicUsize::new(0);
         remove_stale(&std::env::temp_dir(), STARTING);
         let dir = std::env::temp_dir().join(format!(
-            "editor-{}-{}",
+            "shepherd-{}-{}",
             std::process::id(),
             STARTED.fetch_add(1, Ordering::SeqCst)
         ));
@@ -52,7 +52,7 @@ impl Control {
         fs::create_dir_all(dir.join("bin")).map_err(error)?;
         let listener = UnixListener::bind(dir.join("control.sock")).map_err(error)?;
         if let Ok(exe) = std::env::current_exe() {
-            std::os::unix::fs::symlink(exe, dir.join("bin/editor")).map_err(error)?;
+            std::os::unix::fs::symlink(exe, dir.join("bin/shepherd")).map_err(error)?;
         }
         let (sender, requests) = mpsc::channel();
         thread::spawn(move || {
@@ -90,7 +90,7 @@ fn remove_stale(parent: &Path, starting: Duration) {
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let ours = name
-            .strip_prefix("editor-")
+            .strip_prefix("shepherd-")
             .and_then(|rest| rest.split_once('-'))
             .is_some_and(|(pid, n)| pid.parse::<u32>().is_ok() && n.parse::<u32>().is_ok());
         let old = entry
@@ -155,7 +155,7 @@ pub fn ask(socket: &Path, args: &[String]) -> Result<String, String> {
 pub fn run_command(args: &[String]) -> i32 {
     let Some(socket) = std::env::var_os(SOCKET_VARIABLE) else {
         eprintln!(
-            "editor ctl works in the terminals of the editor only (no {SOCKET_VARIABLE} set)"
+            "shepherd ctl works in the terminals of the editor only (no {SOCKET_VARIABLE} set)"
         );
         return 2;
     };
@@ -183,12 +183,12 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             dir
         };
-        fs::write(dir("editor-1-0").join("control.sock"), "").unwrap();
-        let _running = UnixListener::bind(dir("editor-2-0").join("control.sock")).unwrap();
-        dir("editor-notes");
+        fs::write(dir("shepherd-1-0").join("control.sock"), "").unwrap();
+        let _running = UnixListener::bind(dir("shepherd-2-0").join("control.sock")).unwrap();
+        dir("shepherd-notes");
         remove_stale(parent.path(), STARTING);
         assert!(
-            parent.path().join("editor-1-0").exists(),
+            parent.path().join("shepherd-1-0").exists(),
             "a young directory may be of an editor starting"
         );
         remove_stale(parent.path(), Duration::ZERO);
@@ -197,7 +197,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         left.sort();
-        assert_eq!(left, ["editor-2-0", "editor-notes"]);
+        assert_eq!(left, ["shepherd-2-0", "shepherd-notes"]);
     }
 
     #[test]
@@ -226,6 +226,6 @@ mod tests {
         let (opened, wrong) = asking.join().unwrap();
         assert_eq!(opened, Ok("opened a.rs".to_string()));
         assert_eq!(wrong, Err("no such command".to_string()));
-        assert!(control.bin_dir().join("editor").exists());
+        assert!(control.bin_dir().join("shepherd").exists());
     }
 }

@@ -42,7 +42,7 @@ impl Repo {
     }
 
     pub fn layout_path(&self) -> PathBuf {
-        self.git_dir.join("editor-layout.json")
+        self.git_dir.join("shepherd-layout.json")
     }
 
     pub fn list_files(&self) -> Result<Vec<String>, String> {
