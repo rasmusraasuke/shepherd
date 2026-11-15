@@ -491,6 +491,20 @@ impl Buffer {
         found.len()
     }
 
+    /// Puts `with` in place of the lines in `range`, as one edit that is undone at once.
+    pub fn replace_lines(&mut self, range: std::ops::Range<usize>, with: &[String]) {
+        let (start, end, text) = if range.end < self.lines.len() {
+            (Pos::new(range.start, 0), Pos::new(range.end, 0), with.iter().map(|line| format!("{line}\n")).collect())
+        } else if range.start == 0 {
+            (Pos::default(), self.last_pos(), with.join("\n"))
+        } else {
+            // up to the end of a text without a line break at its end
+            let before = range.start - 1;
+            (Pos::new(before, self.line_len(before)), self.last_pos(), with.iter().map(|line| format!("\n{line}")).collect())
+        };
+        self.edit(start, end, &text);
+    }
+
     /// Replaces the whole text, as it changed on disk, keeping the cursor where it was.
     pub fn set_text(&mut self, text: &str) {
         let cursor = self.cursor;
@@ -526,6 +540,27 @@ mod tests {
             lines[pos.line].insert(at, mark);
         }
         lines.join("\n")
+    }
+
+    #[test]
+    fn replaces_whole_lines_as_one_edit() {
+        let lines = |texts: &[&str]| texts.iter().map(|text| text.to_string()).collect::<Vec<_>>();
+        let mut buffer = Buffer::new("a\nb\nc\n");
+        buffer.replace_lines(1..2, &lines(&["x", "y"]));
+        assert_eq!(buffer.text(), "a\nx\ny\nc\n");
+        buffer.replace_lines(0..0, &lines(&["z"]));
+        assert_eq!(buffer.text(), "z\na\nx\ny\nc\n");
+        buffer.undo();
+        buffer.undo();
+        assert_eq!(buffer.text(), "a\nb\nc\n");
+        // to the end of a text without a line break there
+        let mut buffer = Buffer::new("a\nb");
+        buffer.replace_lines(1..2, &[]);
+        assert_eq!(buffer.text(), "a");
+        buffer.replace_lines(1..1, &lines(&["c"]));
+        assert_eq!(buffer.text(), "a\nc");
+        buffer.replace_lines(0..2, &lines(&["d"]));
+        assert_eq!(buffer.text(), "d");
     }
 
     #[test]

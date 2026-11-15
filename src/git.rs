@@ -86,28 +86,42 @@ impl Repo {
         Ok(parse_diff(&raw).pop())
     }
 
-    /// Stages the changed lines of a file that are `chosen`, by the index of their hunk and their
-    /// index in it, and unstages the others: the index gets the version of HEAD with just those
-    /// changes made. Fails when the file changed since `diff` was taken.
-    pub fn stage_lines(&self, diff: &FileDiff, chosen: impl Fn(usize, usize) -> bool) -> Result<(), String> {
+    /// Fails when the file changed since `diff` was taken.
+    fn check_unchanged(&self, diff: &FileDiff) -> Result<(), String> {
         let path = diff.path.as_str();
         if self.file_diff(path)?.is_none_or(|now| now.hunks != diff.hunks) {
             return Err(format!("{path} changed in the meantime, try again"));
         }
-        let changed = |kind: LineKind| diff.hunks.iter().enumerate().flat_map(move |(h, hunk)| hunk.lines.iter().enumerate().filter(move |(_, line)| line.kind == kind).map(move |(i, _)| (h, i)));
-        // a file that ends up as it is in HEAD, but isn't in HEAD, or is gone from the working tree
-        let gone = match diff.status {
-            FileStatus::Added => !changed(LineKind::Added).any(|(h, i)| chosen(h, i)),
-            FileStatus::Deleted => changed(LineKind::Removed).all(|(h, i)| chosen(h, i)),
-            _ => false,
-        };
-        if gone {
-            return git(&self.root, &["update-index", "--force-remove", "--", path]).map(drop);
-        }
+        Ok(())
+    }
+
+    /// Stages the changed lines of a file that are `chosen`, by the index of their hunk and their
+    /// index in it, and unstages the others: the index gets the version of HEAD with just those
+    /// changes made. Fails when the file changed since `diff` was taken.
+    pub fn stage_lines(&self, diff: &FileDiff, chosen: impl Fn(usize, usize) -> bool) -> Result<(), String> {
+        self.check_unchanged(diff)?;
+        let path = diff.path.as_str();
         let head = if diff.status == FileStatus::Added { Vec::new() } else { run(&self.root, &["show", &format!("{}:{path}", self.base())], None)? };
-        let content = compose(&head, &self.read_work(path), &diff.hunks, chosen);
-        let hash = String::from_utf8_lossy(&run(&self.root, &["hash-object", "-w", "--stdin"], Some(&content))?).trim().to_string();
+        self.stage_version(path, version(diff.status, &head, &self.read_work(path), &diff.hunks, chosen).as_deref())
+    }
+
+    /// Puts a version of a file into the index, or takes the file out of it when there is none.
+    pub fn stage_version(&self, path: &str, content: Option<&[u8]>) -> Result<(), String> {
+        let Some(content) = content else {
+            return git(&self.root, &["update-index", "--force-remove", "--", path]).map(drop);
+        };
+        let hash = String::from_utf8_lossy(&run(&self.root, &["hash-object", "-w", "--stdin"], Some(content))?).trim().to_string();
         git(&self.root, &["update-index", "--add", "--cacheinfo", &format!("{},{hash},{path}", self.mode(path))]).map(drop)
+    }
+
+    /// The text of a file as committed, or none when it isn't.
+    pub fn committed(&self, path: &str) -> Option<String> {
+        git(&self.root, &["show", &format!("{}:{path}", self.base())]).ok()
+    }
+
+    /// The text of a file as staged, or none when it isn't in the index.
+    pub fn staged(&self, path: &str) -> Option<String> {
+        git(&self.root, &["show", &format!(":{path}")]).ok()
     }
 
     /// Stages or unstages all of a file, for changes without lines, such as of a binary file.
@@ -152,6 +166,20 @@ fn is_executable(meta: &fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_meta: &fs::Metadata) -> bool {
     false
+}
+
+/// The version of a file made from its committed version `head` with the changed lines of the
+/// diff to the working tree's version `work` that are `chosen`, by the index of their hunk and
+/// their index in it. None when there is no file then: one that isn't committed gets none of
+/// its lines, or one gone from the working tree all of its removals.
+pub fn version(status: FileStatus, head: &[u8], work: &[u8], hunks: &[Hunk], chosen: impl Fn(usize, usize) -> bool) -> Option<Vec<u8>> {
+    let changed = |kind: LineKind| hunks.iter().enumerate().flat_map(move |(h, hunk)| hunk.lines.iter().enumerate().filter(move |(_, line)| line.kind == kind).map(move |(i, _)| (h, i)));
+    let gone = match status {
+        FileStatus::Added => !changed(LineKind::Added).any(|(h, i)| chosen(h, i)),
+        FileStatus::Deleted => changed(LineKind::Removed).all(|(h, i)| chosen(h, i)),
+        _ => false,
+    };
+    (!gone).then(|| compose(head, work, hunks, chosen))
 }
 
 /// The version of a file made from HEAD's version with the `chosen` changes of the diff to the

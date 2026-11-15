@@ -37,7 +37,3 @@ impl CodeStyle {
         painter.text(egui::pos2(left, top), Align2::LEFT_TOP, text, self.font.clone(), color);
     }
 }
-
-pub fn expand_tabs(text: &str) -> String {
-    text.replace('\t', "    ")
-}

@@ -70,6 +70,8 @@ enum Action {
     NewReview(usize, Option<TileId>),
     /// Show the changes of a file in a review tab, in a new one when `new_tab` is set.
     Review { path: String, new_tab: bool },
+    /// Show the changes of a file in a review tab, at the change nearest to a line numbered from 0.
+    ReviewLine { path: String, line: usize },
     /// Send text to the agent in a terminal.
     Send { terminal: u64, text: String },
     /// Search across the project, in the sidebar of the main window.
@@ -198,7 +200,7 @@ impl App {
             ui.separator();
             ui.label(format!("{done}/{total} lines reviewed"));
             ui.separator();
-            ui.weak("Cmd+P open file · Cmd+F find in file · Cmd+Shift+F search in files · Cmd+T terminal · Cmd+click a change for a new review · j/k move · space mark reviewed · n next unreviewed · r refresh");
+            ui.weak("Cmd+P open file · Cmd+F find in file · Cmd+Shift+F search in files · Cmd+T terminal · Cmd+click a change for a new review · j/k move · space mark reviewed · n next unreviewed · o open in file · Cmd+Shift+R review the line of a file · r refresh");
         });
         if let Some(error) = &self.content.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -351,6 +353,10 @@ impl App {
             Action::Review { path, new_tab } => {
                 let window = self.workspace.show_review(&path, new_tab);
                 self.focus(window, ctx);
+            }
+            Action::ReviewLine { path, line } => {
+                self.content.review.show_line(&path, line);
+                self.perform(Action::Review { path, new_tab: false }, ctx);
             }
             Action::Send { terminal, text } => self.content.terminals.send(terminal, &text),
             Action::Search => {
@@ -541,14 +547,22 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         let active = self.last_review.as_ref().is_none_or(|last| last == tab);
         match tab {
             Tab::Review(path) => {
-                let outcome = egui::Frame::new().inner_margin(8.0).show(ui, |ui| self.content.review.ui(ui, path.as_deref(), active, self.agents)).inner;
+                let outcome = egui::Frame::new().inner_margin(8.0).show(ui, |ui| self.content.review.ui(ui, path.as_deref(), active, self.agents, &mut self.content.open_files)).inner;
                 match outcome {
                     Some(review::Outcome::Show(path)) => *self.action = Some(Action::Review { path, new_tab: false }),
                     Some(review::Outcome::Send { terminal, text }) => *self.action = Some(Action::Send { terminal, text }),
+                    Some(review::Outcome::Open { path, line }) => {
+                        let place = Pos::new(line, 0);
+                        *self.action = Some(Action::Reveal(Reveal { path, start: place, end: place, focus: true }));
+                    }
                     None => {}
                 }
             }
-            Tab::File(path) => self.content.open_files.ui(ui, path),
+            Tab::File(path) => {
+                if let Some(line) = self.content.open_files.ui(ui, path) {
+                    *self.action = Some(Action::ReviewLine { path: path.clone(), line });
+                }
+            }
             Tab::Terminal(id) => self.content.terminals.ui(ui, *id),
         }
         UiResponse::None
@@ -665,7 +679,7 @@ impl App {
         }
 
         self.drag_title(&ctx);
-        if self.content.review.take_staged_changed() {
+        if self.content.review.take_changed() {
             self.watcher.refresh_now();
         }
         self.content.open_files.save_edited(&ctx);
@@ -811,6 +825,22 @@ mod tests {
         harness.run();
         assert_eq!(open_tabs(&harness), [vec![review("src/main.rs")]]);
         assert_eq!(harness.state().content.review.progress(), (1, 2));
+    }
+
+    #[test]
+    fn jumps_from_a_file_to_its_changes_and_back() {
+        let (mut harness, _dir) = harness("jump");
+        harness.state_mut().action = Some(Action::Open(file("src/main.rs"), 0));
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::R);
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![review("src/main.rs"), file("src/main.rs")]]);
+        assert!(harness.ctx.memory(|m| m.focused().is_none()), "the keys are for the review");
+
+        harness.key_press(Key::O);
+        harness.run();
+        assert!(harness.ctx.memory(|m| m.focused().is_some()), "the keys are for the file");
+        assert_eq!(harness.state().content.open_files.selection().map(|selection| (selection.path, selection.start)), Some(("src/main.rs".to_string(), Pos::new(0, 0))));
     }
 
     #[test]

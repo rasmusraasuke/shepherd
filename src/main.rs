@@ -8,6 +8,7 @@ mod file_tree;
 mod file_view;
 mod git;
 mod highlight;
+mod line_diff;
 mod quick_open;
 mod review;
 mod search;

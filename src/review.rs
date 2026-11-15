@@ -5,12 +5,15 @@ use std::path::Path;
 
 use eframe::egui::{self, Align, Color32, Key, Modifiers, RichText, Sense, Stroke, Vec2};
 
-use crate::code::{CodeStyle, expand_tabs};
+use crate::buffer::Buffer;
+use crate::code::CodeStyle;
 use crate::comments::{self, Comment};
+use crate::editor::{Editor, Rows};
 use crate::file_tree::{FileLook, FileTree};
-use crate::file_view;
+use crate::file_view::{self, OpenFiles};
 use crate::git::{self, Changes, DiffLine, FileDiff, FileStatus, Hunk, LineKind, Repo, Staged};
 use crate::highlight::{self, Highlighter, Spans};
+use crate::line_diff;
 use crate::word_diff::{self, Ranges};
 
 /// The color that marks new changes: the ones the user hasn't looked at yet.
@@ -18,9 +21,6 @@ pub const NEW_COLOR: Color32 = Color32::from_rgb(90, 150, 230);
 
 /// How many unchanged lines are shown around each hunk.
 const CONTEXT: usize = 3;
-
-/// Longer lines are cut to this many characters, as drawing very long lines takes long.
-const MAX_LINE_CHARS: usize = 500;
 
 /// The working-tree changes, reviewed one file at a time.
 pub struct Review {
@@ -36,10 +36,10 @@ pub struct Review {
     /// The number of reviewed lines and of all changed lines of every file and directory, and
     /// of all files together under "". A file without lines counts as one.
     progress: HashMap<String, (usize, usize)>,
-    /// Why what is staged couldn't be changed the last time.
+    /// Why what is staged or a file couldn't be changed the last time.
     error: Option<String>,
-    /// Whether what is staged changed since the working tree was looked at.
-    staged_changed: bool,
+    /// Whether what is staged or the files changed since the working tree was looked at.
+    changed: bool,
     comments: Vec<Comment>,
     /// The hunks the user has looked at, by their fingerprints; the ones there were when the
     /// editor started count as looked at.
@@ -58,6 +58,8 @@ pub enum Outcome {
     Show(String),
     /// Send text to the agent in a terminal.
     Send { terminal: u64, text: String },
+    /// Show a line of a file, numbered from 0, in a file tab.
+    Open { path: String, line: usize },
 }
 
 /// A changed file. Its changes are reviewed when they are staged.
@@ -124,6 +126,10 @@ struct View {
     draft: String,
     /// Give the keyboard to the comment being written, as rows were just selected.
     focus_draft: bool,
+    /// The row the menu was opened on.
+    menu_row: Option<usize>,
+    /// Edits the file where it is shown, as in its tab.
+    editor: Editor,
 }
 
 /// A run of unchanged lines between the changes, by their numbers in the new file.
@@ -134,20 +140,29 @@ struct Gap {
     old_offset: isize,
 }
 
-/// The lines of both versions of a changed file as they are drawn.
+/// The versions of a changed file that is shown: as committed, as staged and as edited. Its
+/// changes are found here rather than by git, so that they follow the edits as they are typed.
 struct FileText {
-    /// The lines of the file on disk.
-    content: Vec<String>,
-    new: Side,
+    /// The text as committed, or none when it isn't, and its lines with their colors.
+    head: Option<String>,
     old: Side,
+    /// The lines of the staged version, and the lines of the committed one whose removal is
+    /// staged, by their numbers.
+    index: Vec<String>,
+    staged_removals: HashSet<u32>,
+    /// Whether the file is gone from the working tree.
+    missing: bool,
+    /// The text as edited and its lines, and the revision of the buffer they are of.
+    work: String,
+    work_lines: Vec<String>,
+    revision: Option<u64>,
     /// For each hunk and each of its lines, the parts that changed within the line.
     changed: Vec<Vec<Ranges>>,
     /// The number of characters of the longest line, for the width of the rows.
     longest: usize,
 }
 
-/// The lines of one version of a file, with tabs expanded and very long lines cut, and the
-/// parts of them to color.
+/// The lines of the committed version of a file, and the parts of them to color.
 struct Side {
     lines: Vec<String>,
     spans: Vec<Spans>,
@@ -164,7 +179,7 @@ impl Review {
             texts: HashMap::new(),
             progress: HashMap::new(),
             error: None,
-            staged_changed: false,
+            changed: false,
             comments: Vec::new(),
             seen: None,
             unseen: HashSet::new(),
@@ -184,12 +199,15 @@ impl Review {
             .collect();
         self.by_path = self.files.iter().enumerate().map(|(index, file)| (file.diff.path.clone(), index)).collect();
         self.tree.set_files(self.files.iter().map(|file| file.diff.path.clone()).collect(), collapsed);
-        self.texts.clear();
+        // the files shown find their changes again from their texts once shown next, which
+        // follows their views and comments to them
+        let shown: HashSet<String> = self.texts.drain().map(|(path, _)| path).collect();
         self.error = None;
         self.update_progress();
         let fingerprints: HashSet<u64> = self.files.iter().flat_map(|file| file.fingerprints.iter().copied()).collect();
         match &mut self.seen {
-            Some(seen) => seen.retain(|fingerprint| fingerprints.contains(fingerprint)),
+            // git may tell apart the changes of a file shown a bit differently than the review did
+            Some(seen) => seen.retain(|fingerprint| fingerprints.contains(fingerprint) || before.values().any(|file| file.fingerprints.contains(fingerprint))),
             None => self.seen = Some(fingerprints),
         }
         self.update_new();
@@ -197,6 +215,9 @@ impl Review {
         self.views.retain(|path, view| {
             let Some(&index) = by_path.get(path) else { return false };
             let hunks = &files[index].diff.hunks;
+            if shown.contains(path) {
+                return true;
+            }
             if view.expanded.len() != hunks.len() + 1 {
                 view.expanded.clear();
             }
@@ -211,7 +232,7 @@ impl Review {
         self.comments.retain_mut(|comment| {
             let Some(&index) = by_path.get(&comment.path) else { return false };
             let diff = &files[index].diff;
-            comment.follow(lines.entry(&diff.path).or_insert_with(|| file_lines(&read_lines(&self.repo.root, diff), diff)))
+            shown.contains(&diff.path) || comment.follow(lines.entry(&diff.path).or_insert_with(|| file_lines(&read_lines(&self.repo.root, diff), diff)))
         });
     }
 
@@ -231,9 +252,24 @@ impl Review {
         &self.comments
     }
 
-    /// Whether what is staged changed since the last call, so the working tree should be looked at again.
-    pub fn take_staged_changed(&mut self) -> bool {
-        std::mem::take(&mut self.staged_changed)
+    /// Whether what is staged or the files changed since the last call, so the working tree
+    /// should be looked at again.
+    pub fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
+
+    /// Makes the hunk nearest to a line of a file, numbered from 0, the current one, and shows it.
+    pub fn show_line(&mut self, path: &str, line: usize) {
+        let Some(&file) = self.by_path.get(path) else { return };
+        let line = line as u32 + 1;
+        let distance = |hunk: &Hunk| {
+            let new = hunk.ranges().1;
+            if line < new.start { new.start - line } else { (line + 1).saturating_sub(new.end) }
+        };
+        let hunks = &self.files[file].diff.hunks;
+        if let Some(hunk) = (0..hunks.len()).min_by_key(|&hunk| distance(&hunks[hunk])) {
+            self.select(file, hunk);
+        }
     }
 
     fn update_progress(&mut self) {
@@ -325,7 +361,20 @@ impl Review {
     /// index in it, and unstages the others.
     fn stage(&mut self, file: usize, chosen: impl Fn(usize, usize) -> bool) {
         let FileReview { diff, staged, .. } = &mut self.files[file];
-        let result = self.repo.stage_lines(diff, &chosen);
+        let result = match self.texts.get_mut(&diff.path) {
+            // a file shown has the versions its changes are of, also when it isn't saved yet
+            Some(text) => {
+                let status = if text.head.is_none() { FileStatus::Added } else if text.missing && text.work.is_empty() { FileStatus::Deleted } else { FileStatus::Modified };
+                let head = text.head.as_deref().unwrap_or_default().as_bytes();
+                let version = git::version(status, head, text.work.as_bytes(), &diff.hunks, &chosen);
+                let result = self.repo.stage_version(&diff.path, version.as_deref());
+                if result.is_ok() {
+                    text.set_index(&String::from_utf8_lossy(&version.unwrap_or_default()));
+                }
+                result
+            }
+            None => self.repo.stage_lines(diff, &chosen),
+        };
         if result.is_ok() {
             for (h, (hunk, staged)) in diff.hunks.iter().zip(staged).enumerate() {
                 for (i, (line, staged)) in hunk.lines.iter().zip(staged).enumerate() {
@@ -347,8 +396,95 @@ impl Review {
 
     fn staging_done(&mut self, result: Result<(), String>) {
         self.error = result.err();
-        self.staged_changed = true;
+        self.changed = true;
         self.update_progress();
+    }
+
+    /// Takes the changed lines of a file shown that are `reverted`, by the index of their hunk
+    /// and their index in it, back to how they were committed, as one edit of its text that
+    /// can be undone. What is staged of them is unstaged.
+    fn revert(&mut self, file: usize, buffer: &mut Buffer, reverted: impl Fn(usize, usize) -> bool) {
+        let FileReview { diff, staged, .. } = &self.files[file];
+        let is_reverted = |h: usize, i: usize| diff.hunks[h].lines[i].kind != LineKind::Context && reverted(h, i);
+        let affected: Vec<usize> = (0..diff.hunks.len()).filter(|&h| (0..diff.hunks[h].lines.len()).any(|i| is_reverted(h, i))).collect();
+        let (Some(&first), Some(&last)) = (affected.first(), affected.last()) else { return };
+        if affected.iter().any(|&h| (0..diff.hunks[h].lines.len()).any(|i| is_reverted(h, i) && staged[h][i])) {
+            let staged = staged.clone();
+            self.stage(file, |h, i| staged[h][i] && !reverted(h, i));
+        }
+        let (hunks, work) = (&self.files[file].diff.hunks, &self.texts[&self.files[file].diff.path].work_lines);
+        // the lines from the first hunk reverted to the last, as they will be
+        let start = hunks[first].ranges().1.start as usize - 1;
+        let (mut at, mut lines) = (start, Vec::new());
+        for (h, hunk) in hunks.iter().enumerate().take(last + 1).skip(first) {
+            let new = hunk.ranges().1;
+            lines.extend_from_slice(&work[at..new.start as usize - 1]);
+            for (i, line) in hunk.lines.iter().enumerate() {
+                if (line.kind == LineKind::Removed) == reverted(h, i) {
+                    lines.push(line.text.clone());
+                }
+            }
+            at = new.end as usize - 1;
+        }
+        buffer.replace_lines(start..at, &lines);
+    }
+
+    /// Takes over the edits of the text of a file shown: finds its changes as they are now,
+    /// which of them are staged, and follows the comments on it. Changes made while `editing`
+    /// count as looked at.
+    fn follow_edits(&mut self, file: usize, buffer: &Buffer, editing: bool) {
+        let path = self.files[file].diff.path.clone();
+        let text = self.texts.get_mut(&path).expect("the text of a file shown");
+        if text.revision == Some(buffer.revision()) {
+            return;
+        }
+        let lines = buffer.lines();
+        // a line break at the end leaves an empty last line in the buffer, but not in the file
+        let work = &lines[..lines.len() - (lines.last().is_some_and(String::is_empty)) as usize];
+        let before = gaps(&self.files[file].diff.hunks, text.work_lines.len());
+        let hunks = line_diff::diff(&text.old.lines, work);
+        let unstaged: HashSet<u32> = line_diff::diff(&text.index, work).iter().flat_map(|hunk| &hunk.lines).filter_map(|line| line.new_no).collect();
+        let staged = hunks
+            .iter()
+            .map(|hunk| {
+                let staged = |line: &DiffLine| match line.kind {
+                    LineKind::Context => true,
+                    LineKind::Removed => line.old_no.is_some_and(|number| text.staged_removals.contains(&number)),
+                    LineKind::Added => line.new_no.is_some_and(|number| !unstaged.contains(&number)),
+                };
+                hunk.lines.iter().map(staged).collect()
+            })
+            .collect();
+        text.changed = hunks.iter().map(|hunk| changed_in_lines(hunk, &text.old.lines, work)).collect();
+        text.longest = text.old.lines.iter().chain(work).map(|line| line.chars().count()).max().unwrap_or(0);
+        text.work = buffer.text();
+        text.work_lines = work.to_vec();
+        text.revision = Some(buffer.revision());
+
+        let review = &mut self.files[file];
+        review.fingerprints = hunks.iter().map(|hunk| fingerprint(&path, hunk)).collect();
+        review.new = vec![false; hunks.len()];
+        review.staged = staged;
+        let changed = review.diff.hunks != hunks;
+        review.diff.hunks = hunks;
+        if editing {
+            self.seen.get_or_insert_default().extend(review.fingerprints.iter().copied());
+        }
+        let file_lines = file_lines(&text.work_lines, &review.diff);
+        let after = gaps(&review.diff.hunks, text.work_lines.len());
+        self.comments.retain_mut(|comment| comment.path != path || comment.follow(&file_lines));
+        self.update_progress();
+        self.update_new();
+        let view = self.view(file);
+        if changed {
+            view.selection = None;
+        }
+        // a hunk that comes or goes renumbers the unchanged lines around it; what was shown stays so
+        if view.expanded.len() != after.len() {
+            let shown = |gap: &Gap| before.iter().zip(&view.expanded).any(|(was, &expanded)| expanded && was.lines.start < gap.lines.end && gap.lines.start < was.lines.end);
+            view.expanded = after.iter().map(shown).collect();
+        }
+        view.current = view.current.min(after.len().saturating_sub(2));
     }
 
     /// Marks a hunk as reviewed, or not when it is; moving on to the next one when it is
@@ -386,21 +522,29 @@ impl Review {
         }
     }
 
-    /// Handles the review keys. Returns the file to show next, when moving on to another one.
-    fn handle_keys(&mut self, ctx: &egui::Context, file: usize) -> Option<String> {
+    /// Handles the review keys. Returns what the editor should show then.
+    fn handle_keys(&mut self, ctx: &egui::Context, file: usize, buffer: Option<&mut Buffer>) -> Option<Outcome> {
         if ctx.memory(|m| m.focused().is_some()) {
             return None;
         }
+        // undoing works also when the text doesn't have the keyboard, as after a revert
+        if let Some(buffer) = buffer {
+            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)) {
+                buffer.redo();
+            } else if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)) {
+                buffer.undo();
+            }
+        }
         let pressed = |key| ctx.input(|i| i.modifiers.is_none() && i.key_pressed(key));
         if pressed(Key::N) {
-            return self.next(file);
+            return self.next(file).map(Outcome::Show);
         }
         let count = self.files[file].diff.hunks.len();
         if count == 0 {
             let reviewed = !self.files[file].file_staged;
             if pressed(Key::Space) {
                 self.stage_file(file, reviewed);
-                return if reviewed { self.next(file) } else { None };
+                return if reviewed { self.next(file).map(Outcome::Show) } else { None };
             }
             return None;
         }
@@ -412,7 +556,11 @@ impl Review {
             self.select(file, current - 1);
         }
         if pressed(Key::Space) {
-            return self.toggle_reviewed(file, current);
+            return self.toggle_reviewed(file, current).map(Outcome::Show);
+        }
+        if pressed(Key::O) {
+            let diff = &self.files[file].diff;
+            return Some(Outcome::Open { path: diff.path.clone(), line: place_in_file(&diff.hunks[current], None) });
         }
         None
     }
@@ -454,9 +602,9 @@ impl Review {
         clicked
     }
 
-    /// Shows the changes of one file, taking the review keys when `active`. Comments and
-    /// questions go to one of the `agents`.
-    pub fn ui(&mut self, ui: &mut egui::Ui, path: Option<&str>, active: bool, agents: &[Agent]) -> Option<Outcome> {
+    /// Shows the changes of one file, as its text that is edited as in its tab, taking the
+    /// review keys when `active`. Comments and questions go to one of the `agents`.
+    pub fn ui(&mut self, ui: &mut egui::Ui, path: Option<&str>, active: bool, agents: &[Agent], open_files: &mut OpenFiles) -> Option<Outcome> {
         let Some(path) = path else {
             ui.centered_and_justified(|ui| ui.weak("Choose a file under Changes to review it"));
             return None;
@@ -465,15 +613,22 @@ impl Review {
             ui.centered_and_justified(|ui| ui.weak(format!("No changes in {path}")));
             return None;
         };
-        let mut next = if active { self.handle_keys(ui.ctx(), index) } else { None };
-        let mut outcome = None;
+        let diff = &self.files[index].diff;
+        let mut file_text = if diff.binary { Err("Binary file") } else { open_files.text(path, diff.status == FileStatus::Deleted) };
+        let mut next = None;
+        let mut outcome = if active { self.handle_keys(ui.ctx(), index, file_text.as_mut().ok().map(|(buffer, _)| &mut **buffer)) } else { None };
+        if let Ok((buffer, _)) = &file_text {
+            if !self.texts.contains_key(path) {
+                let text = FileText::load(&self.repo, &self.files[index].diff);
+                self.texts.insert(path.to_string(), text);
+            }
+            let editing = self.views.get(path).is_some_and(|view| view.editor.is_active());
+            self.follow_edits(index, buffer, editing);
+        }
         let (done, total) = self.progress_of(path);
-        let Self { repo, files, views, texts, error, comments, .. } = self;
+        let Self { files, views, texts, error, comments, .. } = self;
         let file = &files[index];
-        let text = texts.entry(path.to_string()).or_insert_with(|| FileText::new(&repo.root, &file.diff));
         let view = views.entry(path.to_string()).or_default();
-        let gaps = gaps(&file.diff.hunks, text.new.lines.len());
-        view.expanded.resize(gaps.len(), false);
 
         let mut mark_file = None;
         let unsent = comments.iter().filter(|comment| !comment.sent).count();
@@ -496,43 +651,72 @@ impl Review {
         if let Some(error) = error {
             ui.colored_label(ui.visuals().error_fg_color, error.as_str());
         }
-        ui.add_space(4.0);
-        let draft = if view.selection.is_some() { egui::Panel::bottom(("draft", path)).show(ui, |ui| draft_ui(ui, egui::Id::unique(("draft", path)), view, agents)).inner } else { None };
-        let file_comments: Vec<(usize, &Comment)> = comments.iter().enumerate().filter(|(_, comment)| comment.path == path).collect();
-        let (clicked, lines) = egui::ScrollArea::both()
-            .id_salt(path)
-            .auto_shrink(false)
-            .show(ui, |ui| {
-                if file.diff.binary {
-                    ui.weak("Binary file");
+        let mut shown = None;
+        match &mut file_text {
+            Ok(_) if file.diff.hunks.is_empty() => {
+                ui.add_space(4.0);
+                ui.weak("No changes left");
+            }
+            Ok((buffer, highlighter)) => {
+                let text = &texts[path];
+                view.editor.find_ui(ui, buffer);
+                ui.add_space(4.0);
+                let draft = if view.selection.is_some() { egui::Panel::bottom(("draft", path)).show(ui, |ui| draft_ui(ui, egui::Id::unique(("draft", path)), view, agents)).inner } else { None };
+                let file_comments: Vec<(usize, &Comment)> = comments.iter().enumerate().filter(|(_, comment)| comment.path == path).collect();
+                let revision = buffer.revision();
+                let (clicked, lines) = egui::ScrollArea::both()
+                    .id_salt(path)
+                    .auto_shrink(false)
+                    .show(ui, |ui| rows_ui(ui, path, file, text, view, &file_comments, buffer, highlighter.as_deref_mut()))
+                    .inner;
+                if buffer.revision() != revision {
+                    // the changes are found again for the text as it is now
+                    ui.ctx().request_repaint();
                 }
-                rows_ui(ui, file, text, &gaps, view, &file_comments)
-            })
-            .inner;
-        view.scroll_to_current = false;
-        match draft {
-            Some(Draft::Comment) if !lines.is_empty() => {
-                comments.push(Comment::new(path, lines, &file_lines(&text.content, &file.diff), &view.draft));
-                view.draft.clear();
-                view.selection = None;
+                view.scroll_to_current = false;
+                let mut revert = None;
+                match draft {
+                    Some(Draft::Comment) if !lines.is_empty() => {
+                        comments.push(Comment::new(path, lines, &file_lines(&text.work_lines, &file.diff), &view.draft));
+                        view.draft.clear();
+                        view.selection = None;
+                    }
+                    Some(Draft::Ask(terminal)) if !lines.is_empty() => {
+                        outcome = Some(Outcome::Send { terminal, text: comments::quote(path, &lines, &view.draft) });
+                        view.draft.clear();
+                        view.selection = None;
+                    }
+                    Some(Draft::Revert) => {
+                        let hunk_lines = file.diff.hunks.iter().enumerate().flat_map(|(h, hunk)| hunk.lines.iter().enumerate().map(move |(i, line)| ((h, i), line)));
+                        revert = Some(hunk_lines.filter(|(_, line)| lines.contains(line)).map(|(at, _)| at).collect::<HashSet<_>>());
+                        view.selection = None;
+                    }
+                    Some(Draft::Cancel) => view.selection = None,
+                    _ => {}
+                }
+                shown = Some((clicked, revert, buffer));
             }
-            Some(Draft::Ask(terminal)) if !lines.is_empty() => {
-                outcome = Some(Outcome::Send { terminal, text: comments::quote(path, &lines, &view.draft) });
-                view.draft.clear();
-                view.selection = None;
+            Err(message) => {
+                ui.add_space(4.0);
+                ui.weak(*message);
             }
-            Some(Draft::Cancel) => view.selection = None,
-            _ => {}
         }
-        match clicked {
-            Some(Clicked::Row(hunk)) => self.make_current(index, hunk),
-            Some(Clicked::Hunk(hunk)) => next = self.toggle_reviewed(index, hunk),
-            Some(Clicked::Line(hunk, line)) => self.toggle_line(index, hunk, line),
-            Some(Clicked::DeleteComment(comment)) => {
-                self.comments.remove(comment);
-                self.view(index).selection = None;
+        if let Some((clicked, revert, buffer)) = shown {
+            if let Some(revert) = revert {
+                self.revert(index, buffer, |h, i| revert.contains(&(h, i)));
             }
-            None => {}
+            match clicked {
+                Some(Clicked::Row(hunk)) => self.make_current(index, hunk),
+                Some(Clicked::Hunk(hunk)) => next = self.toggle_reviewed(index, hunk),
+                Some(Clicked::Line(hunk, line)) => self.toggle_line(index, hunk, line),
+                Some(Clicked::DeleteComment(comment)) => {
+                    self.comments.remove(comment);
+                    self.view(index).selection = None;
+                }
+                Some(Clicked::Revert(hunk)) => self.revert(index, buffer, |h, _| h == hunk),
+                Some(Clicked::Open(line)) => outcome = Some(Outcome::Open { path: path.to_string(), line }),
+                None => {}
+            }
         }
         if let Some(reviewed) = mark_file {
             self.set_reviewed(path, reviewed);
@@ -549,6 +733,8 @@ enum Draft {
     Comment,
     /// Ask the agent in a terminal to act on it right away.
     Ask(u64),
+    /// Take the selected changes back to how they were committed.
+    Revert,
     Cancel,
 }
 
@@ -571,6 +757,9 @@ fn draft_ui(ui: &mut egui::Ui, id: egui::Id, view: &mut View, agents: &[Agent]) 
         }
         if let Some(terminal) = send_button(ui, "Ask agent", ready, agents) {
             draft = Some(Draft::Ask(terminal));
+        }
+        if ui.button("Revert").on_hover_text("Take the selected changes back to how they were committed").clicked() {
+            draft = Some(Draft::Revert);
         }
         if ui.button("Cancel").on_hover_text("Esc").clicked() || ((focused || response.lost_focus()) && ui.input(|i| i.key_pressed(Key::Escape))) {
             draft = Some(Draft::Cancel);
@@ -649,45 +838,37 @@ fn file_lines(content: &[String], diff: &FileDiff) -> Vec<DiffLine> {
 }
 
 impl FileText {
-    /// The text of a changed file as it is now and as it was. Where the diff doesn't hold the
-    /// unchanged lines, they are taken from the file on disk.
-    fn new(root: &Path, diff: &FileDiff) -> Self {
-        let path = root.join(&diff.path);
-        let content = read_lines(root, diff);
-        let lines = file_lines(&content, diff);
-        let side = |has: fn(&DiffLine) -> bool| Side::new(&path, &lines.iter().filter(|line| has(line)).map(|line| line.text.as_str()).collect::<Vec<_>>());
-        let (new, old) = (side(|line| line.new_no.is_some()), side(|line| line.old_no.is_some()));
-        let changed = diff.hunks.iter().map(|hunk| changed_in_lines(hunk, &new, &old)).collect();
-        let longest = new.lines.iter().chain(&old.lines).map(|line| line.chars().count()).max().unwrap_or(0);
-        Self { content, new, old, changed, longest }
+    /// The committed and staged versions of a changed file; its text as edited is taken over
+    /// once shown.
+    fn load(repo: &Repo, diff: &FileDiff) -> Self {
+        let head = repo.committed(&diff.path);
+        let old: Vec<String> = head.as_deref().unwrap_or_default().lines().map(str::to_string).collect();
+        let path = repo.root.join(&diff.path);
+        let mut text = Self {
+            head,
+            old: Side { spans: Highlighter::spans_of(&path, &old), lines: old },
+            index: Vec::new(),
+            staged_removals: HashSet::new(),
+            missing: !path.exists(),
+            work: String::new(),
+            work_lines: Vec::new(),
+            revision: None,
+            changed: Vec::new(),
+            longest: 0,
+        };
+        text.set_index(&repo.staged(&diff.path).unwrap_or_default());
+        text
     }
 
-    /// A row of the diff for a line of the old or the new file.
-    fn row<'a>(&'a self, line: &DiffLine, changed: &'a [Range<usize>]) -> Line<'a> {
-        let side = if line.kind == LineKind::Removed { &self.old } else { &self.new };
-        let (text, spans) = side.line(if line.kind == LineKind::Removed { line.old_no } else { line.new_no });
-        Line { kind: line.kind, old_no: line.old_no, new_no: line.new_no, text, spans, changed }
+    /// Takes over the staged version, so that what is staged is found again.
+    fn set_index(&mut self, staged: &str) {
+        self.index = staged.lines().map(str::to_string).collect();
+        self.staged_removals = line_diff::diff(&self.old.lines, &self.index).iter().flat_map(|hunk| &hunk.lines).filter_map(|line| line.old_no).collect();
+        self.revision = None;
     }
 }
 
 impl Side {
-    fn new(path: &Path, lines: &[&str]) -> Self {
-        let mut lines: Vec<String> = lines.iter().map(|line| expand_tabs(line)).collect();
-        // colored before being cut, so that what comes after a cut is colored as it should
-        let mut spans = Highlighter::spans_of(path, &lines);
-        for (line, spans) in lines.iter_mut().zip(&mut spans) {
-            if let Some((cut, _)) = line.char_indices().nth(MAX_LINE_CHARS) {
-                line.truncate(cut);
-                line.push('…');
-                spans.retain(|(range, _)| range.start < cut);
-                for (range, _) in spans.iter_mut() {
-                    range.end = range.end.min(cut);
-                }
-            }
-        }
-        Self { lines, spans }
-    }
-
     /// The text of a line by its number, and the parts of it to color.
     fn line(&self, number: Option<u32>) -> (&str, &[(Range<usize>, &'static str)]) {
         let index = number.and_then(|number| (number as usize).checked_sub(1)).unwrap_or(usize::MAX);
@@ -695,9 +876,11 @@ impl Side {
     }
 }
 
-/// The parts that changed within each line of a hunk. Removed lines are compared with the
-/// added lines that follow them, the first with the first and so on.
-fn changed_in_lines(hunk: &Hunk, new: &Side, old: &Side) -> Vec<Ranges> {
+/// The parts that changed within each line of a hunk between the `old` and the `new` lines.
+/// Removed lines are compared with the added lines that follow them, the first with the first
+/// and so on.
+fn changed_in_lines(hunk: &Hunk, old: &[String], new: &[String]) -> Vec<Ranges> {
+    let line = |lines: &[String], number: Option<u32>| number.and_then(|number| lines.get(number as usize - 1)).map_or(String::new(), String::clone);
     let lines = &hunk.lines;
     let mut changed = vec![Vec::new(); lines.len()];
     let mut at = 0;
@@ -706,7 +889,7 @@ fn changed_in_lines(hunk: &Hunk, new: &Side, old: &Side) -> Vec<Ranges> {
         let added = lines[at + removed..].iter().take_while(|line| line.kind == LineKind::Added).count();
         for i in 0..removed.min(added) {
             let (r, a) = (at + i, at + removed + i);
-            if let Some((in_old, in_new)) = word_diff::changed_ranges(old.line(lines[r].old_no).0, new.line(lines[a].new_no).0) {
+            if let Some((in_old, in_new)) = word_diff::changed_ranges(&line(old, lines[r].old_no), &line(new, lines[a].new_no)) {
                 (changed[r], changed[a]) = (in_old, in_new);
             }
         }
@@ -794,17 +977,6 @@ fn rows(gaps: &[Gap], hunks: &[Hunk], expanded: &[bool], comments: &[CommentRows
     (rows, starts)
 }
 
-/// A row of a diff.
-struct Line<'a> {
-    kind: LineKind,
-    old_no: Option<u32>,
-    new_no: Option<u32>,
-    text: &'a str,
-    spans: &'a [(Range<usize>, &'static str)],
-    /// The parts that changed within the line.
-    changed: &'a [Range<usize>],
-}
-
 /// The width of the reviewed marks, the comment mark, the line numbers and the sign in front
 /// of the code, in digits.
 const GUTTER_DIGITS: usize = 21;
@@ -812,7 +984,13 @@ const GUTTER_DIGITS: usize = 21;
 /// Where the comment mark is in the gutter, in digits.
 const COMMENT_MARK: f32 = 4.4;
 
-/// A mark in the gutter that was clicked.
+/// The line of the file, numbered from 0, that a line of a hunk is at; for a removed line, or
+/// none, where the hunk is.
+fn place_in_file(hunk: &Hunk, line: Option<&DiffLine>) -> usize {
+    line.and_then(|line| line.new_no).unwrap_or(hunk.ranges().1.start) as usize - 1
+}
+
+/// What was done on the rows.
 enum Clicked {
     /// A hunk, which becomes the current one.
     Row(usize),
@@ -822,20 +1000,32 @@ enum Clicked {
     Line(usize, usize),
     /// The mark that deletes a comment.
     DeleteComment(usize),
+    Revert(usize),
+    /// Show a line, numbered from 0, in a file tab.
+    Open(usize),
 }
 
-/// Shows the rows of a file with the `comments` on it as one piece of code, drawing only the
-/// ones in sight, and lets rows be selected to comment on. Returns the mark that was clicked
-/// and the lines selected, with the ones folded away between them.
-fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], view: &mut View, comments: &[(usize, &Comment)]) -> (Option<Clicked>, Vec<DiffLine>) {
+/// Shows the rows of a file with the `comments` on it: the lines of its text, edited as in its
+/// tab, with the removed lines between them. Only the rows in sight are drawn. Rows are
+/// selected to comment on from the gutter. Returns what was clicked and the lines selected,
+/// with the ones folded away between them.
+#[allow(clippy::too_many_arguments)]
+fn rows_ui(ui: &mut egui::Ui, path: &str, file: &FileReview, text: &FileText, view: &mut View, comments: &[(usize, &Comment)], buffer: &mut Buffer, highlighter: Option<&mut Highlighter>) -> (Option<Clicked>, Vec<DiffLine>) {
     let hunks = &file.diff.hunks;
+    let gaps = gaps(hunks, text.work_lines.len());
+    view.expanded.resize(gaps.len(), false);
     let ends: Vec<CommentRows> = comments
         .iter()
         .map(|&(index, comment)| CommentRows { kind: comment.last_line().kind, number: comment.last_line().number(), comment: index, rows: comment.text.lines().count().max(1) })
         .collect();
-    let (rows, starts) = rows(gaps, hunks, &view.expanded, &ends);
+    let (mut rows, starts) = rows(&gaps, hunks, &view.expanded, &ends);
+    if buffer.lines().len() > text.work_lines.len() && !gaps.is_empty() {
+        // the empty line after the line break at the end, where the text can go on
+        rows.push(Row::Unchanged(gaps.len() - 1, buffer.lines().len()));
+    }
     let style = CodeStyle::new(ui);
     let (row_height, digit) = (style.row_height, style.digit_width);
+    let dark = ui.visuals().dark_mode;
     let width = digit * (GUTTER_DIGITS + text.longest + 2) as f32;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width().max(width), row_height * rows.len() as f32), Sense::click_and_drag());
     let row_at = |index: usize| egui::Rect::from_min_size(egui::pos2(rect.left(), rect.top() + row_height * index as f32), Vec2::new(rect.width(), row_height));
@@ -844,20 +1034,32 @@ fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], 
         // with a few lines above the hunk
         ui.scroll_to_rect(row_at(start.saturating_sub(3)), Some(Align::TOP));
     }
-    let mut clicked = None;
-    // a click on a hunk makes it the current one
-    if response.clicked()
-        && let Some(pointer) = response.interact_pointer_pos()
-        && let Some(Row::Hunk(hunk, _)) = rows.get(row_under(pointer.y))
-    {
-        clicked = Some(Clicked::Row(*hunk));
-    }
     let clip = ui.clip_rect();
     let first = ((clip.top() - rect.top()) / row_height).floor().max(0.0) as usize;
     let last = (((clip.bottom() - rect.top()) / row_height).ceil().max(0.0) as usize).min(rows.len());
     // the gutter stays at the left edge when the code scrolls sideways, and covers it
     let gutter_left = rect.left().max(clip.left());
     let column = |digits: f32, row: egui::Rect| egui::Rect::from_min_size(egui::pos2(gutter_left + digit * digits, row.top()), Vec2::splat(row_height));
+    let in_file = |number: usize| number <= text.work_lines.len();
+
+    // where the editor draws the lines of the text, with the parts changed within them marked
+    let mut editor_rows = Rows { of_line: vec![None; buffer.lines().len()], lines: vec![None; rows.len()], marks: HashMap::new() };
+    for (index, row) in rows.iter().enumerate() {
+        let line = match *row {
+            Row::Unchanged(_, number) => number - 1,
+            Row::Hunk(hunk, at) if hunks[hunk].lines[at].kind == LineKind::Added => {
+                let line = hunks[hunk].lines[at].new_no.unwrap_or_default() as usize - 1;
+                let mark = row_colors(LineKind::Added, dark).map_or(Color32::TRANSPARENT, |(_, mark)| fade(mark, file.staged[hunk][at]));
+                editor_rows.marks.insert(line, (text.changed[hunk][at].clone(), mark));
+                line
+            }
+            _ => continue,
+        };
+        if line < editor_rows.of_line.len() {
+            editor_rows.of_line[line] = Some(index);
+            editor_rows.lines[index] = Some(line);
+        }
+    }
 
     // dragging from the comment mark selects rows
     let is_line = |row: &Row| !matches!(row, Row::Comment(..));
@@ -878,6 +1080,43 @@ fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], 
     }
     let selected = view.selection.map(|(start, end)| start.min(end)..=start.max(end));
 
+    // under the text: the backgrounds of the changed lines, the removed lines and the comments
+    for (index, row) in rows.iter().enumerate().take(last).skip(first) {
+        let row_rect = row_at(index);
+        match *row {
+            Row::Hunk(hunk, at) => {
+                let line = &hunks[hunk].lines[at];
+                let mark = line_background(ui, row_rect, line.kind, file.staged[hunk][at]);
+                if line.kind == LineKind::Removed {
+                    let (code, spans) = text.old.line(line.old_no);
+                    let galley = ui.fonts_mut(|fonts| fonts.layout_job(highlight::layout_job(code, spans, &text.changed[hunk][at], mark, &style.font, style.text_color, dark)));
+                    ui.painter().galley(egui::pos2(rect.left() + digit * GUTTER_DIGITS as f32, row_rect.top() + 1.0), galley, style.text_color);
+                }
+            }
+            Row::Comment(index, line) => {
+                let Some((_, comment)) = comments.iter().find(|(at, _)| *at == index) else { continue };
+                comment_line_ui(ui, &style, egui::Rect::from_x_y_ranges(gutter_left..=clip.right(), row_rect.y_range()), comment, line);
+            }
+            Row::Unchanged(..) | Row::Folded(..) => {}
+        }
+        if selected.as_ref().is_some_and(|selected| selected.contains(&index)) {
+            ui.painter().rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.4));
+        }
+    }
+
+    let editing = view.editor.text_ui(ui, &format!("review {path}"), buffer, highlighter, rect, clip.intersect(rect), digit * GUTTER_DIGITS as f32, Some(&editor_rows));
+    // the cursor moved to a line folded away
+    let cursor = buffer.cursor().line;
+    if view.editor.is_active()
+        && editor_rows.of_line.get(cursor).is_some_and(Option::is_none)
+        && let Some(gap) = gaps.iter().position(|gap| gap.lines.contains(&(cursor + 1)))
+    {
+        view.expanded[gap] = true;
+        ui.ctx().request_repaint();
+    }
+
+    // over the text: the gutter and its marks
+    let mut clicked = None;
     let hovered = ui.input(|i| i.pointer.hover_pos()).filter(|pointer| rect.contains(*pointer) && clip.contains(*pointer)).map(|pointer| row_under(pointer.y));
     for (index, row) in rows.iter().enumerate().take(last).skip(first) {
         let row_rect = row_at(index);
@@ -890,15 +1129,13 @@ fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], 
                 }
             }
             Row::Unchanged(gap, number) => {
-                let (line, spans) = text.new.line(Some(number as u32));
-                let old_no = u32::try_from(number as isize + gaps[gap].old_offset).ok();
-                let line = Line { kind: LineKind::Context, old_no, new_no: Some(number as u32), text: line, spans, changed: &[] };
-                line_ui(ui, &style, row_rect, gutter_left, &line, false);
+                let numbers = (in_file(number).then(|| u32::try_from(number as isize + gaps[gap].old_offset).ok()).flatten(), in_file(number).then_some(number as u32));
+                line_gutter(ui, &style, row_rect, gutter_left, LineKind::Context, numbers, false);
             }
             Row::Hunk(hunk, at) => {
                 let line = &hunks[hunk].lines[at];
                 let staged = file.staged[hunk][at];
-                line_ui(ui, &style, row_rect, gutter_left, &text.row(line, &text.changed[hunk][at]), staged);
+                line_gutter(ui, &style, row_rect, gutter_left, line.kind, (line.old_no, line.new_no), staged);
                 if hunk == view.current {
                     let bar = egui::Rect::from_min_size(egui::pos2(gutter_left, row_rect.top()), Vec2::new(3.0, row_height));
                     ui.painter().rect_filled(bar, 0.0, ui.visuals().selection.stroke.color);
@@ -923,16 +1160,10 @@ fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], 
                 }
             }
             Row::Comment(index, line) => {
-                let Some((_, comment)) = comments.iter().find(|(at, _)| *at == index) else { continue };
-                let visible = egui::Rect::from_x_y_ranges(gutter_left..=clip.right(), row_rect.y_range());
-                comment_line_ui(ui, &style, visible, comment, line);
                 if line == 0 && delete_mark_ui(ui, column(0.5, row_rect), response.id.with(("delete comment", index))) {
                     clicked = Some(Clicked::DeleteComment(index));
                 }
             }
-        }
-        if selected.as_ref().is_some_and(|selected| selected.contains(&index)) {
-            ui.painter().rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.4));
         }
         if hovered == Some(index) && !view.selecting && matches!(row, Row::Unchanged(..) | Row::Hunk(..)) && comment_mark_ui(ui, column(COMMENT_MARK, row_rect), response.id.with(("comment", index))) {
             let shift = ui.input(|i| i.modifiers.shift);
@@ -943,41 +1174,74 @@ fn rows_ui(ui: &mut egui::Ui, file: &FileReview, text: &FileText, gaps: &[Gap], 
             view.focus_draft = true;
         }
     }
+
+    // a click on a hunk, in the gutter or in the text, makes it the current one
+    let pointer_row = || ui.input(|i| i.pointer.interact_pos()).map(|pointer| row_under(pointer.y));
+    if clicked.is_none()
+        && (response.clicked() || editing.clicked())
+        && let Some(&Row::Hunk(hunk, _)) = pointer_row().and_then(|row| rows.get(row))
+    {
+        clicked = Some(Clicked::Row(hunk));
+    }
+    let menu = response.union(editing);
+    if menu.secondary_clicked() {
+        view.menu_row = pointer_row();
+    }
+    menu.context_menu(|ui| {
+        let mut item = |label: &str, then: Clicked| {
+            if ui.button(label).clicked() {
+                clicked = Some(then);
+            }
+        };
+        match view.menu_row.and_then(|row| rows.get(row)) {
+            Some(&Row::Hunk(hunk, at)) => {
+                item("Revert", Clicked::Revert(hunk));
+                item("Open in file (o)", Clicked::Open(place_in_file(&hunks[hunk], Some(&hunks[hunk].lines[at]))));
+            }
+            Some(&Row::Unchanged(_, number)) => item("Open in file", Clicked::Open(number - 1)),
+            _ => ui.close(),
+        }
+    });
+
     let selected = view.selection.and_then(|(start, end)| rows.get(start.min(end)..=start.max(end)));
     let lines = selected.unwrap_or_default().iter().flat_map(|row| match *row {
-        Row::Unchanged(gap, number) => vec![unchanged_line(&text.content, &gaps[gap], number)],
-        Row::Folded(gap, _) => folded(gaps, hunks.len(), gap).unwrap_or_default().map(|number| unchanged_line(&text.content, &gaps[gap], number)).collect(),
+        Row::Unchanged(gap, number) => vec![unchanged_line(&text.work_lines, &gaps[gap], number)],
+        Row::Folded(gap, _) => folded(&gaps, hunks.len(), gap).unwrap_or_default().map(|number| unchanged_line(&text.work_lines, &gaps[gap], number)).collect(),
         Row::Hunk(hunk, at) => vec![hunks[hunk].lines[at].clone()],
         Row::Comment(..) => Vec::new(),
     });
     (clicked, lines.collect())
 }
 
-/// Draws a line of code with its gutter of line numbers at `gutter_left`. The colors of a
-/// reviewed line are faded, to keep the focus on what is left.
-fn line_ui(ui: &egui::Ui, style: &CodeStyle, row: egui::Rect, gutter_left: f32, line: &Line, reviewed: bool) {
-    let painter = ui.painter();
-    let dark = ui.visuals().dark_mode;
-    let fade = |color: Color32| if reviewed { color.gamma_multiply(0.4) } else { color };
-    let colors = row_colors(line.kind, dark).map(|(bg, mark)| (fade(bg), fade(mark)));
-    if let Some((bg, _)) = colors {
-        painter.rect_filled(row, 0.0, bg);
-    }
-    let mark = colors.map_or(Color32::TRANSPARENT, |(_, mark)| mark);
-    let job = highlight::layout_job(line.text, line.spans, line.changed, mark, &style.font, style.text_color, dark);
-    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-    let digit = style.digit_width;
-    painter.galley(egui::pos2(row.left() + digit * GUTTER_DIGITS as f32, row.top() + 1.0), galley, style.text_color);
+/// A color faded when the line it is for is reviewed, to keep the focus on what is left.
+fn fade(color: Color32, reviewed: bool) -> Color32 {
+    if reviewed { color.gamma_multiply(0.4) } else { color }
+}
 
+/// Paints the background of a row of a line. Returns the color that marks the parts that
+/// changed within the line.
+fn line_background(ui: &egui::Ui, row: egui::Rect, kind: LineKind, reviewed: bool) -> Color32 {
+    match row_colors(kind, ui.visuals().dark_mode) {
+        Some((bg, mark)) => {
+            ui.painter().rect_filled(row, 0.0, fade(bg, reviewed));
+            fade(mark, reviewed)
+        }
+        None => Color32::TRANSPARENT,
+    }
+}
+
+/// Draws the gutter of a row of a line at `gutter_left`: its old and new numbers, and the sign
+/// of its change.
+fn line_gutter(ui: &egui::Ui, style: &CodeStyle, row: egui::Rect, gutter_left: f32, kind: LineKind, (old_no, new_no): (Option<u32>, Option<u32>), reviewed: bool) {
+    let painter = ui.painter();
+    let digit = style.digit_width;
     let gutter = egui::Rect::from_min_size(egui::pos2(gutter_left, row.top()), Vec2::new(digit * (GUTTER_DIGITS - 1) as f32, row.height()));
     painter.rect_filled(gutter, 0.0, ui.visuals().panel_fill);
-    if let Some((bg, _)) = colors {
-        painter.rect_filled(gutter, 0.0, bg);
-    }
+    line_background(ui, gutter, kind, reviewed);
     let y = row.top() + 1.0;
-    style.number(painter, gutter_left + digit * 12.0, y, line.old_no);
-    style.number(painter, gutter_left + digit * 17.0, y, line.new_no);
-    let sign = match line.kind {
+    style.number(painter, gutter_left + digit * 12.0, y, old_no);
+    style.number(painter, gutter_left + digit * 17.0, y, new_no);
+    let sign = match kind {
         LineKind::Context => " ",
         LineKind::Added => "+",
         LineKind::Removed => "-",
@@ -1069,6 +1333,7 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
+    use std::fs;
     use std::process::Command;
 
     use super::*;
@@ -1124,7 +1389,7 @@ diff --git a/b.txt b/b.txt
         // the last hunk of a file moves on to the next file
         assert_eq!(review.toggle_reviewed(0, 1), Some("b.txt".to_string()));
         assert_eq!((review.progress_of("a.txt"), review.view(0).current), ((4, 4), 1));
-        assert!(review.take_staged_changed());
+        assert!(review.take_changed());
 
         // what is staged is what is reviewed
         refresh(&mut review);
@@ -1158,8 +1423,7 @@ diff --git a/b.txt b/b.txt
         let (mut review, _dir) = review("runs", &[("a.txt", TEN, "1\ntwo\n3\nfour\n5\n6\n7\n8\n9\n10\n")]);
         assert_eq!(review.files[0].diff.hunks.len(), 2);
         review.toggle_line(0, 1, 0);
-        let mut harness = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(|ui, review: &mut Review| { review.ui(ui, Some("a.txt"), true, &[]); }, review);
-        harness.run();
+        let mut harness = show(review, Some("a.txt"), 600.0);
         // a hunk with only some of its lines reviewed shows the marks of its lines
         assert_eq!(harness.query_all_by_label("Reviewed").count(), 2);
         assert_eq!(harness.query_all_by_label("Reviewed line").count(), 2);
@@ -1168,27 +1432,39 @@ diff --git a/b.txt b/b.txt
         assert_eq!(harness.query_all_by_label("Reviewed line").count(), 3);
     }
 
-    /// A review of a.txt, in which the line 2 is replaced, shown with an agent to send to. Keeps
-    /// what the review asked for last.
-    fn comment_harness(name: &str) -> (Harness<'static, (Review, Option<Outcome>)>, TempDir) {
-        let (review, dir) = review(name, &[("a.txt", TEN, &TEN.replace("2\n", "two\n"))]);
-        let show = |ui: &mut egui::Ui, (review, outcome): &mut (Review, Option<Outcome>)| {
-            if let Some(asked) = review.ui(ui, Some("a.txt"), true, &[(1, "agent".to_string())]) {
-                *outcome = Some(asked);
+    /// A review shown in a tab with the texts of the files it edits. Keeps what it asked for last.
+    struct Shown {
+        review: Review,
+        files: OpenFiles,
+        asked: Option<Outcome>,
+    }
+
+    /// Shows the review of a file in a window of the given height, with an agent to send to.
+    fn show(review: Review, path: Option<&'static str>, height: f32) -> Harness<'static, Shown> {
+        let files = OpenFiles::new(review.repo.root.clone());
+        let ui = move |ui: &mut egui::Ui, shown: &mut Shown| {
+            if let Some(asked) = shown.review.ui(ui, path, true, &[(1, "agent".to_string())], &mut shown.files) {
+                shown.asked = Some(asked);
             }
         };
-        let mut harness = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(show, (review, None));
+        let mut harness = Harness::builder().with_size(egui::vec2(800.0, height)).build_ui_state(ui, Shown { review, files, asked: None });
         harness.run();
-        (harness, dir)
+        harness
+    }
+
+    /// A review of a.txt, in which the line 2 is replaced.
+    fn comment_harness(name: &str) -> (Harness<'static, Shown>, TempDir) {
+        let (review, dir) = review(name, &[("a.txt", TEN, &TEN.replace("2\n", "two\n"))]);
+        (show(review, Some("a.txt"), 600.0), dir)
     }
 
     /// The middle of a row of the review, by how far below the first line of the hunk it is.
-    fn row_center(harness: &Harness<'_, (Review, Option<Outcome>)>, below_hunk: f32) -> egui::Pos2 {
+    fn row_center(harness: &Harness<'_, Shown>, below_hunk: f32) -> egui::Pos2 {
         let mark = harness.get_by_label("Reviewed").rect();
         mark.center() + egui::vec2(300.0, below_hunk * mark.height())
     }
 
-    fn comment_on_row(harness: &mut Harness<'_, (Review, Option<Outcome>)>, below_hunk: f32, text: &str) {
+    fn comment_on_row(harness: &mut Harness<'_, Shown>, below_hunk: f32, text: &str) {
         harness.event(egui::Event::PointerMoved(row_center(harness, below_hunk)));
         harness.run();
         harness.get_by_label("Comment on this line").click();
@@ -1204,17 +1480,17 @@ diff --git a/b.txt b/b.txt
         comment_on_row(&mut harness, 1.0, "Use 2");
         harness.get_by_label("Comment").click();
         harness.run();
-        let comments = harness.state().0.comments().to_vec();
+        let comments = harness.state().review.comments().to_vec();
         assert_eq!(comments.iter().map(|comment| (comment.lines[0].text.as_str(), comment.text.as_str())).collect::<Vec<_>>(), [("two", "Use 2")]);
         harness.get_by_label("Delete comment");
 
         // other changes leave it, a change of its line takes it away
         dir.write("a.txt", TEN.replace("2\n", "two\n").replace("9\n", "nine\n"));
-        refresh(&mut harness.state_mut().0);
-        assert_eq!(harness.state().0.comments().len(), 1);
+        refresh(&mut harness.state_mut().review);
+        assert_eq!(harness.state().review.comments().len(), 1);
         dir.write("a.txt", TEN.replace("2\n", "TWO\n"));
-        refresh(&mut harness.state_mut().0);
-        assert!(harness.state().0.comments().is_empty());
+        refresh(&mut harness.state_mut().review);
+        assert!(harness.state().review.comments().is_empty());
     }
 
     #[test]
@@ -1224,8 +1500,8 @@ diff --git a/b.txt b/b.txt
         harness.get_by_label("Ask agent").click();
         harness.run();
         let text = "@a.txt, removed line 2 of the committed version\n```diff\n-2\n```\nWhy?".to_string();
-        assert_eq!(harness.state().1, Some(Outcome::Send { terminal: 1, text }));
-        assert!(harness.state().0.comments().is_empty());
+        assert_eq!(harness.state().asked, Some(Outcome::Send { terminal: 1, text }));
+        assert!(harness.state().review.comments().is_empty());
         assert!(harness.query_by_label("Ask agent").is_none());
     }
 
@@ -1247,15 +1523,109 @@ diff --git a/b.txt b/b.txt
         harness.event(egui::Event::Text("Simpler".to_string()));
         harness.key_press_modifiers(egui::Modifiers::COMMAND, Key::Enter);
         harness.run();
-        let comment = harness.state().0.comments()[0].clone();
+        let comment = harness.state().review.comments()[0].clone();
         assert_eq!(comment.lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(), ["1", "2", "two"]);
 
         harness.get_by_label("Send 1 comment").click();
         harness.run();
         let text = format!("Please address these review comments on the uncommitted changes:\n\n{}", comments::quote("a.txt", &comment.lines, "Simpler"));
-        assert_eq!(harness.state().1, Some(Outcome::Send { terminal: 1, text }));
-        assert!(harness.state().0.comments()[0].sent);
+        assert_eq!(harness.state().asked, Some(Outcome::Send { terminal: 1, text }));
+        assert!(harness.state().review.comments()[0].sent);
         assert!(harness.query_by_label("Send 1 comment").is_none());
+    }
+
+    /// Presses the primary or the secondary button of the pointer at a place.
+    fn click_at(harness: &mut Harness<'_, Shown>, pos: egui::Pos2, button: egui::PointerButton) {
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
+            harness.run();
+        }
+    }
+
+    #[test]
+    fn edits_the_file_anywhere_and_shows_what_changed_as_it_is_typed() {
+        let (mut harness, dir) = comment_harness("edit");
+        harness.state_mut().review.toggle_reviewed(0, 0);
+        // at the end of the unchanged line after the hunk, as in a file tab; the review keys
+        // are typed there
+        let pos = row_center(&harness, 2.0);
+        click_at(&mut harness, pos, egui::PointerButton::Primary);
+        harness.event(egui::Event::Text("j".to_string()));
+        harness.run();
+        harness.run();
+        let review = &harness.state().review;
+        let shown: Vec<(LineKind, &str, bool)> = review.files[0].diff.hunks[0].lines.iter().zip(&review.files[0].staged[0]).map(|(line, staged)| (line.kind, line.text.as_str(), *staged)).collect();
+        // what was reviewed stays so, the new change is not
+        assert_eq!(shown, [(LineKind::Removed, "2", true), (LineKind::Removed, "3", false), (LineKind::Added, "two", true), (LineKind::Added, "3j", false)]);
+        harness.state_mut().files.save_all();
+        assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), TEN.replace("2\n3\n", "two\n3j\n"));
+
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        harness.run();
+        assert_eq!(harness.state().review.files[0].diff.hunks[0].lines.len(), 2);
+        // the editor takes the code, the gutter is left to its marks
+        let (mark, editor) = (harness.get_by_label("Reviewed").rect(), harness.get_by_label("Editor").rect());
+        assert!(editor.top() <= mark.top() && editor.bottom() >= mark.bottom() && editor.left() > mark.right(), "{editor:?} by {mark:?}");
+    }
+
+    #[test]
+    fn opens_the_place_of_a_change_in_the_file() {
+        let (mut harness, _dir) = comment_harness("open");
+        harness.key_press(Key::O);
+        harness.run();
+        assert_eq!(harness.state().asked, Some(Outcome::Open { path: "a.txt".to_string(), line: 1 }));
+    }
+
+    #[test]
+    fn reverts_a_hunk_from_its_menu_or_the_selected_lines_and_undoes_it() {
+        let (mut harness, dir) = comment_harness("revert");
+        let text = |harness: &mut Harness<'_, Shown>| harness.state_mut().files.text("a.txt", false).unwrap().0.text();
+        let pos = row_center(&harness, 1.0);
+        click_at(&mut harness, pos, egui::PointerButton::Secondary);
+        harness.get_by_label("Revert").click();
+        harness.run();
+        assert_eq!(text(&mut harness), TEN);
+        harness.run();
+        harness.get_by_label("No changes left");
+        // undone also when the text doesn't have the keyboard
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        assert_eq!(text(&mut harness), TEN.replace("2\n", "two\n"));
+
+        // only the added line of a reviewed hunk: the removal stays, and stays staged
+        let Shown { review, files, .. } = harness.state_mut();
+        review.toggle_reviewed(0, 0);
+        review.revert(0, files.text("a.txt", false).unwrap().0, |_, i| i == 1);
+        files.save_all();
+        assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), TEN.replace("2\n", ""));
+        refresh(review);
+        assert_eq!(review.progress(), (1, 1));
+    }
+
+    #[test]
+    fn a_deleted_file_shows_its_lines_and_comes_back_when_typed_into() {
+        let (mut review, dir) = review("deleted", &[("a.txt", "one\n", "one\n")]);
+        fs::remove_file(dir.path().join("a.txt")).unwrap();
+        refresh(&mut review);
+        let mut harness = show(review, Some("a.txt"), 600.0);
+        assert_eq!(harness.state().review.progress(), (0, 1));
+        // the empty line after the removed one
+        let pos = row_center(&harness, 1.0);
+        click_at(&mut harness, pos, egui::PointerButton::Primary);
+        harness.event(egui::Event::Text("two".to_string()));
+        harness.run();
+        harness.state_mut().files.save_all();
+        assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "two");
+    }
+
+    #[test]
+    fn shows_the_hunk_nearest_to_a_line() {
+        let (mut review, _dir) = review("show-line", TREE);
+        review.show_line("src/a.txt", 6);
+        assert_eq!(review.view(review.by_path["src/a.txt"]).current, 1);
+        review.show_line("src/a.txt", 3);
+        assert_eq!(review.view(review.by_path["src/a.txt"]).current, 0);
     }
 
     #[test]
@@ -1339,26 +1709,16 @@ diff --git a/b.txt b/b.txt
 
     #[test]
     fn colors_both_sides_and_marks_what_changed_within_lines() {
-        let dir = TempDir::new("text");
-        dir.write("a.rs", "fn main() {\n    let x = 2;\n}\n");
-        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -2 +2 @@\n-    let y = 1;\n+    let x = 2;\n";
-        let text = FileText::new(dir.path(), &git::parse_diff(diff)[0]);
+        let new = "fn main() {\n    let x = 2;\n}\n";
+        let (mut review, _dir) = review("text", &[("a.rs", "fn main() {\n    let y = 1;\n}\n", new)]);
+        let text = FileText::load(&review.repo, &review.files[0].diff);
+        review.texts.insert("a.rs".to_string(), text);
+        review.follow_edits(0, &Buffer::new(new), false);
+        let text = &review.texts["a.rs"];
         assert_eq!(text.old.lines, ["fn main() {", "    let y = 1;", "}"]);
-        assert_eq!(text.new.lines, ["fn main() {", "    let x = 2;", "}"]);
+        assert_eq!(text.work_lines, ["fn main() {", "    let x = 2;", "}"]);
         assert_eq!(text.changed, [[vec![8..9, 12..13], vec![8..9, 12..13]]]);
         assert!(text.old.spans[1].contains(&(4..7, "keyword")));
-        assert!(text.new.spans[0].contains(&(0..2, "keyword")));
-    }
-
-    #[test]
-    fn cuts_very_long_lines() {
-        let dir = TempDir::new("long-lines");
-        let long = format!("\t{}", "é".repeat(1000));
-        dir.write("a.txt", format!("{long}\n"));
-        let diff = format!("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+{long}\n");
-        let text = FileText::new(dir.path(), &git::parse_diff(&diff)[0]);
-        assert_eq!(text.new.lines, [format!("    {}…", "é".repeat(MAX_LINE_CHARS - 4))]);
-        assert_eq!(text.longest, MAX_LINE_CHARS + 1);
     }
 
     #[test]
@@ -1366,16 +1726,15 @@ diff --git a/b.txt b/b.txt
         let lines: Vec<String> = (1..=1000).map(|n| format!("line {n}")).collect();
         let changed: Vec<String> = (1..=1000).map(|n| if n % 10 == 1 { format!("new {n}") } else { format!("line {n}") }).collect();
         let (review, _dir) = review("many-hunks", &[("a.txt", &(lines.join("\n") + "\n"), &(changed.join("\n") + "\n"))]);
-        let mut harness = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(|ui, review: &mut Review| { review.ui(ui, Some("a.txt"), true, &[]); }, review);
-        harness.run();
+        let mut harness = show(review, Some("a.txt"), 600.0);
         let drawn = harness.query_all_by_label("Reviewed").count();
         assert!(drawn > 0 && drawn < 20, "{drawn} hunks drawn");
         // moving far down shows the hunks there, of which one is reviewed
-        let is_reviewed = |harness: &Harness<'_, Review>| harness.query_all_by_label("Reviewed").any(|node| node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True));
-        harness.state_mut().stage(0, |hunk, _| hunk == 90);
+        let is_reviewed = |harness: &Harness<'_, Shown>| harness.query_all_by_label("Reviewed").any(|node| node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True));
+        harness.state_mut().review.stage(0, |hunk, _| hunk == 90);
         harness.run();
         assert!(!is_reviewed(&harness));
-        harness.state_mut().select(0, 90);
+        harness.state_mut().review.select(0, 90);
         harness.run();
         harness.run();
         assert!(is_reviewed(&harness));
@@ -1418,13 +1777,12 @@ diff --git a/b.txt b/b.txt
         let lines: Vec<String> = (1..=100).map(|n| format!("line {n}")).collect();
         let text = lines.join("\n") + "\n";
         let (review, _dir) = review("more-lines", &[("a.txt", &text, &text.replace("line 50\n", "new 50\n"))]);
-        let mut harness = Harness::builder().with_size(egui::vec2(800.0, 3000.0)).build_ui_state(|ui, review: &mut Review| { review.ui(ui, Some("a.txt"), true, &[]); }, review);
-        harness.run();
+        let mut harness = show(review, Some("a.txt"), 3000.0);
         // 46 lines above the hunk and 47 below it
         harness.get_by_label("Show 47 hidden lines");
         harness.get_by_label("Show 46 hidden lines").click();
         harness.run();
-        assert_eq!(harness.state_mut().view(0).expanded, [true, false]);
+        assert_eq!(harness.state_mut().review.view(0).expanded, [true, false]);
         assert!(harness.query_by_label("Show 46 hidden lines").is_none());
     }
 
@@ -1432,9 +1790,7 @@ diff --git a/b.txt b/b.txt
     fn a_review_without_a_file_or_changes_says_so() {
         for (path, label) in [(None, "Choose a file under Changes to review it"), (Some("gone.txt"), "No changes in gone.txt")] {
             let (review, _dir) = review("no-file", &[("a.txt", "x\n", "x\n")]);
-            let mut harness = Harness::new_ui_state(move |ui, review: &mut Review| { review.ui(ui, path, true, &[]); }, review);
-            harness.run();
-            harness.get_by_label(label);
+            show(review, path, 600.0).get_by_label(label);
         }
     }
 }

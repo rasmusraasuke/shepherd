@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 use eframe::egui::text::CCursor;
@@ -25,7 +27,17 @@ pub struct Editor {
     /// Whether the editor or its find bar had the keyboard when shown last.
     active: bool,
     find: Option<Find>,
-    highlighter: Option<Highlighter>,
+}
+
+/// Where an editor draws the lines of its buffer when it shows more than them, as the review
+/// shows removed lines between them.
+pub struct Rows {
+    /// The row of each line of the buffer, or none when it is folded away.
+    pub of_line: Vec<Option<usize>>,
+    /// The line on each row, if any.
+    pub lines: Vec<Option<usize>>,
+    /// Parts of lines marked with a color, as the changes within lines of a diff, by line.
+    pub marks: HashMap<usize, (Vec<Range<usize>>, Color32)>,
 }
 
 /// The bar for finding and replacing text in the file.
@@ -124,11 +136,6 @@ impl Find {
 }
 
 impl Editor {
-    /// An editor that highlights the code of the file, if it is in a language the editor knows.
-    pub fn for_file(path: &std::path::Path) -> Self {
-        Self { highlighter: Highlighter::for_path(path), ..Default::default() }
-    }
-
     /// Makes the editor take the keyboard when it is shown next.
     pub fn focus(&mut self) {
         self.focus = true;
@@ -156,7 +163,8 @@ impl Editor {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, id_salt: &str, buffer: &mut Buffer) {
+    /// Shows the bar for finding and replacing text once Cmd+F was pressed in the editor.
+    pub fn find_ui(&mut self, ui: &mut egui::Ui, buffer: &mut Buffer) {
         if self.active && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             let selected = buffer.selected_text().filter(|text| !text.contains('\n'));
             let query = selected.or(self.find.take().map(|find| find.query)).unwrap_or_default();
@@ -170,133 +178,169 @@ impl Editor {
             }
             self.scroll_to_cursor |= selection != buffer.selection();
         }
+    }
+
+    /// Shows a whole file for editing, with its line numbers.
+    pub fn ui(&mut self, ui: &mut egui::Ui, id_salt: &str, buffer: &mut Buffer, highlighter: Option<&mut Highlighter>) {
+        self.find_ui(ui, buffer);
         let style = CodeStyle::new(ui);
-        let dark = ui.visuals().dark_mode;
         let number_width = style.digit_width * (buffer.lines().len().to_string().len().max(3) + 1) as f32;
         let code_x = number_width + style.digit_width * 2.0;
         let width = code_x + style.digit_width * (self.longest_line(buffer) + 2) as f32;
+        ui.spacing_mut().item_spacing.y = 0.0;
+        egui::ScrollArea::both().id_salt(id_salt).auto_shrink(false).show_viewport(ui, |ui, viewport| {
+            let size = Vec2::new(width, style.row_height * buffer.lines().len() as f32).max(ui.available_size());
+            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+            let visible = viewport.translate(rect.min.to_vec2());
+            self.text_ui(ui, id_salt, buffer, highlighter, rect, visible, code_x, None);
+
+            // the line numbers stay at the left edge when the text scrolls sideways, and cover it
+            let painter = ui.painter();
+            let gutter = egui::Rect::from_min_max(visible.min, egui::pos2(visible.left() + code_x - style.digit_width, visible.bottom()));
+            painter.rect_filled(gutter, 0.0, ui.visuals().panel_fill);
+            let first = (viewport.top() / style.row_height) as usize;
+            let last = ((viewport.bottom() / style.row_height) as usize + 1).min(buffer.lines().len());
+            for line in first.min(last)..last {
+                style.number(painter, visible.left() + number_width, rect.top() + style.row_height * line as f32 + 1.0, Some(line as u32 + 1));
+            }
+        });
+    }
+
+    /// Shows the lines of the buffer in `rect` of a ui that scrolls, of which `visible` is in
+    /// sight, with the code `code_x` from the left of `rect`. As wide a gutter at the left of
+    /// what is in sight is drawn over the code by the caller, as the code scrolls sideways
+    /// under it. The lines are on rows of their own, unless `rows` places them among other
+    /// rows; the gutter then takes the pointer. Takes the keys while it has the keyboard.
+    /// Returns the response of the code.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_ui(&mut self, ui: &mut egui::Ui, id_salt: &str, buffer: &mut Buffer, highlighter: Option<&mut Highlighter>, rect: egui::Rect, visible: egui::Rect, code_x: f32, rows: Option<&Rows>) -> egui::Response {
+        let style = CodeStyle::new(ui);
+        let dark = ui.visuals().dark_mode;
+        let line_count = buffer.lines().len();
+        let row_of = |line: usize| rows.map_or(Some(line), |rows| rows.of_line.get(line).copied().flatten());
+        // a row without a line goes to the next line there is
+        let line_at = |row: usize| match rows {
+            None => row.min(line_count - 1),
+            Some(rows) => rows.lines.get(row..).and_then(|after| after.iter().flatten().next().copied()).unwrap_or(line_count - 1),
+        };
         let found = self.find.as_ref().map_or(&[][..], |find| &find.found);
         let find_has_focus = self.find.as_ref().is_some_and(|find| find.has_focus);
         let layout = |ui: &egui::Ui, line: &str| ui.painter().layout_no_wrap(line.to_string(), style.font.clone(), style.text_color);
-        ui.spacing_mut().item_spacing.y = 0.0;
-        egui::ScrollArea::both().id_salt(id_salt).auto_shrink(false).show_viewport(ui, |ui, viewport| {
-            let page_rows = (viewport.height() / style.row_height) as isize - 1;
-            let size = Vec2::new(width, style.row_height * buffer.lines().len() as f32).max(ui.available_size());
-            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-            // an id of its own keeps the keyboard with the editor when the find bar comes and goes
-            let response = ui.interact(rect, egui::Id::unique(("editor", id_salt)), Sense::click_and_drag());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, ui.is_enabled(), "Editor"));
-            let code_left = rect.left() + code_x;
+        let page_rows = (visible.height() / style.row_height) as isize - 1;
+        let code_left = rect.left() + code_x;
+        let interactive = if rows.is_some() { rect.intersect(egui::Rect::everything_right_of(visible.left() + code_x - style.digit_width)) } else { rect };
+        // an id of its own keeps the keyboard with the editor when the find bar comes and goes
+        let response = ui.interact(interactive, egui::Id::unique(("editor", id_salt)), Sense::click_and_drag());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, ui.is_enabled(), "Editor"));
 
-            if let Some(pointer) = response.interact_pointer_pos() {
-                let line = (((pointer.y - rect.top()) / style.row_height).max(0.0) as usize).min(buffer.lines().len() - 1);
-                // the text under the line numbers can't be clicked: it goes to the start of what is visible
-                let x = pointer.x.max(rect.left() + viewport.left() + code_x);
-                let col = layout(ui, &buffer.lines()[line]).cursor_from_pos(Vec2::new(x - code_left, 0.0)).index.0;
-                let pos = Pos::new(line, col);
-                if response.triple_clicked() {
-                    buffer.select_line(line);
-                } else if response.double_clicked() {
-                    buffer.select_word(pos);
-                } else if response.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
-                    response.request_focus();
-                    buffer.set_cursor(pos, ui.input(|i| i.modifiers.shift));
-                } else if response.dragged() {
-                    buffer.set_cursor(pos, true);
-                    self.scroll_to_cursor = true;
-                }
-            }
-            if std::mem::take(&mut self.focus) {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            let line = line_at(((pointer.y - rect.top()) / style.row_height).max(0.0) as usize);
+            // the text under the gutter can't be clicked: it goes to the start of what is visible
+            let x = pointer.x.max(visible.left() + code_x);
+            let col = layout(ui, &buffer.lines()[line]).cursor_from_pos(Vec2::new(x - code_left, 0.0)).index.0;
+            let pos = Pos::new(line, col);
+            if response.triple_clicked() {
+                buffer.select_line(line);
+            } else if response.double_clicked() {
+                buffer.select_word(pos);
+            } else if response.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
                 response.request_focus();
+                buffer.set_cursor(pos, ui.input(|i| i.modifiers.shift));
+            } else if response.dragged() {
+                buffer.set_cursor(pos, true);
+                self.scroll_to_cursor = true;
             }
-            if response.clicked_elsewhere() {
-                // or what is typed for another tab, such as the keys of the review, would end up in the text
-                response.surrender_focus();
+        }
+        let took_focus = std::mem::take(&mut self.focus);
+        if took_focus {
+            response.request_focus();
+        }
+        if response.clicked_elsewhere() {
+            // or what is typed for another tab, such as the keys of the review, would end up in the text
+            response.surrender_focus();
+        }
+        self.active = response.has_focus() || find_has_focus;
+        // the keys pressed as it took the keyboard were for what had it before
+        if response.has_focus() && !took_focus {
+            // the keys that would move the focus elsewhere are for the text
+            let filter = EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: false };
+            ui.memory_mut(|m| m.set_focus_lock_filter(response.id, filter));
+            let before = (buffer.cursor(), buffer.revision());
+            for event in ui.input(|i| i.events.clone()) {
+                handle_event(ui.ctx(), buffer, event, page_rows);
             }
-            self.active = response.has_focus() || find_has_focus;
-            if response.has_focus() {
-                // the keys that would move the focus elsewhere are for the text
-                let filter = EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: false };
-                ui.memory_mut(|m| m.set_focus_lock_filter(response.id, filter));
-                let before = (buffer.cursor(), buffer.revision());
-                for event in ui.input(|i| i.events.clone()) {
-                    handle_event(ui.ctx(), buffer, event, page_rows);
-                }
-                self.scroll_to_cursor |= before != (buffer.cursor(), buffer.revision());
-            }
+            self.scroll_to_cursor |= before != (buffer.cursor(), buffer.revision());
+        }
 
-            let rows = buffer.lines().len();
-            let first = ((viewport.top() / style.row_height) as usize).min(rows);
-            let last = ((viewport.bottom() / style.row_height) as usize + 1).min(rows);
-            let row_top = |line: usize| rect.top() + style.row_height * line as f32;
-            let x_at = |galley: &Arc<Galley>, col: usize| code_left + galley.pos_from_cursor(CCursor::new(col)).left();
-            let painter = ui.painter();
-            // after the keys of this frame were handled, so that the colors are for the text as it is now
-            let spans = match &mut self.highlighter {
-                Some(highlighter) => {
-                    highlighter.update(buffer);
-                    Some(highlighter.spans(first..last))
-                }
-                None => {
-                    buffer.take_changes();
-                    None
-                }
-            };
-            for line in first..last {
-                let text = &buffer.lines()[line];
-                let galley = match spans {
-                    Some(spans) => ui.fonts_mut(|fonts| fonts.layout_job(highlight::layout_job(text, &spans[line - first], &[], Color32::TRANSPARENT, &style.font, style.text_color, dark))),
-                    None => layout(ui, text),
-                };
-                if let Some((start, end)) = buffer.selection().filter(|(start, end)| (start.line..=end.line).contains(&line)) {
-                    let left = if line == start.line { x_at(&galley, start.col) } else { code_left };
-                    // a selected line break shows as a bit of selection after the line
-                    let right = if line == end.line { x_at(&galley, end.col) } else { code_left + galley.size().x + style.digit_width };
-                    let selected = egui::Rect::from_min_max(egui::pos2(left, row_top(line)), egui::pos2(right, row_top(line + 1)));
-                    painter.rect_filled(selected, 0.0, ui.visuals().selection.bg_fill);
-                }
-                for (start, end) in &found[found.partition_point(|(start, _)| start.line < line)..] {
-                    if start.line != line {
-                        break;
-                    }
-                    let place = egui::Rect::from_min_max(egui::pos2(x_at(&galley, start.col), row_top(line)), egui::pos2(x_at(&galley, end.col), row_top(line + 1)));
-                    painter.rect_filled(place, 2.0, ui.visuals().warn_fg_color.gamma_multiply(0.35));
-                }
-                painter.galley(egui::pos2(code_left, row_top(line) + 1.0), galley, style.text_color);
+        let row_count = rows.map_or(buffer.lines().len(), |rows| rows.lines.len());
+        let first_row = (((visible.top() - rect.top()) / style.row_height).max(0.0) as usize).min(row_count);
+        let last_row = (((visible.bottom() - rect.top()) / style.row_height).max(0.0) as usize + 1).min(row_count);
+        let shown: Vec<usize> = match rows {
+            None => (first_row..last_row).collect(),
+            Some(rows) => rows.lines[first_row..last_row].iter().flatten().copied().collect(),
+        };
+        let row_top = |row: usize| rect.top() + style.row_height * row as f32;
+        let x_at = |galley: &Arc<Galley>, col: usize| code_left + galley.pos_from_cursor(CCursor::new(col)).left();
+        let painter = ui.painter();
+        // after the keys of this frame were handled, so that the colors are for the text as it is now
+        let first = shown.first().copied().unwrap_or(0);
+        let spans = match highlighter {
+            Some(highlighter) => {
+                highlighter.update(buffer);
+                Some(highlighter.spans(first..shown.last().map_or(first, |last| last + 1)).to_vec())
             }
+            None => {
+                buffer.take_changes();
+                None
+            }
+        };
+        for &line in &shown {
+            let Some(row) = row_of(line) else { continue };
+            let text = &buffer.lines()[line];
+            let (marked, mark) = rows.and_then(|rows| rows.marks.get(&line)).map_or((&[][..], Color32::TRANSPARENT), |(marked, mark)| (marked.as_slice(), *mark));
+            let line_spans = spans.as_ref().and_then(|spans| spans.get(line - first)).map_or(&[][..], Vec::as_slice);
+            let galley = ui.fonts_mut(|fonts| fonts.layout_job(highlight::layout_job(text, line_spans, marked, mark, &style.font, style.text_color, dark)));
+            if let Some((start, end)) = buffer.selection().filter(|(start, end)| (start.line..=end.line).contains(&line)) {
+                let left = if line == start.line { x_at(&galley, start.col) } else { code_left };
+                // a selected line break shows as a bit of selection after the line
+                let right = if line == end.line { x_at(&galley, end.col) } else { code_left + galley.size().x + style.digit_width };
+                let selected = egui::Rect::from_min_max(egui::pos2(left, row_top(row)), egui::pos2(right, row_top(row + 1)));
+                painter.rect_filled(selected, 0.0, ui.visuals().selection.bg_fill);
+            }
+            for (start, end) in &found[found.partition_point(|(start, _)| start.line < line)..] {
+                if start.line != line {
+                    break;
+                }
+                let place = egui::Rect::from_min_max(egui::pos2(x_at(&galley, start.col), row_top(row)), egui::pos2(x_at(&galley, end.col), row_top(row + 1)));
+                painter.rect_filled(place, 2.0, ui.visuals().warn_fg_color.gamma_multiply(0.35));
+            }
+            painter.galley(egui::pos2(code_left, row_top(row) + 1.0), galley, style.text_color);
+        }
 
-            let cursor = buffer.cursor();
-            let x = x_at(&layout(ui, &buffer.lines()[cursor.line]), cursor.col);
-            let cursor_rect = egui::Rect::from_min_max(egui::pos2(x, row_top(cursor.line)), egui::pos2(x + 1.5, row_top(cursor.line + 1)));
-            if response.has_focus() && ui.input(|i| i.focused) {
-                let now = ui.input(|i| i.time);
-                // the cursor stays visible while it moves, and blinks once it rests
-                if self.cursor_moved.is_none_or(|(at, _)| at != (cursor, buffer.revision())) {
-                    self.cursor_moved = Some(((cursor, buffer.revision()), now));
-                }
-                let since = self.cursor_moved.map_or(0.0, |(_, time)| now - time);
-                egui::text_selection::visuals::paint_text_cursor(ui, painter, cursor_rect, since);
-                ui.output_mut(|o| o.ime = Some(egui::output::IMEOutput { rect, cursor_rect, purpose: Default::default(), should_interrupt_composition: false }));
+        let cursor = buffer.cursor();
+        let Some(cursor_row) = row_of(cursor.line) else { return response };
+        let x = x_at(&layout(ui, &buffer.lines()[cursor.line]), cursor.col);
+        let cursor_rect = egui::Rect::from_min_max(egui::pos2(x, row_top(cursor_row)), egui::pos2(x + 1.5, row_top(cursor_row + 1)));
+        if response.has_focus() && ui.input(|i| i.focused) {
+            let now = ui.input(|i| i.time);
+            // the cursor stays visible while it moves, and blinks once it rests
+            if self.cursor_moved.is_none_or(|(at, _)| at != (cursor, buffer.revision())) {
+                self.cursor_moved = Some(((cursor, buffer.revision()), now));
             }
-
-            // the line numbers stay at the left edge when the text scrolls sideways, and cover it
-            let gutter_left = rect.left() + viewport.left();
-            let gutter = egui::Rect::from_min_max(egui::pos2(gutter_left, viewport.top() + rect.top()), egui::pos2(gutter_left + code_x - style.digit_width, viewport.bottom() + rect.top()));
-            painter.rect_filled(gutter, 0.0, ui.visuals().panel_fill);
-            for line in first..last {
-                style.number(painter, gutter_left + number_width, row_top(line) + 1.0, Some(line as u32 + 1));
-            }
-
-            if std::mem::take(&mut self.center_cursor) {
-                self.scroll_to_cursor = false;
-                ui.scroll_to_rect(cursor_rect, Some(egui::Align::Center));
-            }
-            if std::mem::take(&mut self.scroll_to_cursor) {
-                // room on the left for the line numbers, so that the cursor doesn't end up under them
-                let around = egui::Rect::from_min_max(cursor_rect.min - Vec2::new(code_x + style.digit_width * 4.0, style.row_height), cursor_rect.max + Vec2::new(style.digit_width * 4.0, style.row_height));
-                ui.scroll_to_rect(around, None);
-            }
-        });
+            let since = self.cursor_moved.map_or(0.0, |(_, time)| now - time);
+            egui::text_selection::visuals::paint_text_cursor(ui, painter, cursor_rect, since);
+            ui.output_mut(|o| o.ime = Some(egui::output::IMEOutput { rect, cursor_rect, purpose: Default::default(), should_interrupt_composition: false }));
+        }
+        if std::mem::take(&mut self.center_cursor) {
+            self.scroll_to_cursor = false;
+            ui.scroll_to_rect(cursor_rect, Some(egui::Align::Center));
+        }
+        if std::mem::take(&mut self.scroll_to_cursor) {
+            // room on the left for the gutter, so that the cursor doesn't end up under it
+            let around = egui::Rect::from_min_max(cursor_rect.min - Vec2::new(code_x + style.digit_width * 4.0, style.row_height), cursor_rect.max + Vec2::new(style.digit_width * 4.0, style.row_height));
+            ui.scroll_to_rect(around, None);
+        }
+        response
     }
 }
 

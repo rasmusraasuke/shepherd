@@ -3,17 +3,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use eframe::egui;
+use eframe::egui::{self, Key, Modifiers};
 
 use crate::buffer::{Buffer, Pos};
 use crate::editor::Editor;
+use crate::highlight::Highlighter;
 
 /// Files larger than this aren't shown, to keep the editor responsive.
 const MAX_SIZE: u64 = 20 * 1024 * 1024;
 
 /// Edits are saved on their own once nothing was typed for this long, so that agents and build
 /// tools always see what the editor shows.
-const SAVE_DELAY: Duration = Duration::from_secs(1);
+const SAVE_DELAY: Duration = Duration::from_millis(500);
 
 /// The files that are open in tabs.
 pub struct OpenFiles {
@@ -37,6 +38,9 @@ struct OpenFile {
     modified: Option<SystemTime>,
     /// The text of the file, or why it can't be shown.
     buffer: Result<Buffer, String>,
+    /// Colors the text; shared by everything that shows it, as it follows the edits of the text.
+    highlighter: Option<Highlighter>,
+    /// The editor of the file's tab.
     editor: Editor,
     /// The revision of the text when it was edited last and the time of that, to save it after a while.
     edited: (u64, Instant),
@@ -50,6 +54,21 @@ impl OpenFiles {
 
     fn file(&mut self, path: &str) -> &mut OpenFile {
         self.files.entry(path.to_string()).or_insert_with(|| OpenFile::open(self.root.join(path)))
+    }
+
+    /// The text of a file and what colors it, to show and edit it elsewhere than in its tab, as
+    /// the review does; edits are saved as they are in the tab. A file that doesn't exist, as
+    /// it was deleted, starts empty when `missing_is_empty` is set. Fails with why the file
+    /// can't be shown.
+    pub fn text(&mut self, path: &str, missing_is_empty: bool) -> Result<(&mut Buffer, Option<&mut Highlighter>), &str> {
+        let file = self.file(path);
+        if missing_is_empty && file.buffer.is_err() && !file.path.exists() {
+            file.buffer = Ok(Buffer::new(""));
+        }
+        match &mut file.buffer {
+            Ok(buffer) => Ok((buffer, file.highlighter.as_mut())),
+            Err(message) => Err(message),
+        }
     }
 
     /// Makes the editor of the file take the keyboard when it is shown next.
@@ -118,21 +137,30 @@ impl OpenFiles {
         }
     }
 
-    /// Shows the file for editing.
-    pub fn ui(&mut self, ui: &mut egui::Ui, path: &str) {
+    /// Shows the file for editing. Returns the line of the cursor, numbered from 0, when its
+    /// changes are asked to be shown in the review with Cmd+Shift+R.
+    pub fn ui(&mut self, ui: &mut egui::Ui, path: &str) -> Option<usize> {
         let file = self.file(path);
         if let Some(error) = &file.save_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
         match &mut file.buffer {
             Ok(buffer) => {
-                file.editor.ui(ui, path, buffer);
+                let review = file.editor.is_active() && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R));
+                file.editor.ui(ui, path, buffer, file.highlighter.as_mut());
+                let line = review.then(|| buffer.cursor().line);
+                if review {
+                    // the keys are for the review then
+                    ui.memory_mut(|m| m.focused().map(|id| m.surrender_focus(id)));
+                }
                 if file.editor.is_active() {
                     self.last_active = Some(path.to_string());
                 }
+                line
             }
             Err(message) => {
                 ui.centered_and_justified(|ui| ui.weak(message.as_str()));
+                None
             }
         }
     }
@@ -141,7 +169,8 @@ impl OpenFiles {
 impl OpenFile {
     fn open(path: PathBuf) -> Self {
         let buffer = read(&path).map(|text| Buffer::new(&text));
-        Self { modified: modified(&path), buffer, editor: Editor::for_file(&path), edited: (0, Instant::now()), save_error: None, path }
+        let highlighter = Highlighter::for_path(&path);
+        Self { modified: modified(&path), buffer, highlighter, editor: Editor::default(), edited: (0, Instant::now()), save_error: None, path }
     }
 
     fn save(&mut self) {

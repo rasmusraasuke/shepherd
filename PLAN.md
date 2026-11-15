@@ -23,7 +23,7 @@ around that loop.
 
 ## Where we are
 
-Milestones 1 to 5 are done: a workspace of tabs, splits and windows that survives
+Milestones 1 to 6 are done: a workspace of tabs, splits and windows that survives
 restarts, with file editing (undo, find and replace, syntax highlighting, saving on its own,
 reloading of files changed on disk), search across the project, terminals good enough for
 CLI agents, and a review of one file at a time, chosen from the tree of changed files, with
@@ -31,10 +31,12 @@ context shown on request, highlighted diffs with changes within lines, progress 
 directory and moving on to the next file to review, review marks that are git's staging
 area, line by line, and agents in the loop: comments on lines sent to agents in terminal tabs,
 the state of the agents in the tab titles, new changes marked, and `editor ctl` for agents to
-read what the editor shows and have it show files and reviews. README.md describes the
-features.
+read what the editor shows and have it show files and reviews, and fixing in the review:
+the review is the file and is edited anywhere, with the changes found again as they are
+typed, reverting hunks or lines as edits that are undone with Cmd+Z, and jumping between a
+change and its place in the file. README.md describes the features.
 
-Next is milestone 6: editing inside the diff.
+Next is milestone 7: git flow.
 
 ## Milestones
 
@@ -122,7 +124,7 @@ The review turns from reading into steering.
 Done when: a full round of "agent writes, user comments on lines, agent fixes" happens
 without copying anything by hand.
 
-### 6. Editing inside the diff
+### 6. Editing inside the diff (completed)
 
 - Edit the new side of any hunk directly in the review
 - Revert a hunk or selected lines
@@ -217,6 +219,11 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
   written to disk a moment after typing stops, and when a tab or the editor is closed.
   Agents and build tools always see what the editor shows. When an open file changes on
   disk it is reloaded; only edits typed in the last moment win over the change.
+- **The review is the file.** A review edits the same text as the file's tab, anywhere, with
+  the removed lines shown between its lines. The review finds the changes itself (Myers, as
+  git does) on every edit, against the committed and the staged versions, so that what is
+  typed shows up as a change at once and staging works on text that isn't saved yet. Reverts
+  are edits of the text, so they are undone like any other edit.
 - **Syntax trees from tree-sitter.** Highlighting is built on tree-sitter, so that the same
   trees serve selection by syntax node, outline and folding later.
 - **Terminals on alacritty_terminal.** The terminal emulation and the processes come from

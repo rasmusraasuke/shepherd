@@ -40,7 +40,7 @@ Without a path the current directory is opened. The path must be inside a git re
 - **Text editing.** Files are edited in their tabs: typing, selecting with Shift and the
   mouse (double click for a word, triple click for a line), copy, cut and paste, undo and
   redo. Enter keeps the indentation; Tab and Shift+Tab indent and outdent the selected lines.
-- **Saved on their own.** An edit is written to disk a second after typing stops, and when
+- **Saved on their own.** An edit is written to disk half a second after typing stops, and when
   the tab or the editor is closed; Cmd+S saves right away. There is nothing to save by hand.
 - **Reloaded on their own.** A file changed on disk, for example by an agent, shows its new
   content without asking. Undo brings the previous content back.
@@ -140,6 +140,26 @@ Without a path the current directory is opened. The path must be inside a git re
 - The working tree is watched in the background, so changes made by an agent show up on
   their own, also when an agent adds many new files.
 
+### Fixing in the review
+
+- **The review is the file.** A review is edited like a file tab: click anywhere and type.
+  The removed lines sit between the lines of the file, and can't be edited. Unchanged lines
+  can be edited too: a line typed into shows up as a change right away, as the review finds
+  the changes itself while typing rather than waiting for git. The review and a tab of the
+  same file share their text, undo and find (Cmd+F); edits are saved on their own as in a tab.
+  A deleted file can be typed into, which brings it back.
+- **The review keys** work while the text doesn't have the keyboard: Esc or a click on the
+  gutter gives them back.
+- **Revert.** *Revert* in the menu of a hunk (right click) takes it back to how it was
+  committed. To revert only some lines, select them with the + in the gutter and press
+  *Revert* under the selection; a removed line comes back, an added one goes. A revert is an
+  edit of the text like any other, so Cmd+Z undoes it, also right after the menu. What was
+  staged of the reverted lines is unstaged, so the index never holds a change the files no
+  longer have; after an undo those lines show as not reviewed.
+- **To the file and back.** o, or *Open in file* in the menu of a line, opens the file in a
+  tab with the cursor on that line. Cmd+Shift+R in a file tab goes the other way: the review
+  shows the changes of the file, at the hunk nearest to the cursor.
+
 The keys work in the review tab used last, while no text field or terminal has the keyboard.
 
 | Key   | Action                           |
@@ -147,7 +167,9 @@ The keys work in the review tab used last, while no text field or terminal has t
 | j / k | Next / previous hunk             |
 | Space | Mark the hunk reviewed (or not), staging it |
 | n     | Next unreviewed hunk, in the next file once the file is done |
+| o     | Open the file at the hunk        |
 | r     | Refresh now                      |
+| Cmd+Z / Cmd+Shift+Z | Undo / redo an edit or a revert |
 
 ### Agents in the loop
 

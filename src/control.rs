@@ -166,8 +166,9 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             dir
         };
-        // its editor was killed: the socket is there, but nobody listens on it
-        drop(UnixListener::bind(dir("editor-1-0").join("control.sock")).unwrap());
+        // its editor was killed: its socket is left, but nobody listens on it. Not made by
+        // binding a socket, as a process started by another test may hold on to it for a moment
+        fs::write(dir("editor-1-0").join("control.sock"), "").unwrap();
         let _running = UnixListener::bind(dir("editor-2-0").join("control.sock")).unwrap();
         dir("editor-notes");
         remove_stale(parent.path(), STARTING);
