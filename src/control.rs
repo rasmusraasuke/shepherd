@@ -130,6 +130,61 @@ fn serve(stream: UnixStream, sender: &Sender<Request>, ctx: &egui::Context) {
     );
 }
 
+pub fn stop_leftovers(socket: &Path) {
+    stop(|path| doomed(path, socket));
+}
+
+fn doomed(socket: &Path, ours: &Path) -> bool {
+    socket == ours || !socket.exists()
+}
+
+fn stop(doomed: impl Fn(&Path) -> bool) {
+    for _ in 0..3 {
+        let pids = leftover_pids(&doomed);
+        if pids.is_empty() {
+            break;
+        }
+        kill(&pids);
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn kill(pids: &[libc::pid_t]) {
+    let own = std::process::id() as libc::pid_t;
+    for pid in pids.iter().filter(|pid| **pid != own) {
+        unsafe {
+            libc::kill(*pid, libc::SIGKILL);
+        }
+    }
+}
+
+fn leftover_pids(doomed: &impl Fn(&Path) -> bool) -> Vec<libc::pid_t> {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["eww", "-ax"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    leftover_pids_in(&String::from_utf8_lossy(&output.stdout), doomed)
+}
+
+fn leftover_pids_in(listing: &str, doomed: &impl Fn(&Path) -> bool) -> Vec<libc::pid_t> {
+    listing
+        .lines()
+        .filter_map(leftover)
+        .filter(|(_, socket)| doomed(socket))
+        .map(|(pid, _)| pid)
+        .collect()
+}
+
+fn leftover(line: &str) -> Option<(libc::pid_t, PathBuf)> {
+    let mut words = line.split_whitespace();
+    let pid = words.next()?.parse().ok()?;
+    let marker = format!("{SOCKET_VARIABLE}=");
+    let socket = words.find_map(|word| word.strip_prefix(&marker))?;
+    Some((pid, PathBuf::from(socket)))
+}
+
 pub fn ask(socket: &Path, args: &[String]) -> Result<String, String> {
     let stream = UnixStream::connect(socket)
         .map_err(|e| format!("Cannot reach the editor at {}: {e}", socket.display()))?;
@@ -198,6 +253,58 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, ["shepherd-2-0", "shepherd-notes"]);
+    }
+
+    #[test]
+    fn reads_the_socket_a_process_was_started_with() {
+        let line = "14509   ??  Ss     0:15.50 /opt/opencode serve --service TERM=xterm \
+                    SHEPHERD_SOCKET=/tmp/shepherd-1-0/control.sock PATH=/usr/bin";
+        assert_eq!(
+            leftover(line),
+            Some((14509, PathBuf::from("/tmp/shepherd-1-0/control.sock")))
+        );
+        assert_eq!(leftover("    1   ??  Ss     0:00.10 /sbin/launchd"), None);
+    }
+
+    #[test]
+    fn picks_the_processes_of_dead_editors() {
+        let dir = crate::testing::TempDir::new("sweep");
+        let ours = dir.path().join("ours.sock");
+        std::fs::write(&ours, "").unwrap();
+        let other = dir.path().join("other.sock");
+        std::fs::write(&other, "").unwrap();
+        let dead = dir.path().join("dead.sock");
+        let listing = format!(
+            "    1   ??  Ss     0:00.10 /sbin/launchd\n\
+             14509   ??  Ss     0:15.50 /opt/opencode serve --service TERM=xterm \
+             SHEPHERD_SOCKET={} PATH=/usr/bin\n\
+             14982   ??  Ss     0:00.05 /cache/opencode-pty daemon \
+             SHEPHERD_SOCKET={} PATH=/usr/bin\n\
+             15000   ??  Ss     0:00.05 /cache/opencode-pty daemon \
+             SHEPHERD_SOCKET={} PATH=/usr/bin\n",
+            ours.display(),
+            dead.display(),
+            other.display()
+        );
+        let pick = |socket: &Path| doomed(socket, &ours);
+        assert_eq!(leftover_pids_in(&listing, &pick), [14509, 14982]);
+    }
+
+    #[test]
+    fn kills_only_processes_other_than_itself() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        kill(&[std::process::id() as libc::pid_t, child.id() as libc::pid_t]);
+        let start = std::time::Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the process is still there"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

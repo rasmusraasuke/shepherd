@@ -137,7 +137,7 @@ mod tests {
                 model: None,
             },
             found: vec![Agent::Claude],
-            models: HashMap::from([(Agent::Claude, Agent::Claude.models())]),
+            models: HashMap::from([(Agent::Claude, Agent::Claude.models(&HashMap::new()))]),
             outcome: None,
         };
         let mut harness = Harness::builder()

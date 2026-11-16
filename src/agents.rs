@@ -123,7 +123,7 @@ impl Agent {
         (self.spec().image)(path)
     }
 
-    pub fn models(self) -> Vec<Model> {
+    pub fn models(self, env: &HashMap<String, String>) -> Vec<Model> {
         match self {
             Agent::Claude => [("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")]
                 .into_iter()
@@ -134,6 +134,7 @@ impl Agent {
                 .collect(),
             Agent::Opencode => std::process::Command::new(self.program())
                 .arg("models")
+                .envs(env)
                 .output()
                 .ok()
                 .map(|output| {
@@ -323,8 +324,11 @@ pub fn chosen(found: &[Agent], remembered: Option<Agent>) -> Option<Agent> {
         .or_else(|| found.first().copied())
 }
 
-pub fn models_for(found: &[Agent]) -> HashMap<Agent, Vec<Model>> {
-    found.iter().map(|agent| (*agent, agent.models())).collect()
+pub fn models_for(found: &[Agent], env: &HashMap<String, String>) -> HashMap<Agent, Vec<Model>> {
+    found
+        .iter()
+        .map(|agent| (*agent, agent.models(env)))
+        .collect()
 }
 
 pub fn choice_ui(
@@ -529,7 +533,7 @@ mod tests {
     #[test]
     fn knows_the_models_to_choose_from() {
         let claude: Vec<String> = Agent::Claude
-            .models()
+            .models(&HashMap::new())
             .into_iter()
             .map(|model| model.value)
             .collect();

@@ -67,13 +67,8 @@ fn main() -> eframe::Result {
     remember(&repo.root);
     let workspace = Workspace::load(&repo.layout_path());
 
-    let icon =
-        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap_or_default();
-    let viewport = app::viewport(&repo.root, &workspace.windows[0])
-        .with_transparent(true)
-        .with_icon(icon);
     let options = eframe::NativeOptions {
-        viewport,
+        viewport: main_window(&repo.root, &workspace.windows[0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -89,6 +84,16 @@ fn main() -> eframe::Result {
             )))
         }),
     )
+}
+
+fn main_window(root: &Path, window: &workspace::Window) -> eframe::egui::ViewportBuilder {
+    app::viewport(root, window)
+        .with_transparent(true)
+        .with_icon(app_icon())
+}
+
+fn app_icon() -> eframe::egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap_or_default()
 }
 
 fn open(explicit: Option<PathBuf>) -> Result<git::Repo, String> {
@@ -142,6 +147,15 @@ mod tests {
         assert_eq!(icon.width, icon.height);
         assert_eq!(icon.width, 1024);
         assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+    }
+
+    #[test]
+    fn the_window_carries_the_application_icon() {
+        let window = &Workspace::default().windows[0];
+        let viewport = main_window(Path::new("/work/shop"), window);
+        let icon = viewport.icon.expect("the window has an icon");
+        assert_eq!(*icon, app_icon());
+        assert_ne!(*icon, eframe::egui::IconData::default());
     }
 
     #[test]

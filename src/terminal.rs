@@ -292,9 +292,8 @@ impl Terminals {
         if !stopping.is_empty() {
             std::thread::sleep(STOP_WAIT);
         }
-        for terminal in &mut stopping {
+        for terminal in &stopping {
             terminal.kill();
-            terminal.join();
         }
         for pending in self.starts.drain().map(|(_, pending)| pending) {
             images::remove(&pending.images);
@@ -981,7 +980,7 @@ impl Drop for Terminal {
 
 impl Terminal {
     fn stop(&mut self) {
-        if self.worker.is_none() {
+        if self.worker.take().is_none() {
             return;
         }
         let _ = self.notifier.0.send(Msg::Shutdown);
@@ -993,12 +992,6 @@ impl Terminal {
     fn kill(&self) {
         unsafe {
             libc::kill(-(self.child as libc::pid_t), libc::SIGKILL);
-        }
-    }
-
-    fn join(&mut self) {
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
         }
     }
 }
@@ -1664,7 +1657,14 @@ mod tests {
         harness.state_mut().shutdown();
 
         assert!(!harness.state().is_open(1));
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the program is gone");
+        let start = Instant::now();
+        while unsafe { libc::kill(pid, 0) } != -1 {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the program is still there"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

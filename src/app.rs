@@ -29,6 +29,8 @@ use crate::workspace::{Sidebar, Tab, Window, Workspace};
 
 const SAVE_INTERVAL: Duration = Duration::from_secs(1);
 
+const EXIT_GRACE: Duration = Duration::from_secs(2);
+
 const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(1200.0, 800.0);
 
 const DRAG_TITLE_SHADOW: i8 = 16;
@@ -64,6 +66,7 @@ pub struct App {
     titled_branch: String,
     updates: update::Updates,
     build: update::Build,
+    restarting: bool,
 }
 
 struct Content {
@@ -225,7 +228,14 @@ impl App {
             .ok();
         let path = agents::search_path();
         let agents = agents::found(&path);
-        let models = agents::models_for(&agents);
+        let mut agent_env = HashMap::new();
+        if let Some(control) = &control {
+            agent_env.insert(
+                control::SOCKET_VARIABLE.to_string(),
+                control.socket().display().to_string(),
+            );
+        }
+        let models = agents::models_for(&agents, &agent_env);
         let mut content = Content {
             review: Review::new(repo.clone()),
             open_files: OpenFiles::new(repo.root.clone()),
@@ -285,6 +295,7 @@ impl App {
             action: None,
             titled_branch: String::new(),
             watcher: Watcher::spawn(repo.clone(), ctx),
+            restarting: false,
             repo,
         }
     }
@@ -436,6 +447,7 @@ impl App {
     }
 
     fn restart_now(&mut self, ctx: &egui::Context) {
+        self.restarting = true;
         self.content.open_files.save_all();
         self.save_layout();
         match update::restart(&self.content.root) {
@@ -1516,9 +1528,18 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        std::thread::spawn(|| {
+            std::thread::sleep(EXIT_GRACE);
+            std::process::exit(0);
+        });
         self.content.open_files.save_all();
         self.save_layout();
         self.content.terminals.shutdown();
+        if let Some(control) = &self.control
+            && !self.restarting
+        {
+            control::stop_leftovers(&control.socket());
+        }
         self.quick_chat = None;
         self.control = None;
         std::process::exit(0);
@@ -2262,7 +2283,8 @@ mod tests {
             .terminals
             .run_agents_with(&program);
         harness.state_mut().agents = vec![Agent::Claude];
-        harness.state_mut().models = HashMap::from([(Agent::Claude, Agent::Claude.models())]);
+        harness.state_mut().models =
+            HashMap::from([(Agent::Claude, Agent::Claude.models(&HashMap::new()))]);
         harness.run();
 
         let ctrl = |harness: &mut Harness<'_, App>, modifiers: Modifiers| {
