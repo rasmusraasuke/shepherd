@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::git::{DiffLine, Hunk, LineKind};
 
 const MAX_DIFFERENCES: usize = 2000;
@@ -18,36 +20,74 @@ pub fn diff<A: AsRef<str>, B: AsRef<str>>(old: &[A], new: &[B]) -> Vec<Hunk> {
     let mut pairs = matching(n, m, |i, j| same(start + i, start + j)).unwrap_or_default();
     pairs.push((n, m));
 
-    let mut hunks = Vec::new();
+    let mut changes: Vec<(Range<usize>, Range<usize>)> = Vec::new();
     let (mut i, mut j) = (0, 0);
     for (next_i, next_j) in pairs {
         if next_i > i || next_j > j {
-            let (i0, j0) = (start + i, start + j);
-            let mut lines: Vec<DiffLine> = (i0..start + next_i)
-                .map(|at| DiffLine {
-                    kind: LineKind::Removed,
-                    old_no: Some(at as u32 + 1),
-                    new_no: None,
-                    text: old[at].as_ref().to_string(),
-                })
-                .collect();
-            lines.extend((j0..start + next_j).map(|at| DiffLine {
-                kind: LineKind::Added,
-                old_no: None,
-                new_no: Some(at as u32 + 1),
-                text: new[at].as_ref().to_string(),
-            }));
-            let first =
-                |at: usize, count: usize| if count == 0 { at as u32 } else { at as u32 + 1 };
-            hunks.push(Hunk {
-                old_start: first(i0, next_i - i),
-                new_start: first(j0, next_j - j),
-                lines,
-            });
+            changes.push((start + i..start + next_i, start + j..start + next_j));
         }
         (i, j) = (next_i + 1, next_j + 1);
     }
-    hunks
+    for at in 0..changes.len() {
+        let floor = at.checked_sub(1).map(|before| &changes[before]);
+        let ceiling = changes.get(at + 1);
+        let (removed, added) = &changes[at];
+        changes[at] = if removed.is_empty() {
+            let floor = floor.map_or(0, |(_, added)| added.end + 1);
+            let ceiling = ceiling.map_or(new.len(), |(_, added)| added.start - 1);
+            let slid = slide(new, added.clone(), floor, ceiling);
+            let at = removed.start + slid.start - added.start;
+            (at..at, slid)
+        } else if added.is_empty() {
+            let floor = floor.map_or(0, |(removed, _)| removed.end + 1);
+            let ceiling = ceiling.map_or(old.len(), |(removed, _)| removed.start - 1);
+            let slid = slide(old, removed.clone(), floor, ceiling);
+            let at = added.start + slid.start - removed.start;
+            (slid, at..at)
+        } else {
+            continue;
+        };
+    }
+
+    let first = |range: &Range<usize>| range.start as u32 + !range.is_empty() as u32;
+    let line = |kind: LineKind, at: usize, text: &str| DiffLine {
+        kind,
+        old_no: (kind == LineKind::Removed).then_some(at as u32 + 1),
+        new_no: (kind == LineKind::Added).then_some(at as u32 + 1),
+        text: text.to_string(),
+    };
+    changes
+        .into_iter()
+        .map(|(removed, added)| Hunk {
+            old_start: first(&removed),
+            new_start: first(&added),
+            lines: removed
+                .map(|at| line(LineKind::Removed, at, old[at].as_ref()))
+                .chain(added.map(|at| line(LineKind::Added, at, new[at].as_ref())))
+                .collect(),
+        })
+        .collect()
+}
+
+fn slide<T: AsRef<str>>(
+    lines: &[T],
+    mut range: Range<usize>,
+    floor: usize,
+    ceiling: usize,
+) -> Range<usize> {
+    let text = |at: usize| lines[at].as_ref();
+    while range.start > floor && text(range.start - 1) == text(range.end - 1) {
+        range = range.start - 1..range.end - 1;
+    }
+    let top = range.start;
+    while range.end < ceiling && text(range.start) == text(range.end) {
+        range = range.start + 1..range.end + 1;
+    }
+    let after_blank = (top..=range.start)
+        .rev()
+        .find(|start| text(start + range.len() - 1).trim().is_empty());
+    let start = after_blank.unwrap_or(range.start);
+    start..start + range.len()
 }
 
 fn matching(
@@ -150,6 +190,28 @@ mod tests {
         assert_eq!(
             shown(&diff(&["a", "x", "b", "y", "c"], &["a", "b", "c"])),
             ["2 1 -x", "4 2 -y"]
+        );
+    }
+
+    #[test]
+    fn places_a_change_among_repeated_lines_the_same_whatever_else_differs() {
+        let old = ["a", "}", "", "#[test]", "one", "}", "", "#[test]", "two"];
+        let work = [
+            "a", "A", "}", "", "#[test]", "one", "}", "", "#[test]", "new", "}", "", "#[test]",
+            "two",
+        ];
+        let index = [
+            "a", "A", "}", "", "#[test]", "one", "}", "", "#[test]", "two",
+        ];
+        assert_eq!(
+            shown(&diff(&old, &work)),
+            ["1 2 +A", "7 9 +#[test] +new +} +"]
+        );
+        assert_eq!(shown(&diff(&index, &work)), ["8 9 +#[test] +new +} +"]);
+        assert_eq!(shown(&diff(&work, &index)), ["9 8 -#[test] -new -} -"]);
+        assert_eq!(
+            shown(&diff(&["a", "b", "b", "c"], &["a", "b", "b", "b", "c"])),
+            ["3 4 +b"]
         );
     }
 
