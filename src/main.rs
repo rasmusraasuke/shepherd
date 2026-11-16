@@ -63,7 +63,11 @@ fn main() -> eframe::Result {
     remember(&repo.root);
     let workspace = Workspace::load(&repo.layout_path());
 
-    let viewport = app::viewport(&repo.root, &workspace.windows[0]).with_transparent(true);
+    let icon =
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap_or_default();
+    let viewport = app::viewport(&repo.root, &workspace.windows[0])
+        .with_transparent(true)
+        .with_icon(icon);
     let options = eframe::NativeOptions {
         viewport,
         ..Default::default()
@@ -127,6 +131,14 @@ fn remember(root: &Path) {
 mod tests {
     use super::*;
     use crate::git::tests::temp_repo;
+
+    #[test]
+    fn loads_the_application_icon() {
+        let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap();
+        assert_eq!(icon.width, icon.height);
+        assert_eq!(icon.width, 1024);
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+    }
 
     #[test]
     fn opens_the_first_candidate_that_is_a_repository() {
