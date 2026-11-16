@@ -32,8 +32,8 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   pick with the arrow keys, open with Enter. The file opens in the window the popup is in.
 - **Quiet by design.** No toolbar and no status bar: the bar of icons, the sidebar and the
   tabs, with the code taking the rest. One calm palette in dark and in light, following the system, with a
-  single blue accent, soft diff colors and the macOS fonts (SF Pro for the interface, SF Mono
-  for code). The tab shown in each group is the one in bright text. With no tab open, the
+  single blue accent, soft diff colors and the platform's fonts (SF Pro and SF Mono on
+  macOS). The tab shown in each group is the one in bright text. With no tab open, the
   main space shows the few keys to start with.
 - **The branch in the title.** The title of every window ends with the current branch.
 - **Restored on restart.** Windows with their position and size, splits, open tabs, the
@@ -81,11 +81,12 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   terminal running your shell in the project directory. Terminals are tabs like any other:
   split, moved and popped out. The tab shows the title the shell or the program gives it.
 - **Made for agents.** Full screen programs, 256 and true colors, bracketed paste and the
-  usual xterm keys work. Text is in Menlo with the fallbacks macOS terminals use, so the
-  symbols agents draw look as they do in iTerm2; box drawing, block and braille characters
-  are drawn to fill their cells, so frames, logos and spinners join up. Shift+Enter and Option+Enter send a new line to agents such as
-  Claude Code; Option+Left/Right move by words and Cmd+Left/Right to the ends of the line,
-  as in other macOS terminals.
+  usual xterm keys work. Text is in Menlo on macOS and the system's monospace font elsewhere,
+  with fallbacks, so the symbols agents draw look as they do in iTerm2; box drawing, block
+  and braille characters are drawn to fill their cells, so frames, logos and spinners join
+  up. Shift+Enter and Option+Enter send a new line to agents such as Claude Code;
+  Option+Left/Right move by words and Cmd+Left/Right to the ends of the line, as in other
+  terminal emulators.
 - **Selecting and scrolling.** Drag to select (double click for a word, triple click for a
   line), Cmd+C copies, Cmd+V pastes, Cmd+K clears the scrollback. The wheel scrolls back
   through the output; typing brings back the end of it.

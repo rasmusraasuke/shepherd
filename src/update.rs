@@ -128,12 +128,22 @@ impl Updates {
         let Phase::Ready(release) = self.phase() else {
             return Err("No update has been downloaded".to_string());
         };
-        let zip = updates_dir()?.join(format!("Shepherd-{}.zip", release.version));
-        Command::new("open")
-            .arg("-R")
-            .arg(&zip)
+        let archive = updates_dir()?.join(archive_name(&release.version));
+        #[cfg(target_os = "macos")]
+        let mut command = {
+            let mut command = Command::new("open");
+            command.arg("-R").arg(&archive);
+            command
+        };
+        #[cfg(not(target_os = "macos"))]
+        let mut command = {
+            let mut command = Command::new("xdg-open");
+            command.arg(archive.parent().unwrap_or(Path::new(".")));
+            command
+        };
+        command
             .status()
-            .map_err(|e| format!("Cannot show {}: {e}", zip.display()))?;
+            .map_err(|e| format!("Cannot show {}: {e}", archive.display()))?;
         Ok(())
     }
 }
@@ -183,7 +193,7 @@ fn latest() -> Result<Option<Release>, String> {
     }
     args.push(url);
     let body = run("curl", &args)?;
-    parse(&body, VERSION, std::env::consts::ARCH)
+    parse(&body, VERSION, std::env::consts::OS, std::env::consts::ARCH)
 }
 
 fn token() -> Option<String> {
@@ -199,11 +209,20 @@ fn token() -> Option<String> {
         })
 }
 
+fn archive_name(version: &str) -> String {
+    let extension = if cfg!(target_os = "macos") {
+        "zip"
+    } else {
+        "tar.gz"
+    };
+    format!("Shepherd-{version}.{extension}")
+}
+
 fn download(release: &Release) -> Result<(), String> {
     let dir = updates_dir()?;
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).map_err(|e| format!("Cannot make {}: {e}", dir.display()))?;
-    let zip = dir.join(format!("Shepherd-{}.zip", release.version));
+    let archive = dir.join(archive_name(&release.version));
     let mut args = vec![
         "-fsSL".to_string(),
         "--connect-timeout".to_string(),
@@ -218,22 +237,27 @@ fn download(release: &Release) -> Result<(), String> {
     }
     args.extend([
         "-o".to_string(),
-        zip.display().to_string(),
+        archive.display().to_string(),
         release.url.clone(),
     ]);
     run("curl", &args)?;
-    check_zip(&zip)?;
-    unpack(&zip, &dir)
+    check_archive(&archive)?;
+    unpack(&archive, &dir)
 }
 
-fn check_zip(path: &Path) -> Result<(), String> {
+fn check_archive(path: &Path) -> Result<(), String> {
     use std::io::Read as _;
     let mut magic = [0; 4];
     let mut file =
         fs::File::open(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
     file.read_exact(&mut magic)
         .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    if magic == *b"PK\x03\x04" {
+    let expected: &[u8] = if cfg!(target_os = "macos") {
+        b"PK\x03\x04"
+    } else {
+        &[0x1f, 0x8b]
+    };
+    if magic.starts_with(expected) {
         Ok(())
     } else {
         Err("The update that was downloaded is not an application".to_string())
@@ -241,13 +265,13 @@ fn check_zip(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn unpack(zip: &Path, dir: &Path) -> Result<(), String> {
+fn unpack(archive: &Path, dir: &Path) -> Result<(), String> {
     run(
         "ditto",
         &[
             "-x".to_string(),
             "-k".to_string(),
-            zip.display().to_string(),
+            archive.display().to_string(),
             dir.display().to_string(),
         ],
     )?;
@@ -255,13 +279,13 @@ fn unpack(zip: &Path, dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn unpack(zip: &Path, dir: &Path) -> Result<(), String> {
+fn unpack(archive: &Path, dir: &Path) -> Result<(), String> {
     run(
-        "unzip",
+        "tar",
         &[
-            "-qo".to_string(),
-            zip.display().to_string(),
-            "-d".to_string(),
+            "-xzf".to_string(),
+            archive.display().to_string(),
+            "-C".to_string(),
             dir.display().to_string(),
         ],
     )?;
@@ -290,11 +314,26 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
     .map(|_| ())
 }
 
+#[cfg(target_os = "macos")]
 fn exists(dir: &Path) -> Result<(), String> {
     let app = dir.join("Shepherd.app");
     app.is_dir()
         .then_some(())
         .ok_or_else(|| "The update does not contain Shepherd.app".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn exists(dir: &Path) -> Result<(), String> {
+    let found = dir.join("shepherd").is_file()
+        || fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry.path().join("shepherd").is_file());
+    found
+        .then_some(())
+        .ok_or_else(|| "The update does not contain the shepherd program".to_string())
 }
 
 fn run(program: &str, args: &[String]) -> Result<String, String> {
@@ -327,14 +366,19 @@ struct Asset {
 }
 
 impl Asset {
-    fn fits(&self, arch: &str) -> bool {
-        self.name.ends_with(".zip")
-            && self.name.contains("macos")
+    fn fits(&self, platform: &str, arch: &str) -> bool {
+        let extension = if platform == "macos" {
+            ".zip"
+        } else {
+            ".tar.gz"
+        };
+        self.name.contains(platform)
+            && self.name.ends_with(extension)
             && (self.name.contains("universal") || self.name.contains(arch))
     }
 }
 
-fn parse(json: &str, current: &str, arch: &str) -> Result<Option<Release>, String> {
+fn parse(json: &str, current: &str, platform: &str, arch: &str) -> Result<Option<Release>, String> {
     let release: ApiRelease =
         serde_json::from_str(json).map_err(|e| format!("Cannot read the update: {e}"))?;
     let version = release.tag_name.trim_start_matches('v').to_string();
@@ -344,8 +388,13 @@ fn parse(json: &str, current: &str, arch: &str) -> Result<Option<Release>, Strin
     let asset = release
         .assets
         .iter()
-        .find(|asset| asset.fits(arch) && asset.name.contains("universal"))
-        .or_else(|| release.assets.iter().find(|asset| asset.fits(arch)))
+        .find(|asset| asset.fits(platform, arch) && asset.name.contains("universal"))
+        .or_else(|| {
+            release
+                .assets
+                .iter()
+                .find(|asset| asset.fits(platform, arch))
+        })
         .ok_or_else(|| format!("Shepherd {version} has no build for this computer"))?;
     Ok(Some(Release {
         version,
@@ -392,24 +441,60 @@ mod tests {
 
     #[test]
     fn picks_the_universal_build_of_a_newer_release() {
-        let release = parse(RELEASE, "0.1.0", "aarch64").unwrap().unwrap();
+        let release = parse(RELEASE, "0.1.0", "macos", "aarch64")
+            .unwrap()
+            .unwrap();
         assert_eq!(release.version(), "0.2.0");
         assert_eq!(release.url, "https://example.com/universal");
-        let release = parse(RELEASE, "0.1.0", "x86_64").unwrap().unwrap();
+        let release = parse(RELEASE, "0.1.0", "macos", "x86_64").unwrap().unwrap();
         assert_eq!(release.url, "https://example.com/universal");
     }
 
     #[test]
+    fn picks_the_build_for_linux() {
+        let json = r#"{
+            "tag_name": "v0.2.0",
+            "assets": [
+                {"name": "Shepherd-0.2.0-linux-x86_64.tar.gz", "url": "https://example.com/linux"},
+                {"name": "Shepherd-0.2.0-macos-universal.zip", "url": "https://example.com/mac"}
+            ]
+        }"#;
+        let release = parse(json, "0.1.0", "linux", "x86_64").unwrap().unwrap();
+        assert_eq!(release.url, "https://example.com/linux");
+        assert!(parse(json, "0.1.0", "linux", "aarch64").is_err());
+        let release = parse(json, "0.1.0", "macos", "aarch64").unwrap().unwrap();
+        assert_eq!(release.url, "https://example.com/mac");
+    }
+
+    #[test]
+    fn names_the_archive_the_platform_downloads() {
+        let name = archive_name("1.2.3");
+        if cfg!(target_os = "macos") {
+            assert_eq!(name, "Shepherd-1.2.3.zip");
+        } else {
+            assert_eq!(name, "Shepherd-1.2.3.tar.gz");
+        }
+    }
+
+    #[test]
     fn ignores_the_release_that_is_running() {
-        assert!(parse(RELEASE, "0.2.0", "aarch64").unwrap().is_none());
-        assert!(parse(RELEASE, "0.3.0", "aarch64").unwrap().is_none());
+        assert!(
+            parse(RELEASE, "0.2.0", "macos", "aarch64")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            parse(RELEASE, "0.3.0", "macos", "aarch64")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn says_when_a_release_has_no_build_for_this_computer() {
         let json = r#"{"tag_name": "v0.2.0", "assets": [{"name": "other.zip", "url": "u"}]}"#;
-        assert!(parse(json, "0.1.0", "aarch64").is_err());
-        assert!(parse("not json", "0.1.0", "aarch64").is_err());
+        assert!(parse(json, "0.1.0", "macos", "aarch64").is_err());
+        assert!(parse("not json", "0.1.0", "macos", "aarch64").is_err());
     }
 
     #[test]

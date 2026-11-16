@@ -13,7 +13,8 @@
   <a href="https://github.com/rasmusraasuke/shepherd/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rasmusraasuke/shepherd/ci.yml?branch=main&style=flat-square&label=ci"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1B2A41?style=flat-square"></a>
   <img alt="macOS 12 or newer" src="https://img.shields.io/badge/macOS-12%2B-1B2A41?style=flat-square">
-  <img alt="Apple Silicon and Intel" src="https://img.shields.io/badge/universal-arm64%20%7C%20x86__64-1B2A41?style=flat-square">
+  <img alt="macOS universal" src="https://img.shields.io/badge/macOS-arm64%20%7C%20x86__64-1B2A41?style=flat-square">
+  <img alt="Linux x86_64" src="https://img.shields.io/badge/Linux-x86__64-1B2A41?style=flat-square">
 </p>
 
 <br>
@@ -22,7 +23,7 @@ Most editors were designed for a world where you type every line. Shepherd is de
 the world that is arriving: agents do the writing, and the work becomes steering, reading and
 deciding.
 
-It is a native macOS editor built around that loop.
+It is a native desktop editor built around that loop.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="Reviewing an agent's change in Shepherd">
@@ -43,13 +44,16 @@ It is a native macOS editor built around that loop.
 - **Everything is a tab.** Files, terminals, reviews and agents open side by side, stack,
   drag between windows, and come back after a restart.
 - **Quiet by design.** No toolbar and no status bar. One calm palette in dark and light, the
-  macOS fonts, and the code taking the rest.
+  platform's fonts, and the code taking the rest.
 
 The full list is in [FEATURES.md](FEATURES.md). The road ahead is in [PLAN.md](PLAN.md).
 
 ## Install
 
-Shepherd is a universal macOS app for Apple Silicon and Intel, macOS 12 or newer.
+Shepherd is a native app for macOS 12 or newer, on Apple Silicon or Intel, and for Linux on
+x86_64.
+
+### macOS
 
 1. Download the [latest release](https://github.com/rasmusraasuke/shepherd/releases/latest).
 2. Drag `Shepherd.app` into Applications.
@@ -68,7 +72,27 @@ cd shepherd
 ```
 
 That builds `Shepherd.app`, installs it and links `shepherd` into `~/.local/bin`. Add
-`--zip` to also produce the release zip. The icon is `assets/icon.png`.
+`--zip` to also produce the release zip.
+
+### Linux
+
+Download the Linux tarball from the [latest release](https://github.com/rasmusraasuke/shepherd/releases/latest),
+then:
+
+```sh
+tar -xzf Shepherd-<version>-linux-x86_64.tar.gz
+cd Shepherd-<version>-linux-x86_64
+./install.sh
+```
+
+`install.sh` puts `shepherd` in `~/.local/bin`, with the icon and the desktop entry under
+`~/.local/share`. Add `~/.local/bin` to `PATH` if it is not there, or run `./shepherd` from
+the unpacked directory. The build is made on Ubuntu 22.04 and needs X11 or Wayland, with
+Vulkan or OpenGL.
+
+Build it from the source with `./scripts/bundle-linux.sh`, which makes the tarball in `dist/`.
+
+The icon is `assets/icon.png`.
 
 ## Open a project
 
@@ -84,6 +108,7 @@ A few keys to start with:
 - `⌘P` opens a file by name, `⇧⇧` searches the project
 - `⌃⌃` chats with an agent, `⌘T` opens a terminal
 - `⌘/` shows every shortcut, and the version
+
 ## Agents
 
 Shepherd works with **Claude Code** and **Opencode**, found on the `PATH`. Each Agent tab is a
@@ -98,12 +123,13 @@ them show you files and changes.
 ## Updates
 
 When it starts, Shepherd asks GitHub for the latest release. A newer one downloads in the
-background, and a bar above the editor offers to restart into it. The version is under `⌘/`,
-next to a check for updates.
+background: on macOS a bar above the editor offers to restart into it, on Linux it offers to
+show the download. The version is under `⌘/`, next to a check for updates.
 
 The repository is public, so no token is needed. A fork kept private can set
 `SHEPHERD_GITHUB_TOKEN`, or put a token with read access in
-`~/Library/Application Support/Shepherd/github-token`.
+`~/Library/Application Support/Shepherd/github-token` on macOS, or
+`~/.config/shepherd/github-token` on Linux.
 
 ## Development
 
@@ -114,7 +140,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-CI runs the same three on every push to `main` and on pull requests.
+CI runs the same three on macOS and Linux, on every push to `main` and on pull requests.
 
 <details>
 <summary>Releasing</summary>
@@ -126,10 +152,11 @@ git tag v0.2.0
 git push origin main v0.2.0
 ```
 
-The tag starts `.github/workflows/release.yml`, which builds the universal app, checks the
-tag against `Cargo.toml` and publishes `Shepherd-<version>-macos-universal.zip` with the
-release notes. A tag with a hyphen, such as `v0.2.0-rc.1`, is published as a pre-release and
-is not offered as an update.
+The tag starts `.github/workflows/release.yml`, which builds the macOS app and the Linux
+tarball, checks the tag against `Cargo.toml` and publishes
+`Shepherd-<version>-macos-universal.zip` and `Shepherd-<version>-linux-x86_64.tar.gz` with
+the release notes. A tag with a hyphen, such as `v0.2.0-rc.1`, is published as a pre-release
+and is not offered as an update.
 
 </details>
 

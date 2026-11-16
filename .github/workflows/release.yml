@@ -30,6 +30,49 @@ jobs:
       - name: Build the app
         run: ./scripts/bundle.sh --universal --zip
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev \
+            libxrandr-dev libxi-dev libxcursor-dev libgl1-mesa-dev \
+            libegl1-mesa-dev libvulkan-dev libfontconfig1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the app
+        run: ./scripts/bundle-linux.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -38,7 +81,7 @@ jobs:
           case "$GITHUB_REF_NAME" in
             *-*) prerelease="--prerelease" ;;
           esac
-          gh release create "$GITHUB_REF_NAME" dist/*.zip \
+          gh release create "$GITHUB_REF_NAME" dist/* \
             --title "Shepherd $GITHUB_REF_NAME" \
             --generate-notes \
             $prerelease

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Shepherd
+GenericName=Code Editor
+Comment=A lightweight code editor for the age of agents
+Exec=shepherd
+Icon=shepherd
+Terminal=false
+Categories=Development;IDE;
+Keywords=editor;git;review;agents;
+StartupNotify=true

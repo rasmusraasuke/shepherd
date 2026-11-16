@@ -363,11 +363,13 @@ impl App {
                         ui.weak(format!("Downloading Shepherd {}…", release.version()));
                     }
                     update::Phase::Ready(release) => {
-                        ui.label(format!(
-                            "Shepherd {} is ready to install.",
-                            release.version()
-                        ));
-                        if update::bundled().is_some() {
+                        let install = update::bundled().is_some();
+                        ui.label(if install {
+                            format!("Shepherd {} is ready to install.", release.version())
+                        } else {
+                            format!("Shepherd {} has been downloaded.", release.version())
+                        });
+                        if install {
                             if ui.button("Restart and update").clicked() {
                                 match self.updates.install(&self.content.root) {
                                     Ok(()) => {
@@ -376,7 +378,7 @@ impl App {
                                     Err(e) => self.updates.fail(e),
                                 }
                             }
-                        } else if ui.button("Show the downloaded app").clicked()
+                        } else if ui.button("Show the download").clicked()
                             && let Err(e) = self.updates.reveal()
                         {
                             self.updates.fail(e);

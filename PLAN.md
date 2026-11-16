@@ -40,9 +40,9 @@ picture of what is ahead and behind, and creating and switching branches, taking
 along or leaving them, and agents as tabs of their own: Claude Code and Opencode found on
 the PATH, started in Agent tabs without a shell, reached with a quick chat on Ctrl Ctrl with
 the agent and model chosen and remembered, and sent the editor's text there and nowhere else,
-and shipping as a real application: an app bundle built by a script, releases made from a
-tag, and updates found, downloaded in the background and installed in place. FEATURES.md
-describes the features.
+and shipping as a real application: an app bundle for macOS and a tarball for Linux built by
+scripts, releases made from a tag, and updates found and downloaded in the background.
+FEATURES.md describes the features.
 
 Next is milestone 10: merge conflicts in the same view.
 
@@ -199,14 +199,17 @@ versioned, published and able to replace itself.
   signature, and a universal binary for Apple Silicon and Intel. It can install the app into
   `/Applications`, link a `shepherd` command for the terminal, and make the zip that releases
   are made of
+- A Linux build from the same tag: a tarball with the binary, the desktop entry and the icon,
+  which installs into `~/.local` or runs from where it was unpacked
 - The version is to be had from the command line and from the keyboard shortcuts
 - Started from Finder or Spotlight, the app opens the repository it opened last, and finds
   agents where Homebrew and `~/.local/bin` put them, which an app started without a shell
   otherwise does not
-- A tag makes a release: GitHub Actions builds the universal app, checks the tag against
-  `Cargo.toml` and publishes it with notes
+- A tag makes a release: GitHub Actions builds the macOS app and the Linux tarball, checks
+  the tag against `Cargo.toml` and publishes them with notes
 - Updates: on start the app asks for the latest release; a newer one is downloaded in the
-  background and, when it is ready, a bar above the editor offers to restart into it
+  background and, when it is ready, the editor offers to restart into it on macOS and to show
+  it on Linux
 
 Done when: a new version is tagged, and the app installed in `/Applications` finds it,
 downloads it and restarts into it.
