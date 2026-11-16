@@ -20,7 +20,7 @@ use crate::quick_chat::{self, QuickChat};
 use crate::quick_open::{Outcome, QuickOpen};
 use crate::review::{self, Review};
 use crate::search::{ProjectSearch, Reveal};
-use crate::terminal::{Activity, Terminals};
+use crate::terminal::{Activity, Prompt, Terminals};
 use crate::theme;
 use crate::update;
 use crate::watcher::{Snapshot, Watcher};
@@ -91,6 +91,7 @@ enum Action {
         agent: Option<u64>,
         text: String,
         window: usize,
+        images: Vec<PathBuf>,
     },
     Draft {
         text: String,
@@ -312,14 +313,14 @@ impl App {
         tabs: Option<TileId>,
         agent: Agent,
         model: Option<String>,
-        message: Option<String>,
+        prompt: Prompt,
         ctx: &egui::Context,
     ) {
         let session = agent.new_session();
         let id = self
             .workspace
             .open_agent(window, tabs, agent, session, model);
-        self.content.terminals.start(id, message);
+        self.content.terminals.start(id, prompt);
         self.focus(window, ctx);
     }
 
@@ -534,7 +535,13 @@ impl App {
         }
         let double_ctrl = ctx.input(|i| i.focused && self.double_ctrl.follow(&i.events, i.time));
         if double_ctrl {
-            self.quick_chat = Some((window_id, QuickChat::new()));
+            self.quick_chat = Some((
+                window_id,
+                QuickChat::new(
+                    self.content.terminals.clipboard(),
+                    self.content.terminals.image_dir(),
+                ),
+            ));
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::T)) {
             self.action = Some(Action::NewTerminal(index, None));
@@ -641,12 +648,17 @@ impl App {
                 chat.ui(&ctx, &self.agents, &self.models, &mut self.workspace.agent)
             });
             match outcome {
-                Some(quick_chat::Outcome::Send(agent, text)) => {
+                Some(quick_chat::Outcome::Send {
+                    agent,
+                    text,
+                    images,
+                }) => {
                     self.workspace.agent.agent = Some(agent);
                     self.action = Some(Action::Send {
                         agent: None,
                         text,
                         window: index,
+                        images,
                     });
                     self.quick_chat = None;
                 }
@@ -695,7 +707,7 @@ impl App {
             }
             Action::NewAgent(window, tabs, agent) => {
                 let model = self.chosen_model(agent);
-                self.open_agent(window, tabs, agent, model, None, ctx);
+                self.open_agent(window, tabs, agent, model, Prompt::default(), ctx);
             }
             Action::NewReview(window, tabs) => {
                 self.workspace.add_tab(window, tabs, Tab::Review(None));
@@ -720,12 +732,23 @@ impl App {
                 agent,
                 text,
                 window,
+                images,
             } => match agent {
                 Some(id) => self.content.terminals.send(id, &text),
                 None => {
                     if let Some(agent) = self.chosen_agent() {
                         let model = self.chosen_model(agent);
-                        self.open_agent(window, None, agent, model, Some(text), ctx);
+                        self.open_agent(
+                            window,
+                            None,
+                            agent,
+                            model,
+                            Prompt {
+                                message: Some(text),
+                                images,
+                            },
+                            ctx,
+                        );
                     }
                 }
             },
@@ -1074,6 +1097,7 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                             agent,
                             text,
                             window: self.window,
+                            images: Vec::new(),
                         })
                     }
                     Some(review::Outcome::Open { path, line }) => {
@@ -1456,6 +1480,9 @@ mod tests {
         );
         let snapshot = Snapshot::take(&repo);
         let mut app = App::new(repo, Workspace::default(), egui::Context::default());
+        app.content
+            .terminals
+            .keep_images_in(dir.path().join("images"));
         app.apply(snapshot);
         let mut harness = Harness::builder()
             .with_step_dt(step_dt)
@@ -2120,6 +2147,20 @@ mod tests {
             .run_agents_with(&program);
         harness.state_mut().agents = vec![Agent::Claude];
         harness.state_mut().models = HashMap::from([(Agent::Claude, Agent::Claude.models())]);
+        harness
+            .state_mut()
+            .content
+            .terminals
+            .set_clipboard(crate::images::Clipboard {
+                text: || None,
+                image: || {
+                    Some(crate::images::Picture {
+                        width: 1,
+                        height: 1,
+                        bytes: std::borrow::Cow::Owned(vec![255, 255, 255, 255]),
+                    })
+                },
+            });
         harness.run();
 
         let ctrl = |harness: &mut Harness<'_, App>, modifiers: Modifiers| {
@@ -2143,10 +2184,20 @@ mod tests {
         harness.run();
         harness.get_by_label("Haiku").click();
         harness.run();
-        harness.event(egui::Event::Text("hello agent".to_string()));
+        harness.event(egui::Event::Text("hello agent ".to_string()));
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        harness.run();
         harness.key_press(Key::Enter);
         harness.run();
         assert!(harness.state().quick_chat.is_none());
+
+        let images: Vec<PathBuf> = fs::read_dir(dir.path().join("images"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(images.len(), 1);
 
         let tabs = open_tabs(&harness);
         assert!(tabs[0].iter().any(|tab| matches!(
@@ -2167,17 +2218,32 @@ mod tests {
             })
             .unwrap();
         let start = Instant::now();
+        let path = images[0].display().to_string();
+        let flat_path = path.split_whitespace().collect::<String>();
         while !harness
             .state()
             .content
             .terminals
             .screen(id)
-            .is_some_and(|screen| screen.contains("hello agent") && screen.contains("haiku"))
+            .is_some_and(|screen| {
+                let flat = screen.split_whitespace().collect::<String>();
+                flat.contains("helloagent") && flat.contains(&flat_path) && flat.contains("haiku")
+            })
         {
-            assert!(start.elapsed() < Duration::from_secs(5));
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the agent shows:\n{}",
+                harness
+                    .state()
+                    .content
+                    .terminals
+                    .screen(id)
+                    .unwrap_or_default()
+            );
             harness.run();
             std::thread::sleep(Duration::from_millis(10));
         }
+        assert!(images[0].exists());
     }
 
     #[test]

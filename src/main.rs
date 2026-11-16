@@ -12,6 +12,7 @@ mod flow;
 mod git;
 mod highlight;
 mod icons;
+mod images;
 mod keys;
 mod line_diff;
 mod quick_chat;

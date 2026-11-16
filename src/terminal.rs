@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -18,6 +18,7 @@ use eframe::egui::{self, Color32, Event, EventFilter, Key, Modifiers, Sense, Vec
 
 use crate::agents::{Agent, Start};
 use crate::code::CodeStyle;
+use crate::images::{self, Clipboard};
 use crate::terminal_text;
 
 const PADDING: f32 = 4.0;
@@ -93,16 +94,19 @@ pub struct Terminals {
     shell: Option<Shell>,
     terminals: HashMap<u64, Result<Terminal, String>>,
     focus_on_start: HashSet<u64>,
-    read_clipboard: fn() -> Option<String>,
+    clipboard: Clipboard,
+    image_dir: PathBuf,
     last_used: Option<u64>,
     env: HashMap<String, String>,
     guide: Option<PathBuf>,
     agent_program: Option<String>,
-    starts: HashMap<u64, Option<String>>,
+    starts: HashMap<u64, Prompt>,
 }
 
-fn read_clipboard() -> Option<String> {
-    arboard::Clipboard::new().ok()?.get_text().ok()
+#[derive(Default)]
+pub struct Prompt {
+    pub message: Option<String>,
+    pub images: Vec<PathBuf>,
 }
 
 fn size_for(rect: egui::Rect, style: &CodeStyle) -> Size {
@@ -114,18 +118,29 @@ fn size_for(rect: egui::Rect, style: &CodeStyle) -> Size {
 
 impl Terminals {
     pub fn new(root: PathBuf) -> Self {
+        let image_dir = images::dir();
+        images::remove_old(&image_dir, images::OLD);
         Self {
             root,
             shell: None,
             terminals: HashMap::new(),
             focus_on_start: HashSet::new(),
-            read_clipboard,
+            clipboard: Clipboard::default(),
+            image_dir,
             last_used: None,
             env: HashMap::new(),
             guide: None,
             agent_program: None,
             starts: HashMap::new(),
         }
+    }
+
+    pub fn clipboard(&self) -> Clipboard {
+        self.clipboard
+    }
+
+    pub fn image_dir(&self) -> PathBuf {
+        self.image_dir.clone()
     }
 
     pub fn set_env(&mut self, name: &str, value: String) {
@@ -136,8 +151,8 @@ impl Terminals {
         self.guide = Some(guide);
     }
 
-    pub fn start(&mut self, id: u64, message: Option<String>) {
-        self.starts.insert(id, message);
+    pub fn start(&mut self, id: u64, prompt: Prompt) {
+        self.starts.insert(id, prompt);
         self.focus(id);
     }
 
@@ -241,7 +256,9 @@ impl Terminals {
     pub fn close(&mut self, id: u64) {
         self.terminals.remove(&id);
         self.focus_on_start.remove(&id);
-        self.starts.remove(&id);
+        if let Some(pending) = self.starts.remove(&id) {
+            images::remove(&pending.images);
+        }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, id: u64) {
@@ -302,14 +319,21 @@ impl Terminals {
         );
         let size = size_for(ui.available_rect_before_wrap(), &style);
         if !self.terminals.contains_key(&id) {
-            let start = self.starts.remove(&id).map_or(Start::Continue, Start::New);
+            let pending = self.starts.remove(&id);
+            let start = match &pending {
+                Some(pending) => Start::New(pending.message.clone()),
+                None => Start::Continue,
+            };
             let focus = self.focus_on_start.remove(&id);
-            let terminal = self.spawn(agent, start, size, &style, ui.ctx(), focus);
+            let mut terminal = self.spawn(agent, start, size, &style, ui.ctx(), focus);
+            if let (Ok(terminal), Some(pending)) = (&mut terminal, pending) {
+                terminal.images = pending.images;
+            }
             self.terminals.insert(id, terminal);
         }
         match self.terminals.get_mut(&id) {
             Some(Ok(terminal)) => {
-                if terminal.ui(ui, id, &style, fonts_ready, self.read_clipboard) {
+                if terminal.ui(ui, id, &style, fonts_ready, self.clipboard, &self.image_dir) {
                     self.last_used = Some(id);
                 }
                 let again = if terminal.restart {
@@ -328,7 +352,14 @@ impl Terminals {
                         }
                     };
                     let target = agent.map(|(agent, _, model)| (agent, session.as_str(), model));
-                    let terminal = self.spawn(target, start, size, &style, ui.ctx(), true);
+                    let images = match self.terminals.get_mut(&id) {
+                        Some(Ok(old)) => std::mem::take(&mut old.images),
+                        _ => Vec::new(),
+                    };
+                    let mut terminal = self.spawn(target, start, size, &style, ui.ctx(), true);
+                    if let Ok(terminal) = &mut terminal {
+                        terminal.images = images;
+                    }
                     self.terminals.insert(id, terminal);
                     if fresh {
                         return Some(session);
@@ -349,6 +380,16 @@ impl Terminals {
     #[cfg(test)]
     pub fn run_agents_with(&mut self, program: &std::path::Path) {
         self.agent_program = Some(program.display().to_string());
+    }
+
+    #[cfg(test)]
+    pub fn keep_images_in(&mut self, dir: PathBuf) {
+        self.image_dir = dir;
+    }
+
+    #[cfg(test)]
+    pub fn set_clipboard(&mut self, clipboard: Clipboard) {
+        self.clipboard = clipboard;
     }
 
     #[cfg(test)]
@@ -389,6 +430,8 @@ struct Terminal {
     restart: bool,
     agent: Option<Agent>,
     resumed: bool,
+    images: Vec<PathBuf>,
+    notice: Option<String>,
 }
 
 fn window_size(size: Size, style: &CodeStyle) -> WindowSize {
@@ -457,6 +500,8 @@ impl Terminal {
             restart: false,
             agent: None,
             resumed: false,
+            images: Vec::new(),
+            notice: None,
         })
     }
 
@@ -496,7 +541,7 @@ impl Terminal {
         ctx: &egui::Context,
         style: &CodeStyle,
         palette: &Palette,
-        read_clipboard: fn() -> Option<String>,
+        clipboard: Clipboard,
     ) {
         for event in self.events.try_iter().collect::<Vec<_>>() {
             match event {
@@ -526,7 +571,7 @@ impl Terminal {
         if self.clipboard_allowed
             && let Some(answer) = self.clipboard_request.take()
         {
-            self.write(answer(&read_clipboard().unwrap_or_default()));
+            self.write(answer(&clipboard.read_text().unwrap_or_default()));
         }
     }
 
@@ -549,6 +594,50 @@ impl Terminal {
         });
     }
 
+    fn notice_bar(&mut self, ui: &mut egui::Ui) {
+        let Some(notice) = self.notice.clone() else {
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.colored_label(ui.visuals().warn_fg_color, notice);
+            if ui.small_button("Dismiss").clicked() {
+                self.notice = None;
+            }
+        });
+    }
+
+    fn image_text(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        focused: bool,
+        clipboard: Clipboard,
+        image_dir: &Path,
+    ) -> Option<String> {
+        let agent = self.agent?;
+        let dropped = dropped_images(ui, rect);
+        if !dropped.is_empty() {
+            return Some(images::hand(Some(agent), &dropped));
+        }
+        if !focused || !ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::V)) {
+            return None;
+        }
+        if clipboard.read_text().is_some_and(|text| !text.is_empty()) {
+            return None;
+        }
+        match images::save(image_dir, clipboard.read_image()?) {
+            Ok(path) => {
+                let text = images::hand(Some(agent), std::slice::from_ref(&path));
+                self.images.push(path);
+                Some(text)
+            }
+            Err(error) => {
+                self.notice = Some(error);
+                None
+            }
+        }
+    }
+
     fn resize(&mut self, size: Size, style: &CodeStyle) {
         if size != self.size {
             self.size = size;
@@ -563,12 +652,14 @@ impl Terminal {
         id: u64,
         style: &CodeStyle,
         fonts_ready: bool,
-        read_clipboard: fn() -> Option<String>,
+        clipboard: Clipboard,
+        image_dir: &Path,
     ) -> bool {
         let palette = Palette::new(ui.visuals());
         self.update_activity();
+        self.notice_bar(ui);
         self.clipboard_bar(ui);
-        self.handle_reports(ui.ctx(), style, &palette, read_clipboard);
+        self.handle_reports(ui.ctx(), style, &palette, clipboard);
         let size = size_for(ui.available_rect_before_wrap(), style);
         self.resize(size, style);
 
@@ -581,6 +672,16 @@ impl Terminal {
         let origin = rect.min + Vec2::splat(PADDING);
         if std::mem::take(&mut self.focus) || response.clicked() {
             response.request_focus();
+        }
+
+        if let Some(text) = self.image_text(ui, rect, response.has_focus(), clipboard, image_dir) {
+            let mut term = self.term.lock();
+            let mode = *term.mode();
+            term.scroll_display(Scroll::Bottom);
+            term.selection = None;
+            drop(term);
+            self.last_input = Some(Instant::now());
+            self.write(paste_bytes(&text, mode));
         }
 
         let mut term = self.term.lock();
@@ -804,6 +905,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = self.notifier.0.send(Msg::Shutdown);
+        images::remove(&self.images);
     }
 }
 
@@ -1094,6 +1196,24 @@ fn mouse_bytes(
     ]
 }
 
+fn dropped_images(ui: &egui::Ui, rect: egui::Rect) -> Vec<PathBuf> {
+    let over = ui
+        .input(|i| i.pointer.hover_pos())
+        .is_some_and(|pos| rect.contains(pos) && ui.ctx().layer_id_at(pos) == Some(ui.layer_id()));
+    if !over {
+        return Vec::new();
+    }
+    ui.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path().to_path_buf())
+            .filter(|path| images::is_image(path))
+            .collect()
+    })
+}
+
 fn paste_bytes(text: &str, mode: TermMode) -> Vec<u8> {
     let text = text.replace("\r\n", "\r").replace('\n', "\r");
     if mode.contains(TermMode::BRACKETED_PASTE) {
@@ -1186,13 +1306,15 @@ fn key_bytes(key: Key, modifiers: Modifiers, mode: TermMode) -> Option<Vec<u8>> 
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable as _;
 
     use super::*;
-    use crate::testing::TempDir;
+    use crate::testing::{Dropped, TempDir};
 
     fn sent(key: Key, modifiers: Modifiers) -> String {
         String::from_utf8(key_bytes(key, modifiers, TermMode::default()).unwrap_or_default())
@@ -1283,6 +1405,7 @@ mod tests {
     fn harness(name: &str, script: &str) -> (Harness<'static, Terminals>, TempDir) {
         let dir = TempDir::new(name);
         let mut terminals = Terminals::new(dir.path().to_path_buf());
+        terminals.image_dir = dir.path().join("images");
         terminals.run("/bin/sh", &["-c", script]);
         let harness = Harness::builder()
             .with_size(Vec2::new(600.0, 400.0))
@@ -1305,9 +1428,10 @@ mod tests {
         let program = dir.write("agent", script);
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut terminals = Terminals::new(dir.path().to_path_buf());
+        terminals.image_dir = dir.path().join("images");
         terminals.run_agents_with(&program);
         if fresh {
-            terminals.start(1, None);
+            terminals.start(1, Prompt::default());
         }
         let harness = Harness::builder()
             .with_size(Vec2::new(600.0, 400.0))
@@ -1471,7 +1595,7 @@ mod tests {
             SHOW_INPUT.replace("COUNT", "12")
         );
         let (mut harness, _dir) = harness("terminal-clipboard", &script);
-        harness.state_mut().read_clipboard = || Some("hi".to_string());
+        harness.state_mut().clipboard.text = || Some("hi".to_string());
         wait(&mut harness, "question", |harness| {
             harness.query_by_label("Allow").is_some()
         });
@@ -1532,5 +1656,156 @@ mod tests {
                 .collect::<String>()
                 .contains(sent)
         });
+    }
+
+    fn picture() -> Option<images::Picture> {
+        Some(images::Picture {
+            width: 1,
+            height: 1,
+            bytes: std::borrow::Cow::Owned(vec![255, 255, 255, 255]),
+        })
+    }
+
+    fn image_harness(name: &str) -> (Harness<'static, Terminals>, TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new(name);
+        let capture = dir.path().join("input");
+        let program = dir.write(
+            "agent",
+            format!(
+                "#!/bin/sh\nstty -icanon -echo\nprintf ready\ncat > '{}'\n",
+                capture.display()
+            ),
+        );
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut terminals = Terminals::new(dir.path().to_path_buf());
+        terminals.image_dir = dir.path().join("images");
+        terminals.run_agents_with(&program);
+        terminals.clipboard.text = || None;
+        terminals.clipboard.image = picture;
+        terminals.start(1, Prompt::default());
+        let harness = Harness::builder()
+            .with_size(Vec2::new(600.0, 400.0))
+            .with_max_steps(8)
+            .build_ui_state(
+                |ui, terminals: &mut Terminals| {
+                    terminals.agent_ui(ui, 1, Agent::Claude, "s1", None);
+                },
+                terminals,
+            );
+        (harness, dir, capture)
+    }
+
+    fn click_terminal(harness: &mut Harness<'_, Terminals>) {
+        let cell =
+            harness.get_by_role(egui::Role::Terminal).rect().min + Vec2::splat(PADDING + 2.0);
+        harness.event(Event::PointerMoved(cell));
+        for pressed in [true, false] {
+            harness.event(Event::PointerButton {
+                pos: cell,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        harness.run();
+    }
+
+    fn wait_for_input(path: &Path, expected: &str) {
+        let start = Instant::now();
+        while !fs::read_to_string(path).is_ok_and(|text| text == expected) {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the program didn't get {expected:?}, it has {:?}",
+                fs::read_to_string(path).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn image_files(dir: &Path) -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn pastes_a_picture_into_an_agent_tab_as_the_path_of_a_file() {
+        let (mut harness, dir, capture) = image_harness("agent-image-paste");
+        wait_for_screen(&mut harness, "ready");
+        click_terminal(&mut harness);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        harness.run();
+
+        let images = image_files(&dir.path().join("images"));
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].extension().unwrap(), "png");
+        wait_for_input(&capture, &images[0].display().to_string());
+        drop(harness);
+        assert!(!images[0].exists());
+    }
+
+    #[test]
+    fn keeps_the_text_of_the_clipboard_over_its_picture() {
+        let (mut harness, dir, capture) = image_harness("agent-image-text");
+        wait_for_screen(&mut harness, "ready");
+        harness.state_mut().clipboard.text = || Some("hello".to_string());
+        click_terminal(&mut harness);
+        harness.event(Event::Paste("hello".to_string()));
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        harness.run();
+        wait_for_input(&capture, "hello");
+        assert!(image_files(&dir.path().join("images")).is_empty());
+    }
+
+    #[test]
+    fn drops_pictures_on_an_agent_tab_as_their_paths() {
+        let (mut harness, dir, capture) = image_harness("agent-image-drop");
+        wait_for_screen(&mut harness, "ready");
+        let picture = dir.write("shot.png", "picture");
+        let notes = dir.write("notes.txt", "text");
+        let cell = harness.get_by_role(egui::Role::Terminal).rect().center();
+        harness.event(Event::PointerMoved(cell));
+        harness.step();
+        harness
+            .input_mut()
+            .dropped_files
+            .push(Arc::new(Dropped(picture.clone())));
+        harness
+            .input_mut()
+            .dropped_files
+            .push(Arc::new(Dropped(notes)));
+        harness.step();
+        wait_for_input(&capture, &picture.display().to_string());
+        assert!(image_files(&dir.path().join("images")).is_empty());
+    }
+
+    #[test]
+    fn leaves_a_plain_terminal_alone_when_pictures_are_pasted_or_dropped() {
+        let (mut harness, dir) = harness(
+            "terminal-no-image",
+            "stty -icanon -echo; printf ready; cat > input",
+        );
+        wait_for_screen(&mut harness, "ready");
+        harness.state_mut().clipboard.text = || None;
+        harness.state_mut().clipboard.image = picture;
+        click_terminal(&mut harness);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        harness.run_steps(2);
+
+        let picture = dir.write("shot.png", "picture");
+        let cell = harness.get_by_role(egui::Role::Terminal).rect().center();
+        harness.event(Event::PointerMoved(cell));
+        harness.step();
+        harness
+            .input_mut()
+            .dropped_files
+            .push(Arc::new(Dropped(picture)));
+        harness.run_steps(2);
+
+        let input = fs::read_to_string(dir.path().join("input")).unwrap_or_default();
+        assert!(input.is_empty(), "{input:?}");
+        assert!(image_files(&dir.path().join("images")).is_empty());
     }
 }

@@ -23,7 +23,7 @@ around that loop.
 
 ## Where we are
 
-Milestones 1 to 9 are done: a workspace of tabs, splits and windows that survives
+Milestones 1 to 10 are done: a workspace of tabs, splits and windows that survives
 restarts, with file editing (undo, find and replace, syntax highlighting, saving on its own,
 reloading of files changed on disk), search across the project, terminals good enough for
 CLI agents, and a review of one file at a time, chosen from the tree of changed files, with
@@ -41,10 +41,12 @@ along or leaving them, and agents as tabs of their own: Claude Code and Opencode
 the PATH, started in Agent tabs without a shell, reached with a quick chat on Ctrl Ctrl with
 the agent and model chosen and remembered, and sent the editor's text there and nowhere else,
 and shipping as a real application: an app bundle for macOS and a tarball for Linux built by
-scripts, releases made from a tag, and updates found and downloaded in the background.
+scripts, releases made from a tag, and updates found and downloaded in the background, and
+pictures for agents: a screenshot pasted or dropped into an Agent tab or a quick chat
+becomes a file the agent reads.
 FEATURES.md describes the features.
 
-Next is milestone 10: images for agents.
+Next is milestone 11: merge conflicts in the same view.
 
 ## Milestones
 
@@ -214,7 +216,7 @@ versioned, published and able to replace itself.
 Done when: a new version is tagged, and the app installed in `/Applications` finds it,
 downloads it and restarts into it.
 
-### 10. Images for agents
+### 10. Images for agents (completed)
 
 An agent's work often starts from a picture: a screenshot of a bug, a design or an error in a
 browser. Until now only text can be pasted into an Agent tab, so a screenshot has to be saved to

@@ -127,6 +127,22 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   tabs as they do in terminals. `shepherd ctl context` lists the Agent tabs apart from the
   terminals, and `shepherd ctl terminal <id>` shows what any of them shows.
 
+## Images
+
+- **Pictures for agents.** Cmd+V in an Agent tab with a picture on the clipboard writes it to
+  a PNG file in a temporary directory and pastes the path into the agent as text is pasted,
+  without pressing Enter, so the agent reads it as any other file. When the clipboard holds
+  both text and a picture, the text is pasted, as before. Image files dropped on an Agent tab
+  are pasted the same way, one path per image. Each known agent says how it is handed a
+  picture, so adding an agent stays a small change.
+- **In a quick chat.** Pictures pasted into the quick chat's field, or dropped into it, are
+  taken the same way, and their paths are sent with the message.
+- **Temporary pictures.** A picture written for an agent stays while the agent runs and is
+  removed when its tab closes, and pictures left behind by an editor that ended are removed
+  once they are a day old, so screenshots do not pile up. An image file you drop on a tab is
+  used where it is.
+- **Plain terminals.** Terminals are left alone: a picture only becomes a path in Agent tabs.
+
 ## Review
 
 - **One file at a time.** The review covers all working-tree changes (staged, unstaged and

@@ -4,6 +4,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct TempDir(PathBuf);
 
+#[derive(Debug)]
+pub struct Dropped(pub PathBuf);
+
+impl eframe::egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        fs::read(&self.0).map_err(|error| error.to_string())
+    }
+}
+
 impl TempDir {
     pub fn new(name: &str) -> Self {
         static CREATED: AtomicUsize = AtomicUsize::new(0);

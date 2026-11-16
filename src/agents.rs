@@ -57,6 +57,7 @@ struct Spec {
     session: fn() -> String,
     command: fn(&str, Start, Option<&Path>, Option<&str>) -> Command,
     background: fn(&str, Option<&Path>, Option<&str>) -> Command,
+    image: fn(&Path) -> String,
 }
 
 static CLAUDE: Spec = Spec {
@@ -65,6 +66,7 @@ static CLAUDE: Spec = Spec {
     session: claude_session,
     command: claude_command,
     background: claude_background,
+    image: image_path,
 };
 
 static OPENCODE: Spec = Spec {
@@ -73,6 +75,7 @@ static OPENCODE: Spec = Spec {
     session: opencode_session,
     command: opencode_command,
     background: opencode_background,
+    image: image_path,
 };
 
 impl Agent {
@@ -116,6 +119,10 @@ impl Agent {
         (self.spec().background)(message, guide, model)
     }
 
+    pub fn image(self, path: &Path) -> String {
+        (self.spec().image)(path)
+    }
+
     pub fn models(self) -> Vec<Model> {
         match self {
             Agent::Claude => [("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")]
@@ -147,6 +154,10 @@ impl Agent {
 
 fn random() -> u64 {
     RandomState::new().build_hasher().finish()
+}
+
+fn image_path(path: &Path) -> String {
+    path.display().to_string()
 }
 
 fn claude_session() -> String {
@@ -545,6 +556,16 @@ mod tests {
                 before
                     .iter()
                     .all(|other| other.program() != agent.program())
+            );
+        }
+    }
+
+    #[test]
+    fn hands_every_agent_its_pictures_the_way_it_takes_them() {
+        for agent in Agent::ALL {
+            assert_eq!(
+                agent.image(Path::new("/tmp/shepherd-images/image-1-0.png")),
+                "/tmp/shepherd-images/image-1-0.png"
             );
         }
     }
