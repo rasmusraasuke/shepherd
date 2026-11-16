@@ -1,49 +1,17 @@
 use std::fs;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
+
+use eframe::egui::{self, ColorImage};
 
 use crate::agents::Agent;
 
 pub const OLD: Duration = Duration::from_secs(24 * 60 * 60);
 
 const EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff"];
-
-pub type Picture = arboard::ImageData<'static>;
-
-#[derive(Clone, Copy)]
-pub struct Clipboard {
-    pub text: fn() -> Option<String>,
-    pub image: fn() -> Option<Picture>,
-}
-
-impl Clipboard {
-    pub fn read_text(&self) -> Option<String> {
-        (self.text)()
-    }
-
-    pub fn read_image(&self) -> Option<Picture> {
-        (self.image)()
-    }
-}
-
-impl Default for Clipboard {
-    fn default() -> Self {
-        Self {
-            text: read_text,
-            image: read_image,
-        }
-    }
-}
-
-fn read_text() -> Option<String> {
-    arboard::Clipboard::new().ok()?.get_text().ok()
-}
-
-fn read_image() -> Option<Picture> {
-    arboard::Clipboard::new().ok()?.get_image().ok()
-}
 
 pub fn dir() -> PathBuf {
     std::env::temp_dir().join("shepherd-images")
@@ -59,7 +27,21 @@ pub fn is_image(path: &Path) -> bool {
         })
 }
 
-pub fn save(dir: &Path, picture: Picture) -> Result<PathBuf, String> {
+pub fn take_pasted(ctx: &egui::Context) -> Vec<Arc<ColorImage>> {
+    ctx.input_mut(|input| {
+        let mut pictures = Vec::new();
+        input.events.retain(|event| match event {
+            egui::Event::PasteImage(picture) => {
+                pictures.push(picture.clone());
+                false
+            }
+            _ => true,
+        });
+        pictures
+    })
+}
+
+pub fn save(dir: &Path, picture: &ColorImage) -> Result<PathBuf, String> {
     static COUNT: AtomicUsize = AtomicUsize::new(0);
     fs::create_dir_all(dir).map_err(|error| format!("Cannot write the image: {error}"))?;
     let name = format!(
@@ -72,16 +54,21 @@ pub fn save(dir: &Path, picture: Picture) -> Result<PathBuf, String> {
         fs::File::create(&path).map_err(|error| format!("Cannot write the image: {error}"))?;
     let mut encoder = png::Encoder::new(
         BufWriter::new(file),
-        picture.width as u32,
-        picture.height as u32,
+        picture.size[0] as u32,
+        picture.size[1] as u32,
     );
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder
         .write_header()
         .map_err(|error| format!("Cannot write the image: {error}"))?;
+    let pixels: Vec<u8> = picture
+        .pixels
+        .iter()
+        .flat_map(|pixel| pixel.to_array())
+        .collect();
     writer
-        .write_image_data(&picture.bytes)
+        .write_image_data(&pixels)
         .map_err(|error| format!("Cannot write the image: {error}"))?;
     Ok(path)
 }
@@ -121,17 +108,16 @@ pub fn remove_old(dir: &Path, older_than: Duration) {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
+    use eframe::egui::Color32;
 
     use super::*;
     use crate::testing::TempDir;
 
-    fn picture() -> Picture {
-        Picture {
-            width: 2,
-            height: 1,
-            bytes: Cow::Owned(vec![255, 0, 0, 255, 0, 255, 0, 255]),
-        }
+    fn picture() -> ColorImage {
+        ColorImage::new(
+            [2, 1],
+            vec![Color32::from_rgb(255, 0, 0), Color32::from_rgb(0, 255, 0)],
+        )
     }
 
     #[test]
@@ -154,7 +140,7 @@ mod tests {
     #[test]
     fn writes_the_picture_as_a_png_file() {
         let dir = TempDir::new("images-save");
-        let path = save(dir.path(), picture()).unwrap();
+        let path = save(dir.path(), &picture()).unwrap();
         assert_eq!(path.extension().unwrap(), "png");
         let decoder = png::Decoder::new(std::io::BufReader::new(fs::File::open(&path).unwrap()));
         let mut reader = decoder.read_info().unwrap();
@@ -165,15 +151,15 @@ mod tests {
             &bytes[..info.buffer_size()],
             &[255, 0, 0, 255, 0, 255, 0, 255]
         );
-        assert_ne!(save(dir.path(), picture()).unwrap(), path);
+        assert_ne!(save(dir.path(), &picture()).unwrap(), path);
     }
 
     #[test]
     fn removes_the_pictures_it_was_given() {
         let dir = TempDir::new("images-remove");
         let paths = [
-            save(dir.path(), picture()).unwrap(),
-            save(dir.path(), picture()).unwrap(),
+            save(dir.path(), &picture()).unwrap(),
+            save(dir.path(), &picture()).unwrap(),
         ];
         remove(&paths);
         assert!(paths.iter().all(|path| !path.exists()));
@@ -182,7 +168,7 @@ mod tests {
     #[test]
     fn removes_the_pictures_that_are_old() {
         let dir = TempDir::new("images-old");
-        let path = save(dir.path(), picture()).unwrap();
+        let path = save(dir.path(), &picture()).unwrap();
         remove_old(dir.path(), Duration::from_secs(3600));
         assert!(path.exists());
         remove_old(dir.path(), Duration::ZERO);

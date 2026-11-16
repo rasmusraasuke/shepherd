@@ -4,12 +4,11 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align2, Key, Modifiers};
 
 use crate::agents::{self, Agent, Choice, Model};
-use crate::images::{self, Clipboard};
+use crate::images;
 
 pub struct QuickChat {
     message: String,
     send: bool,
-    clipboard: Clipboard,
     image_dir: PathBuf,
     images: Vec<PathBuf>,
 }
@@ -24,11 +23,10 @@ pub enum Outcome {
 }
 
 impl QuickChat {
-    pub fn new(clipboard: Clipboard, image_dir: PathBuf) -> Self {
+    pub fn new(image_dir: PathBuf) -> Self {
         Self {
             message: String::new(),
             send: false,
-            clipboard,
             image_dir,
             images: Vec::new(),
         }
@@ -88,17 +86,13 @@ impl QuickChat {
                 .filter(|path| images::is_image(path))
                 .collect()
         });
-        if typing
-            && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::V))
-            && self
-                .clipboard
-                .read_text()
-                .is_none_or(|text| text.is_empty())
-            && let Some(picture) = self.clipboard.read_image()
-            && let Ok(path) = images::save(&self.image_dir, picture)
-        {
-            paths.push(path.clone());
-            self.images.push(path);
+        if typing {
+            for picture in images::take_pasted(ctx) {
+                if let Ok(path) = images::save(&self.image_dir, &picture) {
+                    paths.push(path.clone());
+                    self.images.push(path);
+                }
+            }
         }
         if !paths.is_empty() {
             let text = images::hand(agent, &paths);
@@ -130,18 +124,14 @@ mod tests {
         outcome: Option<Outcome>,
     }
 
-    fn picture() -> Option<images::Picture> {
-        Some(images::Picture {
-            width: 1,
-            height: 1,
-            bytes: std::borrow::Cow::Owned(vec![255, 255, 255, 255]),
-        })
+    fn picture() -> Arc<egui::ColorImage> {
+        Arc::new(egui::ColorImage::new([1, 1], vec![egui::Color32::WHITE]))
     }
 
     fn harness(name: &str) -> (Harness<'static, State>, TempDir) {
         let dir = TempDir::new(name);
         let state = State {
-            chat: QuickChat::new(Clipboard::default(), dir.path().join("images")),
+            chat: QuickChat::new(dir.path().join("images")),
             choice: Choice {
                 agent: Some(Agent::Claude),
                 model: None,
@@ -164,8 +154,6 @@ mod tests {
                 },
                 state,
             );
-        harness.state_mut().chat.clipboard.text = || None;
-        harness.state_mut().chat.clipboard.image = picture;
         harness.run();
         (harness, dir)
     }
@@ -179,7 +167,7 @@ mod tests {
         let (mut harness, dir) = harness("quick-chat-image");
         harness.event(egui::Event::Text("look at ".to_string()));
         harness.run();
-        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        harness.event(egui::Event::PasteImage(picture()));
         harness.run();
 
         let images = pasted_images(&harness);
@@ -219,12 +207,9 @@ mod tests {
     }
 
     #[test]
-    fn keeps_the_text_of_the_clipboard_over_its_picture() {
+    fn pastes_text_as_text_and_writes_no_picture() {
         let (mut harness, _dir) = harness("quick-chat-image-text");
-        harness.state_mut().chat.clipboard.text = || Some("hello".to_string());
         harness.event(egui::Event::Paste("hello".to_string()));
-        harness.run();
-        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
         harness.run();
         assert_eq!(harness.state().chat.message, "hello");
         assert!(pasted_images(&harness).is_empty());
@@ -233,7 +218,7 @@ mod tests {
     #[test]
     fn removes_the_pictures_it_wrote_when_it_closes_unsent() {
         let (mut harness, _dir) = harness("quick-chat-image-close");
-        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        harness.event(egui::Event::PasteImage(picture()));
         harness.run();
         let images = pasted_images(&harness);
         assert_eq!(images.len(), 1);

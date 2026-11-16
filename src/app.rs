@@ -537,10 +537,7 @@ impl App {
         if double_ctrl {
             self.quick_chat = Some((
                 window_id,
-                QuickChat::new(
-                    self.content.terminals.clipboard(),
-                    self.content.terminals.image_dir(),
-                ),
+                QuickChat::new(self.content.terminals.image_dir()),
             ));
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::T)) {
@@ -2147,20 +2144,6 @@ mod tests {
             .run_agents_with(&program);
         harness.state_mut().agents = vec![Agent::Claude];
         harness.state_mut().models = HashMap::from([(Agent::Claude, Agent::Claude.models())]);
-        harness
-            .state_mut()
-            .content
-            .terminals
-            .set_clipboard(crate::images::Clipboard {
-                text: || None,
-                image: || {
-                    Some(crate::images::Picture {
-                        width: 1,
-                        height: 1,
-                        bytes: std::borrow::Cow::Owned(vec![255, 255, 255, 255]),
-                    })
-                },
-            });
         harness.run();
 
         let ctrl = |harness: &mut Harness<'_, App>, modifiers: Modifiers| {
@@ -2186,7 +2169,9 @@ mod tests {
         harness.run();
         harness.event(egui::Event::Text("hello agent ".to_string()));
         harness.run();
-        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        harness.event(egui::Event::PasteImage(std::sync::Arc::new(
+            egui::ColorImage::new([1, 1], vec![egui::Color32::WHITE]),
+        )));
         harness.run();
         harness.key_press(Key::Enter);
         harness.run();

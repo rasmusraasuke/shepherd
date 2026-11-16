@@ -18,7 +18,7 @@ use eframe::egui::{self, Color32, Event, EventFilter, Key, Modifiers, Sense, Vec
 
 use crate::agents::{Agent, Start};
 use crate::code::CodeStyle;
-use crate::images::{self, Clipboard};
+use crate::images;
 use crate::terminal_text;
 
 const PADDING: f32 = 4.0;
@@ -94,13 +94,17 @@ pub struct Terminals {
     shell: Option<Shell>,
     terminals: HashMap<u64, Result<Terminal, String>>,
     focus_on_start: HashSet<u64>,
-    clipboard: Clipboard,
+    read_clipboard: fn() -> Option<String>,
     image_dir: PathBuf,
     last_used: Option<u64>,
     env: HashMap<String, String>,
     guide: Option<PathBuf>,
     agent_program: Option<String>,
     starts: HashMap<u64, Prompt>,
+}
+
+fn read_clipboard() -> Option<String> {
+    arboard::Clipboard::new().ok()?.get_text().ok()
 }
 
 #[derive(Default)]
@@ -125,7 +129,7 @@ impl Terminals {
             shell: None,
             terminals: HashMap::new(),
             focus_on_start: HashSet::new(),
-            clipboard: Clipboard::default(),
+            read_clipboard,
             image_dir,
             last_used: None,
             env: HashMap::new(),
@@ -133,10 +137,6 @@ impl Terminals {
             agent_program: None,
             starts: HashMap::new(),
         }
-    }
-
-    pub fn clipboard(&self) -> Clipboard {
-        self.clipboard
     }
 
     pub fn image_dir(&self) -> PathBuf {
@@ -333,7 +333,14 @@ impl Terminals {
         }
         match self.terminals.get_mut(&id) {
             Some(Ok(terminal)) => {
-                if terminal.ui(ui, id, &style, fonts_ready, self.clipboard, &self.image_dir) {
+                if terminal.ui(
+                    ui,
+                    id,
+                    &style,
+                    fonts_ready,
+                    self.read_clipboard,
+                    &self.image_dir,
+                ) {
                     self.last_used = Some(id);
                 }
                 let again = if terminal.restart {
@@ -385,11 +392,6 @@ impl Terminals {
     #[cfg(test)]
     pub fn keep_images_in(&mut self, dir: PathBuf) {
         self.image_dir = dir;
-    }
-
-    #[cfg(test)]
-    pub fn set_clipboard(&mut self, clipboard: Clipboard) {
-        self.clipboard = clipboard;
     }
 
     #[cfg(test)]
@@ -541,7 +543,7 @@ impl Terminal {
         ctx: &egui::Context,
         style: &CodeStyle,
         palette: &Palette,
-        clipboard: Clipboard,
+        read_clipboard: fn() -> Option<String>,
     ) {
         for event in self.events.try_iter().collect::<Vec<_>>() {
             match event {
@@ -571,7 +573,7 @@ impl Terminal {
         if self.clipboard_allowed
             && let Some(answer) = self.clipboard_request.take()
         {
-            self.write(answer(&clipboard.read_text().unwrap_or_default()));
+            self.write(answer(&read_clipboard().unwrap_or_default()));
         }
     }
 
@@ -611,31 +613,25 @@ impl Terminal {
         ui: &egui::Ui,
         rect: egui::Rect,
         focused: bool,
-        clipboard: Clipboard,
         image_dir: &Path,
     ) -> Option<String> {
         let agent = self.agent?;
-        let dropped = dropped_images(ui, rect);
-        if !dropped.is_empty() {
-            return Some(images::hand(Some(agent), &dropped));
-        }
-        if !focused || !ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::V)) {
-            return None;
-        }
-        if clipboard.read_text().is_some_and(|text| !text.is_empty()) {
-            return None;
-        }
-        match images::save(image_dir, clipboard.read_image()?) {
-            Ok(path) => {
-                let text = images::hand(Some(agent), std::slice::from_ref(&path));
-                self.images.push(path);
-                Some(text)
-            }
-            Err(error) => {
-                self.notice = Some(error);
-                None
+        let mut paths = dropped_images(ui, rect);
+        if focused {
+            for picture in images::take_pasted(ui.ctx()) {
+                match images::save(image_dir, &picture) {
+                    Ok(path) => {
+                        self.images.push(path.clone());
+                        paths.push(path);
+                    }
+                    Err(error) => self.notice = Some(error),
+                }
             }
         }
+        if paths.is_empty() {
+            return None;
+        }
+        Some(images::hand(Some(agent), &paths))
     }
 
     fn resize(&mut self, size: Size, style: &CodeStyle) {
@@ -652,14 +648,14 @@ impl Terminal {
         id: u64,
         style: &CodeStyle,
         fonts_ready: bool,
-        clipboard: Clipboard,
+        read_clipboard: fn() -> Option<String>,
         image_dir: &Path,
     ) -> bool {
         let palette = Palette::new(ui.visuals());
         self.update_activity();
         self.notice_bar(ui);
         self.clipboard_bar(ui);
-        self.handle_reports(ui.ctx(), style, &palette, clipboard);
+        self.handle_reports(ui.ctx(), style, &palette, read_clipboard);
         let size = size_for(ui.available_rect_before_wrap(), style);
         self.resize(size, style);
 
@@ -674,7 +670,7 @@ impl Terminal {
             response.request_focus();
         }
 
-        if let Some(text) = self.image_text(ui, rect, response.has_focus(), clipboard, image_dir) {
+        if let Some(text) = self.image_text(ui, rect, response.has_focus(), image_dir) {
             let mut term = self.term.lock();
             let mode = *term.mode();
             term.scroll_display(Scroll::Bottom);
@@ -1595,7 +1591,7 @@ mod tests {
             SHOW_INPUT.replace("COUNT", "12")
         );
         let (mut harness, _dir) = harness("terminal-clipboard", &script);
-        harness.state_mut().clipboard.text = || Some("hi".to_string());
+        harness.state_mut().read_clipboard = || Some("hi".to_string());
         wait(&mut harness, "question", |harness| {
             harness.query_by_label("Allow").is_some()
         });
@@ -1658,12 +1654,8 @@ mod tests {
         });
     }
 
-    fn picture() -> Option<images::Picture> {
-        Some(images::Picture {
-            width: 1,
-            height: 1,
-            bytes: std::borrow::Cow::Owned(vec![255, 255, 255, 255]),
-        })
+    fn picture() -> Arc<egui::ColorImage> {
+        Arc::new(egui::ColorImage::new([1, 1], vec![egui::Color32::WHITE]))
     }
 
     fn image_harness(name: &str) -> (Harness<'static, Terminals>, TempDir, PathBuf) {
@@ -1682,8 +1674,6 @@ mod tests {
         let mut terminals = Terminals::new(dir.path().to_path_buf());
         terminals.image_dir = dir.path().join("images");
         terminals.run_agents_with(&program);
-        terminals.clipboard.text = || None;
-        terminals.clipboard.image = picture;
         terminals.start(1, Prompt::default());
         let harness = Harness::builder()
             .with_size(Vec2::new(600.0, 400.0))
@@ -1735,7 +1725,7 @@ mod tests {
         let (mut harness, dir, capture) = image_harness("agent-image-paste");
         wait_for_screen(&mut harness, "ready");
         click_terminal(&mut harness);
-        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        harness.event(Event::PasteImage(picture()));
         harness.run();
 
         let images = image_files(&dir.path().join("images"));
@@ -1747,13 +1737,11 @@ mod tests {
     }
 
     #[test]
-    fn keeps_the_text_of_the_clipboard_over_its_picture() {
+    fn pastes_text_as_text_and_writes_no_picture() {
         let (mut harness, dir, capture) = image_harness("agent-image-text");
         wait_for_screen(&mut harness, "ready");
-        harness.state_mut().clipboard.text = || Some("hello".to_string());
         click_terminal(&mut harness);
         harness.event(Event::Paste("hello".to_string()));
-        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
         harness.run();
         wait_for_input(&capture, "hello");
         assert!(image_files(&dir.path().join("images")).is_empty());
@@ -1779,6 +1767,8 @@ mod tests {
         harness.step();
         wait_for_input(&capture, &picture.display().to_string());
         assert!(image_files(&dir.path().join("images")).is_empty());
+        drop(harness);
+        assert!(picture.exists());
     }
 
     #[test]
@@ -1788,10 +1778,8 @@ mod tests {
             "stty -icanon -echo; printf ready; cat > input",
         );
         wait_for_screen(&mut harness, "ready");
-        harness.state_mut().clipboard.text = || None;
-        harness.state_mut().clipboard.image = picture;
         click_terminal(&mut harness);
-        harness.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        harness.event(Event::PasteImage(picture()));
         harness.run_steps(2);
 
         let picture = dir.write("shot.png", "picture");

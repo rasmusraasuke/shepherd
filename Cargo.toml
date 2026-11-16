@@ -8,7 +8,7 @@ repository = "https://github.com/rasmusraasuke/shepherd"
 
 [dependencies]
 alacritty_terminal = "0.26"
-arboard = { version = "3.7.0", default-features = false, features = ["image-data"] }
+arboard = { version = "3.7.0", default-features = false }
 eframe = "0.37.0"
 egui_tiles = "0.18"
 png = "0.18"
