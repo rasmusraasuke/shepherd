@@ -22,6 +22,7 @@ use crate::review::{self, Review};
 use crate::search::{ProjectSearch, Reveal};
 use crate::terminal::{Activity, Terminals};
 use crate::theme;
+use crate::update;
 use crate::watcher::{Snapshot, Watcher};
 use crate::workspace::{Sidebar, Tab, Window, Workspace};
 
@@ -58,6 +59,7 @@ pub struct App {
     drag: Option<Drag>,
     action: Option<Action>,
     titled_branch: String,
+    updates: update::Updates,
 }
 
 struct Content {
@@ -206,7 +208,8 @@ impl App {
         let control = Control::start(ctx.clone())
             .inspect_err(|e| eprintln!("{e}"))
             .ok();
-        let agents = agents::found(&std::env::var("PATH").unwrap_or_default());
+        let path = agents::search_path();
+        let agents = agents::found(&path);
         let models = agents::models_for(&agents);
         let mut content = Content {
             review: Review::new(repo.clone()),
@@ -219,8 +222,8 @@ impl App {
             error: None,
             root: repo.root.clone(),
         };
+        content.terminals.set_env("PATH", path.clone());
         if let Some(control) = &control {
-            let path = std::env::var("PATH").unwrap_or_default();
             content
                 .terminals
                 .set_env("PATH", format!("{}:{path}", control.bin_dir().display()));
@@ -235,6 +238,9 @@ impl App {
                 content.terminals.set_guide(guide);
             }
         }
+        let updates = update::Updates::new(ctx.clone());
+        #[cfg(not(test))]
+        updates.start();
         Self {
             control,
             content,
@@ -251,6 +257,7 @@ impl App {
             quick_chat: None,
             agents,
             models,
+            updates,
             search_in: None,
             double_shift: DoubleTap::shift(),
             double_ctrl: DoubleTap::ctrl(),
@@ -334,6 +341,59 @@ impl App {
             }
             Err(error) => content.error = Some(error),
         }
+    }
+
+    fn update_bar(&mut self, ui: &mut egui::Ui) {
+        let phase = self.updates.phase();
+        if matches!(phase, update::Phase::Idle | update::Phase::Checking) {
+            return;
+        }
+        egui::Panel::bottom("update")
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin::symmetric(12, 6)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| match &phase {
+                    update::Phase::Downloading(release) => {
+                        ui.spinner();
+                        ui.weak(format!("Downloading Shepherd {}…", release.version()));
+                    }
+                    update::Phase::Ready(release) => {
+                        ui.label(format!(
+                            "Shepherd {} is ready to install.",
+                            release.version()
+                        ));
+                        if update::bundled().is_some() {
+                            if ui.button("Restart and update").clicked() {
+                                match self.updates.install(&self.content.root) {
+                                    Ok(()) => {
+                                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close)
+                                    }
+                                    Err(e) => self.updates.fail(e),
+                                }
+                            }
+                        } else if ui.button("Show the downloaded app").clicked()
+                            && let Err(e) = self.updates.reveal()
+                        {
+                            self.updates.fail(e);
+                        }
+                        if ui.small_button("Later").clicked() {
+                            self.updates.dismiss();
+                        }
+                    }
+                    update::Phase::Failed(error) => {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.updates.dismiss();
+                        }
+                    }
+                    update::Phase::Idle | update::Phase::Checking => {}
+                });
+            });
     }
 
     fn activity_bar(&mut self, ui: &mut egui::Ui) {
@@ -1310,6 +1370,7 @@ impl App {
             )
             .show_collapsible(ui, &mut sidebar_open, |ui| self.sidebar(ui));
         self.workspace.sidebar_open = sidebar_open;
+        self.update_bar(ui);
         self.window_ui(ui, 0);
         for index in 1..self.workspace.windows.len() {
             let window = &self.workspace.windows[index];
@@ -1326,12 +1387,16 @@ impl App {
             });
         }
 
-        if self.show_keys
-            && egui::Modal::new(egui::Id::unique("keys"))
-                .show(&ctx, keys::ui)
-                .should_close()
-        {
-            self.show_keys = false;
+        let mut check = false;
+        if self.show_keys {
+            let modal =
+                egui::Modal::new(egui::Id::unique("keys")).show(&ctx, |ui| check = keys::ui(ui));
+            if modal.should_close() {
+                self.show_keys = false;
+            }
+        }
+        if check {
+            self.updates.start();
         }
         self.drag_title(&ctx);
         if self.content.review.take_changed() {

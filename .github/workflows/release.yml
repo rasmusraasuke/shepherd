@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: The tag matches the version
+        run: |
+          version=$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Cargo.toml has $version but the tag is $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+      - name: Build the app
+        run: ./scripts/bundle.sh --universal --zip
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/*.zip \
+            --title "Shepherd $GITHUB_REF_NAME" \
+            --generate-notes \
+            $prerelease

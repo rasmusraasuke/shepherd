@@ -23,7 +23,7 @@ around that loop.
 
 ## Where we are
 
-Milestones 1 to 8 are done: a workspace of tabs, splits and windows that survives
+Milestones 1 to 9 are done: a workspace of tabs, splits and windows that survives
 restarts, with file editing (undo, find and replace, syntax highlighting, saving on its own,
 reloading of files changed on disk), search across the project, terminals good enough for
 CLI agents, and a review of one file at a time, chosen from the tree of changed files, with
@@ -39,10 +39,12 @@ reviewed with a message written in place or drafted by an agent, pushing, syncin
 picture of what is ahead and behind, and creating and switching branches, taking the changes
 along or leaving them, and agents as tabs of their own: Claude Code and Opencode found on
 the PATH, started in Agent tabs without a shell, reached with a quick chat on Ctrl Ctrl with
-the agent and model chosen and remembered, and sent the editor's text there and nowhere else.
-README.md describes the features.
+the agent and model chosen and remembered, and sent the editor's text there and nowhere else,
+and shipping as a real application: an app bundle built by a script, releases made from a
+tag, and updates found, downloaded in the background and installed in place. FEATURES.md
+describes the features.
 
-Next is milestone 9: merge conflicts in the same view.
+Next is milestone 10: merge conflicts in the same view.
 
 ## Milestones
 
@@ -188,7 +190,28 @@ Done when: Ctrl Ctrl, a sentence and Enter get an agent working in a tab of its 
 of a commit message needs no agent to be open first, and nothing the editor sends ever lands
 in a shell.
 
-### 9. Merge conflicts in the same view
+### 9. A real application: builds, releases and updates (completed)
+
+The editor stops being something started from the source and becomes software: installed,
+versioned, published and able to replace itself.
+
+- One script builds the app bundle from the source: `Info.plist`, the icon, an ad hoc
+  signature, and a universal binary for Apple Silicon and Intel. It can install the app into
+  `/Applications`, link a `shepherd` command for the terminal, and make the zip that releases
+  are made of
+- The version is to be had from the command line and from the keyboard shortcuts
+- Started from Finder or Spotlight, the app opens the repository it opened last, and finds
+  agents where Homebrew and `~/.local/bin` put them, which an app started without a shell
+  otherwise does not
+- A tag makes a release: GitHub Actions builds the universal app, checks the tag against
+  `Cargo.toml` and publishes it with notes
+- Updates: on start the app asks for the latest release; a newer one is downloaded in the
+  background and, when it is ready, a bar above the editor offers to restart into it
+
+Done when: a new version is tagged, and the app installed in `/Applications` finds it,
+downloads it and restarts into it.
+
+### 10. Merge conflicts in the same view
 
 - Conflicts appear in the file's review as a special kind of hunk, during merge, rebase,
   pull and stash apply
@@ -199,7 +222,7 @@ in a shell.
 
 Done when: a conflicting pull is resolved without leaving the review.
 
-### 10. Reviewing commits
+### 11. Reviewing commits
 
 - History list of commits for the branch
 - Open one commit, or a range, in the same review, one file at a time, with the same
@@ -208,7 +231,7 @@ Done when: a conflicting pull is resolved without leaving the review.
 
 Done when: work an agent has already committed can be reviewed the same way as uncommitted work.
 
-### 11. Comfortable Kotlin editing
+### 12. Comfortable Kotlin editing
 
 The step that lets IntelliJ be closed for good.
 
@@ -224,7 +247,7 @@ The step that lets IntelliJ be closed for good.
 
 Done when: a day of Kotlin work happens here without missing IntelliJ.
 
-### 12. Run configurations
+### 13. Run configurations
 
 - Run configurations stored as plain files in the repository, so they can be committed and
   shared with the team

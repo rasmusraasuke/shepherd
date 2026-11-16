@@ -351,7 +351,7 @@ impl Flow {
                 }
             }
         });
-        ui.add_space(2.0);
+        ui.add_space(10.0);
         outcome
     }
 }

@@ -275,6 +275,37 @@ pub fn found(path: &str) -> Vec<Agent> {
     Agent::ALL.into_iter().filter(is_there).collect()
 }
 
+pub fn search_path() -> String {
+    let mut extra = vec![
+        std::path::PathBuf::from("/opt/homebrew/bin"),
+        std::path::PathBuf::from("/opt/homebrew/sbin"),
+        std::path::PathBuf::from("/usr/local/bin"),
+        std::path::PathBuf::from("/usr/local/sbin"),
+    ];
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        extra.push(home.join(".local/bin"));
+        extra.push(home.join(".cargo/bin"));
+    }
+    extend_path(&std::env::var("PATH").unwrap_or_default(), extra)
+}
+
+fn extend_path(current: &str, extra: impl IntoIterator<Item = std::path::PathBuf>) -> String {
+    let mut dirs: Vec<std::path::PathBuf> = current
+        .split(':')
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect();
+    for dir in extra {
+        if dir.is_dir() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs.iter()
+        .map(|dir| dir.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 pub fn chosen(found: &[Agent], remembered: Option<Agent>) -> Option<Agent> {
     remembered
         .filter(|agent| found.contains(agent))
@@ -353,6 +384,18 @@ mod tests {
         let path = std::env::join_paths([without.path(), with.path()]).unwrap();
         assert_eq!(found(path.to_str().unwrap()), [Agent::Opencode]);
         assert!(found("").is_empty());
+    }
+
+    #[test]
+    fn adds_the_places_agents_live_when_started_from_finder() {
+        let (dir, missing) = (TempDir::new("agents-extra"), TempDir::new("agents-missing"));
+        let gone = missing.path().join("gone");
+        let path = extend_path(
+            "/usr/bin:/bin",
+            [dir.path().to_path_buf(), gone, dir.path().to_path_buf()],
+        );
+        let pieces: Vec<&str> = path.split(':').collect();
+        assert_eq!(pieces, ["/usr/bin", "/bin", dir.path().to_str().unwrap()]);
     }
 
     #[test]

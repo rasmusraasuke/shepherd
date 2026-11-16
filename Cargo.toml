@@ -2,6 +2,9 @@
 name = "shepherd"
 version = "0.1.0"
 edition = "2024"
+description = "A lightweight code editor for the age of agents"
+license = "MIT"
+repository = "https://github.com/rasmusraasuke/shepherd"
 
 [dependencies]
 alacritty_terminal = "0.26"

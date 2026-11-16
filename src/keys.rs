@@ -52,7 +52,7 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
     ),
 ];
 
-pub fn ui(ui: &mut egui::Ui) {
+pub fn ui(ui: &mut egui::Ui) -> bool {
     ui.set_width(640.0);
     ui.label(RichText::new("Keyboard shortcuts").strong().size(16.0));
     ui.add_space(12.0);
@@ -74,6 +74,16 @@ pub fn ui(ui: &mut egui::Ui) {
             ui.add_space(14.0);
         }
     });
+    ui.add_space(4.0);
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.weak(format!("Shepherd {}", crate::update::VERSION));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.small_button("Check for updates").clicked()
+        })
+        .inner
+    })
+    .inner
 }
 
 pub struct DoubleTap {
