@@ -7,6 +7,8 @@ use std::process::{Command, Stdio};
 
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
+const LEFT: &str = "shepherd: changes left on ";
+
 const DIFF: &[&str] = &[
     "diff",
     "--no-color",
@@ -23,6 +25,16 @@ pub struct Changes {
     pub staged: String,
     pub unstaged: String,
     pub untracked: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct Status {
+    pub branch: String,
+    pub branches: Vec<String>,
+    pub upstream: bool,
+    pub ahead: usize,
+    pub behind: usize,
+    pub left: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -71,6 +83,159 @@ impl Repo {
             |_| "none (detached HEAD)".to_string(),
             |name| name.trim().to_string(),
         )
+    }
+
+    pub fn status(&self) -> Status {
+        let lines = |args: &[&str]| -> Vec<String> {
+            let out = git(&self.root, args).unwrap_or_default();
+            out.lines().map(str::to_string).collect()
+        };
+        let counts = git(
+            &self.root,
+            &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+        );
+        let mut count = counts
+            .iter()
+            .flat_map(|counts| counts.split_whitespace())
+            .map(|count| count.parse().unwrap_or(0));
+        Status {
+            branch: self.branch(),
+            branches: lines(&["for-each-ref", "--format=%(refname:short)", "refs/heads"]),
+            upstream: counts.is_ok(),
+            ahead: count.next().unwrap_or(0),
+            behind: count.next().unwrap_or(0),
+            left: lines(&["stash", "list", "--format=%gs"])
+                .iter()
+                .filter_map(|subject| subject.split_once(LEFT))
+                .map(|(_, branch)| branch.to_string())
+                .collect(),
+        }
+    }
+
+    pub fn commit(&self, message: &str) -> Result<(), String> {
+        git(&self.root, &["commit", "--quiet", "--message", message]).map(drop)
+    }
+
+    pub fn push(&self) -> Result<(), String> {
+        if self.status().upstream {
+            return git(&self.root, &["push", "--quiet"]).map(drop);
+        }
+        let remotes = git(&self.root, &["remote"])?;
+        let remote = remotes
+            .lines()
+            .find(|remote| *remote == "origin")
+            .or(remotes.lines().next())
+            .ok_or("There is no remote to push to")?;
+        git(
+            &self.root,
+            &["push", "--quiet", "--set-upstream", remote, "HEAD"],
+        )
+        .map(drop)
+    }
+
+    pub fn sync(&self) -> Result<(), String> {
+        git(&self.root, &["fetch", "--quiet", "--all"])?;
+        if self.status().behind == 0 {
+            return Ok(());
+        }
+        let incoming = git(&self.root, &["diff", "--name-only", "HEAD...@{upstream}"])?;
+        let changed = git(&self.root, &["diff", "--name-only", "HEAD"])?;
+        let untracked = self.untracked(&[])?;
+        let in_the_way: Vec<&str> = incoming
+            .lines()
+            .filter(|path| changed.lines().any(|changed| changed == *path))
+            .chain(
+                untracked
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|path| incoming.lines().any(|incoming| incoming == *path)),
+            )
+            .collect();
+        if !in_the_way.is_empty() {
+            return Err(format!(
+                "Commit the changes of {} first: the commits to pull change it too",
+                in_the_way.join(", ")
+            ));
+        }
+        self.carrying(|| {
+            let pulled = git(
+                &self.root,
+                &["pull", "--quiet", "--no-rebase", "--ff", "--no-edit"],
+            );
+            if pulled.is_err() {
+                let _ = git(&self.root, &["merge", "--abort"]);
+            }
+            pulled.map(drop)
+        })
+    }
+
+    pub fn create_branch(&self, name: &str) -> Result<(), String> {
+        git(&self.root, &["switch", "--quiet", "--create", name]).map(drop)
+    }
+
+    pub fn switch(&self, branch: &str, leave: bool) -> Result<(), String> {
+        let switch = || git(&self.root, &["switch", "--quiet", branch]).map(drop);
+        let stashed = leave && self.stash(&format!("{LEFT}{}", self.branch()))?;
+        if let Err(error) = switch() {
+            if stashed {
+                self.pop("stash@{0}")?;
+            }
+            return Err(error);
+        }
+        if !git(&self.root, &["status", "--porcelain"])?.is_empty() {
+            return Ok(());
+        }
+        let stashes = git(&self.root, &["stash", "list", "--format=%gd %gs"])?;
+        let left = format!("{LEFT}{branch}");
+        let stash = stashes
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .find(|(_, subject)| subject.ends_with(&left));
+        match stash {
+            Some((stash, _)) => self.pop(stash),
+            None => Ok(()),
+        }
+    }
+
+    fn stash(&self, message: &str) -> Result<bool, String> {
+        let top = || {
+            git(
+                &self.root,
+                &["rev-parse", "--verify", "--quiet", "refs/stash"],
+            )
+            .ok()
+        };
+        let before = top();
+        git(
+            &self.root,
+            &[
+                "stash",
+                "push",
+                "--quiet",
+                "--include-untracked",
+                "--message",
+                message,
+            ],
+        )?;
+        Ok(top() != before)
+    }
+
+    fn pop(&self, stash: &str) -> Result<(), String> {
+        git(&self.root, &["stash", "pop", "--quiet", "--index", stash])
+            .or_else(|_| git(&self.root, &["stash", "pop", "--quiet", stash]))
+            .map(drop)
+            .map_err(|e| format!("The changes didn't apply and are kept in git stash:\n{e}"))
+    }
+
+    fn carrying(&self, action: impl Fn() -> Result<(), String>) -> Result<(), String> {
+        let stashed = self.stash("shepherd: changes kept over a pull")?;
+        let done = action();
+        let popped = if stashed {
+            self.pop("stash@{0}")
+        } else {
+            Ok(())
+        };
+        done.and(popped)
     }
 
     fn base(&self) -> &'static str {
@@ -406,6 +571,7 @@ fn run(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, Strin
         .args(["-c", "core.quotepath=false"])
         .args(args)
         .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
@@ -424,7 +590,10 @@ fn run(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, Strin
         .wait_with_output()
         .map_err(|e| format!("failed to run git: {e}"))?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        let said = |out: &[u8]| String::from_utf8_lossy(out).trim().to_string();
+        return Err(Some(said(&output.stderr))
+            .filter(|error| !error.is_empty())
+            .unwrap_or_else(|| said(&output.stdout)));
     }
     Ok(output.stdout)
 }
@@ -628,7 +797,143 @@ pub mod tests {
             dir.write(path, content);
         }
         git(dir.path(), &["init", "--quiet"]).unwrap();
+        identify(dir.path());
         (Repo::open(dir.path()).unwrap(), dir)
+    }
+
+    fn identify(dir: &Path) {
+        git(dir, &["config", "user.name", "Test"]).unwrap();
+        git(dir, &["config", "user.email", "test@example.com"]).unwrap();
+        git(dir, &["config", "commit.gpgsign", "false"]).unwrap();
+    }
+
+    pub fn with_remote(repo: &Repo, name: &str) -> TempDir {
+        let remote = TempDir::new(name);
+        git(remote.path(), &["init", "--quiet", "--bare"]).unwrap();
+        let url = remote.path().to_string_lossy().into_owned();
+        git(&repo.root, &["remote", "add", "origin", &url]).unwrap();
+        remote
+    }
+
+    fn short_status(repo: &Repo) -> String {
+        git(&repo.root, &["status", "--short"]).unwrap()
+    }
+
+    #[test]
+    fn commits_what_is_staged_pushes_it_and_pulls_what_others_pushed() {
+        let (repo, dir) = temp_repo("flow", &[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        git(&repo.root, &["config", "pull.rebase", "true"]).unwrap();
+        repo.stage_file("a.txt", true).unwrap();
+        repo.commit("add a").unwrap();
+        assert_eq!(short_status(&repo), "?? b.txt\n");
+        assert!(!repo.commit("nothing").unwrap_err().is_empty());
+        let status = repo.status();
+        assert_eq!(
+            (status.upstream, status.branches),
+            (false, vec![status.branch.clone()])
+        );
+        assert!(repo.push().unwrap_err().contains("no remote"));
+
+        let remote = with_remote(&repo, "flow-remote");
+        repo.push().unwrap();
+        let status = repo.status();
+        assert_eq!((status.upstream, status.ahead, status.behind), (true, 0, 0));
+
+        let other = TempDir::new("flow-other");
+        let url = remote.path().to_string_lossy().into_owned();
+        git(other.path(), &["clone", "--quiet", &url, "."]).unwrap();
+        identify(other.path());
+        other.write("c.txt", "c\n");
+        let other = Repo::open(other.path()).unwrap();
+        commit_all(&other);
+        other.push().unwrap();
+
+        repo.stage_file("b.txt", true).unwrap();
+        dir.write("b.txt", "b\nmore\n");
+        dir.write("new.txt", "new\n");
+        repo.commit("add b").unwrap();
+        dir.write("a.txt", "A\n");
+        repo.stage_file("a.txt", true).unwrap();
+        repo.sync().unwrap();
+        let status = repo.status();
+        assert_eq!((status.ahead, status.behind), (2, 0));
+        assert!(dir.path().join("c.txt").exists());
+        assert_eq!(short_status(&repo), "M  a.txt\n M b.txt\n?? new.txt\n");
+        repo.push().unwrap();
+        assert_eq!(repo.status().ahead, 0);
+    }
+
+    #[test]
+    fn a_pull_that_runs_into_conflicts_is_taken_back() {
+        let (repo, dir) = temp_repo("conflict", &[("a.txt", "a\n")]);
+        commit_all(&repo);
+        let remote = with_remote(&repo, "conflict-remote");
+        repo.push().unwrap();
+        let other = TempDir::new("conflict-other");
+        let url = remote.path().to_string_lossy().into_owned();
+        git(other.path(), &["clone", "--quiet", &url, "."]).unwrap();
+        identify(other.path());
+        other.write("a.txt", "theirs\n");
+        let other = Repo::open(other.path()).unwrap();
+        commit_all(&other);
+        other.push().unwrap();
+
+        dir.write("a.txt", "ours\n");
+        commit_all(&repo);
+        dir.write("b.txt", "b\n");
+        assert!(repo.sync().is_err());
+        let status = repo.status();
+        assert_eq!((status.ahead, status.behind), (1, 1));
+        assert_eq!(short_status(&repo), "?? b.txt\n");
+
+        dir.write("a.txt", "ours\nand more\n");
+        assert!(
+            repo.sync()
+                .unwrap_err()
+                .contains("Commit the changes of a.txt")
+        );
+        assert_eq!(short_status(&repo), " M a.txt\n?? b.txt\n");
+    }
+
+    #[test]
+    fn switches_branches_taking_the_changes_along_or_leaving_them() {
+        let (repo, dir) = temp_repo("branches", &[("a.txt", "a\n")]);
+        commit_all(&repo);
+        let main = repo.branch();
+        dir.write("a.txt", "changed\n");
+        repo.create_branch("feature").unwrap();
+        assert_eq!(repo.branch(), "feature");
+        assert_eq!(short_status(&repo), " M a.txt\n");
+        commit_all(&repo);
+
+        dir.write("a.txt", "changed again\n");
+        repo.stage_file("a.txt", true).unwrap();
+        dir.write("new.txt", "new\n");
+        repo.switch(&main, true).unwrap();
+        assert_eq!(
+            (repo.branch(), short_status(&repo)),
+            (main.clone(), String::new())
+        );
+        assert_eq!(repo.status().left, ["feature"]);
+        assert_eq!(repo.status().branches, ["feature", main.as_str()]);
+
+        dir.write("b.txt", "b\n");
+        repo.switch("feature", true).unwrap();
+        assert_eq!(short_status(&repo), "M  a.txt\n?? new.txt\n");
+        assert_eq!(repo.status().left, [main.as_str()]);
+
+        repo.switch(&main, false).unwrap_err();
+        assert_eq!(
+            (repo.branch().as_str(), short_status(&repo).as_str()),
+            ("feature", "M  a.txt\n?? new.txt\n")
+        );
+        repo.stage_file("a.txt", false).unwrap();
+        git(&repo.root, &["checkout", "--", "a.txt"]).unwrap();
+        repo.switch(&main, false).unwrap();
+        assert_eq!(
+            (repo.branch(), short_status(&repo)),
+            (main, "?? new.txt\n".to_string())
+        );
     }
 
     pub fn commit_all(repo: &Repo) {

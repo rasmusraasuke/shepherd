@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::ops::Range;
@@ -572,10 +573,12 @@ impl Review {
         self.make_current(file, hunk);
     }
 
-    fn set_reviewed(&mut self, path: &str, reviewed: bool) {
+    pub fn set_reviewed(&mut self, path: &str, reviewed: bool) {
         let inside = |file: &str| {
-            file.strip_prefix(path)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            path.is_empty()
+                || file
+                    .strip_prefix(path)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
         };
         let files: Vec<usize> = (0..self.files.len())
             .filter(|&index| inside(&self.files[index].diff.path))
@@ -658,7 +661,7 @@ impl Review {
             return None;
         }
         let dark_mode = ui.visuals().dark_mode;
-        let mut mark = None;
+        let mark = Cell::new(None);
         let Self {
             tree,
             files,
@@ -671,10 +674,31 @@ impl Review {
         let mut menu = |ui: &mut egui::Ui, path: &str| {
             let (done, total) = progress_of(path);
             if done < total && ui.button("Mark as reviewed").clicked() {
-                mark = Some((path.to_string(), true));
+                mark.set(Some((path.to_string(), true)));
             }
             if done > 0 && ui.button("Mark as not reviewed").clicked() {
-                mark = Some((path.to_string(), false));
+                mark.set(Some((path.to_string(), false)));
+            }
+        };
+        let mut reviewed_mark = |ui: &egui::Ui, rect: egui::Rect, path: &str| {
+            let (done, total) = progress_of(path);
+            let state = if done == total {
+                Some(true)
+            } else if done == 0 {
+                Some(false)
+            } else {
+                None
+            };
+            let label = format!("Reviewed: {path}");
+            if reviewed_mark_ui(
+                ui,
+                rect,
+                2.0,
+                state,
+                &label,
+                egui::Id::unique(("reviewed", path)),
+            ) {
+                mark.set(Some((path.to_string(), done < total)));
             }
         };
         let look = |path: &str| {
@@ -689,8 +713,15 @@ impl Review {
                 dot: unseen.contains(path).then_some(NEW_COLOR),
             }
         };
-        let clicked = tree.ui(ui, collapsed, selected, look, Some(&mut menu));
-        if let Some((path, reviewed)) = mark {
+        let clicked = tree.ui(
+            ui,
+            collapsed,
+            selected,
+            look,
+            Some(&mut menu),
+            Some(&mut reviewed_mark),
+        );
+        if let Some((path, reviewed)) = mark.into_inner() {
             self.set_reviewed(&path, reviewed);
         }
         clicked
@@ -962,7 +993,7 @@ fn draft_ui(ui: &mut egui::Ui, id: egui::Id, view: &mut View, agents: &[Agent]) 
     draft
 }
 
-fn send_button(ui: &mut egui::Ui, label: &str, enabled: bool, agents: &[Agent]) -> Option<u64> {
+pub fn send_button(ui: &mut egui::Ui, label: &str, enabled: bool, agents: &[Agent]) -> Option<u64> {
     match agents {
         [] => {
             ui.add_enabled(false, egui::Button::new(label))
@@ -2355,6 +2386,27 @@ diff --git a/b.txt b/b.txt
         harness.get_by_label("Mark as reviewed").click();
         harness.run();
         assert_eq!(harness.state().progress_of("src"), (2, 6));
+    }
+
+    #[test]
+    fn marks_a_file_reviewed_with_its_checkbox_in_the_tree_and_everything_at_once() {
+        let (review, _dir) = review("tree-marks", TREE);
+        let mut harness = Harness::new_ui_state(
+            |ui, review: &mut Review| {
+                review.tree_ui(ui, &mut BTreeSet::new(), None);
+            },
+            review,
+        );
+        harness.run();
+        harness.get_by_label("Reviewed: src/ui").click();
+        harness.run();
+        assert_eq!(harness.state().progress_of("src"), (2, 6));
+        harness.get_by_label("Reviewed: src/ui").click();
+        harness.run();
+        assert_eq!(harness.state().progress_of("src"), (0, 6));
+
+        harness.state_mut().set_reviewed("", true);
+        assert_eq!(harness.state().progress(), (8, 8));
     }
 
     #[test]

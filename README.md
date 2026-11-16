@@ -46,6 +46,7 @@ Without a path the current directory is opened. The path must be inside a git re
   single blue accent, soft diff colors and the macOS fonts (SF Pro for the interface, SF Mono
   for code). The tab shown in each group is the one in bright text. With no tab open, the
   main space shows the few keys to start with.
+- **The branch in the title.** The title of every window ends with the current branch.
 - **Restored on restart.** Windows with their position and size, splits, open tabs, the
   sidebar, open or closed, and the expanded directories are saved per repository in `.git/shepherd-layout.json`.
 
@@ -141,8 +142,8 @@ Without a path the current directory is opened. The path must be inside a git re
   of its own, so that only some lines of a hunk are staged: for example only the removed half
   of a changed line, which stages just the removal. A hunk with only some of its lines
   reviewed shows a dash, and the checkboxes of all its lines.
-  *Mark file reviewed* at the top of a review marks the whole file, and a right click on a
-  file or directory under *Changes* marks all of it, reviewed or not. Files without lines,
+  *Mark file reviewed* at the top of a review marks the whole file, and the checkbox of a
+  file or directory under *Changes*, or a right click on it, marks all of it, reviewed or not. Files without lines,
   such as binary ones, are marked as a whole.
 - **Changes after the review.** When a reviewed line is changed again, for example by an
   agent, the new version shows as not reviewed, while the staged one stays as it was. A
@@ -188,6 +189,34 @@ The keys work in the review tab used last, while no text field or terminal has t
 | r     | Refresh now                      |
 | Cmd+Z / Cmd+Shift+Z | Undo / redo an edit or a revert |
 
+### Git flow
+
+Above and below the tree of *Changes* is everything a normal day with git needs. Git runs in
+the background; what it complains about is shown above the commit message.
+
+- **Choosing what to commit.** A commit takes what is reviewed, as that is what is staged.
+  Each file and directory under *Changes* has a checkbox that marks all of it as reviewed, or
+  not, and shows a dash when only a part is; *All* and *None* above the commit message do
+  the same for everything. Hunks and single lines are chosen in the review itself.
+- **Commit.** Write the message below the tree and press *Commit* (Cmd+Enter in the
+  message). *Commit and push* (Cmd+Shift+Enter) pushes right after.
+- **A message from an agent.** *Draft* asks an agent in a terminal to write the message for
+  what is staged. While the agent writes, the message box says so, until the message lands
+  in it with `shepherd ctl commit-message`, to be read and changed before committing;
+  *Cancel* stops waiting for it.
+- **Sync and push.** *Sync ↓2* shows the commits there are to pull, as far as is known from
+  the last fetch, and fetches and pulls, always merging and never rebasing. Uncommitted
+  changes stay as they are, reviewed marks included. A pull that runs into conflicts is taken back, and when the commits to pull change a file with uncommitted
+  changes, sync asks to commit those first. *Push ↑1* shows the commits there are to push
+  and pushes them; a branch that isn't on a remote yet is pushed to `origin`.
+- **Branches.** The button with the name of the current branch lists the others; a click
+  switches to one. Type a name into *New branch* and press Enter to start a branch from
+  where you are, with the changes.
+- **Carry or leave the changes.** Switching takes uncommitted changes along, as long as they
+  fit on the other branch. With *Leave the changes on …* ticked they stay behind instead, in
+  git's stash, and come back, reviewed marks included, when the branch is switched to
+  again; until then the list says *(changes left there)*.
+
 ### Agents in the loop
 
 - **Comments.** Under the pointer a line of a review shows a + next to the reviewed marks.
@@ -218,6 +247,7 @@ The keys work in the review tab used last, while no text field or terminal has t
   | `shepherd ctl terminal <id>` | What a terminal shows |
   | `shepherd ctl open <path>[:<line>[-<line>]]` | Opens a file, selecting the lines |
   | `shepherd ctl review [<path>]` | Shows a file's changes for review, or the next file to review |
+  | `shepherd ctl commit-message <message>` | Puts a commit message into the editor, for the user to commit with |
 
 ## Development
 

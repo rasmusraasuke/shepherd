@@ -11,6 +11,7 @@ use crate::comments;
 use crate::control::{self, Control};
 use crate::file_tree::{FileLook, FileTree};
 use crate::file_view::OpenFiles;
+use crate::flow::{self, Flow};
 use crate::git::Repo;
 use crate::icons::{self, Icon};
 use crate::keys::{self, DoubleShift};
@@ -50,6 +51,7 @@ pub struct App {
     show_keys: bool,
     drag: Option<Drag>,
     action: Option<Action>,
+    titled_branch: String,
 }
 
 struct Content {
@@ -60,6 +62,7 @@ struct Content {
     files: Vec<String>,
     search: ProjectSearch,
     terminals: Terminals,
+    flow: Flow,
     error: Option<String>,
 }
 
@@ -107,7 +110,9 @@ shepherd ctl: ask the editor what the user sees, or have it show something.
   shepherd ctl terminal <id>        What a terminal shows
   shepherd ctl open <path>[:<line>[-<line>]]
                                   Open a file, selecting the lines
-  shepherd ctl review [<path>]      Show the changes of a file for review, or of the next file to review";
+  shepherd ctl review [<path>]      Show the changes of a file for review, or of the next file to review
+  shepherd ctl commit-message <message>
+                                  Put a commit message into the editor, for the user to commit with";
 
 fn parse_place(place: &str) -> (&str, Option<(usize, usize)>) {
     let Some((path, lines)) = place.rsplit_once(':') else {
@@ -120,9 +125,18 @@ fn parse_place(place: &str) -> (&str, Option<(usize, usize)>) {
     }
 }
 
+fn window_title(root: &Path, branch: &str) -> String {
+    let title = format!("Shepherd — {}", root.display());
+    if branch.is_empty() {
+        title
+    } else {
+        format!("{title} — {branch}")
+    }
+}
+
 pub fn viewport(root: &Path, window: &Window) -> ViewportBuilder {
     let builder = ViewportBuilder::default()
-        .with_title(format!("Shepherd — {}", root.display()))
+        .with_title(window_title(root, ""))
         .with_inner_size(window.size.unwrap_or(DEFAULT_WINDOW_SIZE));
     match window.position {
         Some(position) => builder.with_position(position),
@@ -188,6 +202,7 @@ impl App {
             files: Vec::new(),
             search: ProjectSearch::default(),
             terminals: Terminals::new(repo.root.clone()),
+            flow: Flow::new(repo.clone()),
             error: None,
             root: repo.root.clone(),
         };
@@ -219,6 +234,7 @@ impl App {
             show_keys: false,
             drag: None,
             action: None,
+            titled_branch: String::new(),
             watcher: Watcher::spawn(repo.clone(), ctx),
             repo,
         }
@@ -236,6 +252,7 @@ impl App {
                     .file_tree
                     .set_files(snapshot.files.clone(), &self.workspace.expanded_dirs);
                 content.files = snapshot.files;
+                content.flow.update(snapshot.status, &snapshot.changes);
                 content.open_files.reload_changed();
                 content.search.files_changed();
             }
@@ -308,11 +325,27 @@ impl App {
                     None,
                     look,
                     None,
+                    None,
                 ) {
                     self.action = Some(Action::Open(Tab::File(path), 0));
                 }
             }
             Sidebar::Changes => {
+                let content = &mut self.content;
+                let agents = content.terminals.agents();
+                match content.flow.ui(ui, content.review.progress(), &agents) {
+                    Some(flow::Outcome::Run(op)) => {
+                        content.open_files.save_all();
+                        content.flow.run(op, ui.ctx());
+                    }
+                    Some(flow::Outcome::Send { terminal, text }) => {
+                        self.action = Some(Action::Send { terminal, text })
+                    }
+                    Some(flow::Outcome::Mark(reviewed)) => {
+                        content.review.set_reviewed("", reviewed)
+                    }
+                    None => {}
+                }
                 let selected = self.workspace.last_review.as_ref().and_then(Tab::path);
                 if let Some(path) =
                     self.content
@@ -559,6 +592,10 @@ impl App {
                     ctx,
                 );
                 Ok(format!("Opened {place}"))
+            }
+            (Some("commit-message"), Some(_)) => {
+                self.content.flow.set_message(args[1..].join(" "));
+                Ok("The commit message is in the editor, for the user to commit with".to_string())
             }
             (Some("review"), path) => {
                 let Some(path) = path
@@ -1035,6 +1072,18 @@ impl App {
             self.apply(snapshot);
         }
         self.content.terminals.update(&ctx);
+        if self.content.flow.finished(&ctx) {
+            self.watcher.refresh_now();
+        }
+        let branch = &self.content.flow.status().branch;
+        if *branch != self.titled_branch {
+            self.titled_branch = branch.clone();
+            let title = window_title(&self.content.root, branch);
+            for builder in self.viewports.values_mut() {
+                builder.title = Some(title.clone());
+            }
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Title(title));
+        }
         for request in self
             .control
             .as_ref()
@@ -1070,7 +1119,10 @@ impl App {
             let builder = self
                 .viewports
                 .entry(window.id)
-                .or_insert_with(|| viewport(&self.content.root, window))
+                .or_insert_with(|| {
+                    let title = window_title(&self.content.root, &self.titled_branch);
+                    viewport(&self.content.root, window).with_title(title)
+                })
                 .clone();
             ctx.show_viewport_immediate(viewport_id(window), builder, |ui, _| {
                 self.window_ui(ui, index)
@@ -1904,6 +1956,38 @@ mod tests {
             ask(&mut harness, &["what"])
                 .unwrap_err()
                 .starts_with("Unknown command: what")
+        );
+    }
+
+    #[test]
+    fn commits_all_changes_from_the_sidebar_with_the_message_an_agent_wrote() {
+        let (mut harness, dir) = harness("commit");
+        harness.get_by_label("Changes").click();
+        harness.run();
+        harness.get_by_label("All").click();
+        wait_for(&mut harness, "2/2 reviewed");
+        assert!(ask(&mut harness, &["commit-message", "Add", "the project"]).is_ok());
+        for _ in 0..400 {
+            harness.step();
+            if harness.query_by_label("No changes").is_some() {
+                break;
+            }
+            harness.get_by_label("Commit").click();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        harness.get_by_label("No changes");
+        let log = std::process::Command::new("git")
+            .args(["log", "--format=%s"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&log.stdout), "Add the project\n");
+
+        let branch = Repo::open(dir.path()).unwrap().branch();
+        assert_eq!(harness.state().titled_branch, branch);
+        assert_eq!(
+            window_title(Path::new("/work/shop"), "main"),
+            "Shepherd — /work/shop — main"
         );
     }
 

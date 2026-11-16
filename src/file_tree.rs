@@ -16,6 +16,8 @@ pub struct FileTree {
 
 pub type Menu<'a> = &'a mut dyn FnMut(&mut egui::Ui, &str);
 
+pub type Mark<'a> = &'a mut dyn FnMut(&egui::Ui, egui::Rect, &str);
+
 #[derive(Default)]
 pub struct FileLook {
     pub color: Option<Color32>,
@@ -69,6 +71,7 @@ impl FileTree {
         selected: Option<&str>,
         look: impl Fn(&str) -> FileLook,
         mut menu: Option<Menu>,
+        mut mark: Option<Mark>,
     ) -> Option<String> {
         let font = TextStyle::Body.resolve(ui.style());
         let row_height = ui.text_style_height(&TextStyle::Body) + 6.0;
@@ -146,6 +149,14 @@ impl FileTree {
                         color,
                     );
                     let mut right = rect.right() - 6.0;
+                    if let Some(mark) = &mut mark {
+                        let square = egui::Rect::from_min_max(
+                            egui::pos2(rect.right() - row_height, rect.top()),
+                            rect.max,
+                        );
+                        mark(ui, square, &row.path);
+                        right = square.left() - 2.0;
+                    }
                     if let Some(detail) = look.detail {
                         right = painter
                             .text(

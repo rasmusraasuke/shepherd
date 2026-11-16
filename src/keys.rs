@@ -37,6 +37,7 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
             ("Give the keys back to the review", "Esc"),
             ("Refresh now", "r"),
             ("Send the comment", "⌘↩"),
+            ("Commit / commit and push", "⌘↩  ⌘⇧↩"),
         ],
     ),
     (

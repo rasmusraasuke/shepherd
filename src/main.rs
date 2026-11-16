@@ -6,6 +6,7 @@ mod control;
 mod editor;
 mod file_tree;
 mod file_view;
+mod flow;
 mod git;
 mod highlight;
 mod icons;

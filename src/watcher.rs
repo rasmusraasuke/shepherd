@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use eframe::egui;
 
-use crate::git::{Changes, Repo};
+use crate::git::{Changes, Repo, Status};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -14,6 +14,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 pub struct Snapshot {
     pub changes: Changes,
     pub files: Vec<String>,
+    pub status: Status,
 }
 
 impl Snapshot {
@@ -21,6 +22,7 @@ impl Snapshot {
         Ok(Self {
             changes: repo.changes()?,
             files: repo.list_files()?,
+            status: repo.status(),
         })
     }
 }

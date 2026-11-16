@@ -23,7 +23,7 @@ around that loop.
 
 ## Where we are
 
-Milestones 1 to 6 are done: a workspace of tabs, splits and windows that survives
+Milestones 1 to 7 are done: a workspace of tabs, splits and windows that survives
 restarts, with file editing (undo, find and replace, syntax highlighting, saving on its own,
 reloading of files changed on disk), search across the project, terminals good enough for
 CLI agents, and a review of one file at a time, chosen from the tree of changed files, with
@@ -34,9 +34,12 @@ the state of the agents in the tab titles, new changes marked, and `shepherd ctl
 read what the editor shows and have it show files and reviews, and fixing in the review:
 the review is the file and is edited anywhere, with the changes found again as they are
 typed, reverting hunks or lines as edits that are undone with Cmd+Z, and jumping between a
-change and its place in the file. README.md describes the features.
+change and its place in the file, and the git flow of a normal day: committing what is
+reviewed with a message written in place or drafted by an agent, pushing, syncing with a
+picture of what is ahead and behind, and creating and switching branches, taking the changes
+along or leaving them. README.md describes the features.
 
-Next is milestone 7: git flow.
+Next is milestone 8: merge conflicts in the same view.
 
 ## Milestones
 
@@ -132,7 +135,7 @@ without copying anything by hand.
 
 Done when: small fixes during review never require leaving the review.
 
-### 7. Git flow: commit, push, sync
+### 7. Git flow: commit, push, sync (completed)
 
 - Commit what is reviewed, as it is staged; or choose by file, hunk or line in the commit
   itself
@@ -232,6 +235,18 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
   no storage of their own, survive anything that keeps the index, and what is committed is
   what was reviewed. Staging done outside the editor, for example by an agent running
   `git add`, counts as reviewed.
+- **A commit is what is reviewed.** There is no second way to choose what goes into a commit:
+  the commit takes what is staged, and the marks of the review, by line, hunk, file,
+  directory or all at once, are how it is chosen.
+- **Git runs in the background and leaves no mess.** Commit, push, sync and switching run
+  git itself, away from the interface. A sync always merges what it pulls, fast-forwarding
+  when it can, whatever `pull.rebase` says; uncommitted changes, with their review
+  marks, are set aside for the pull and brought back. Until conflicts are shown in the review
+  (milestone 8), a pull that runs into them is taken back, and a sync is refused when the
+  commits to pull touch files with uncommitted changes.
+- **Changes left on a branch live in git's stash.** Leaving the changes behind when switching
+  stashes them under the name of the branch, and switching back brings them out again, review
+  marks included, so they stay visible to plain git.
 - **Agents through the terminal.** Text for an agent is pasted into its terminal, and agents
   reach the editor with the `shepherd ctl` command over a socket, so any CLI agent works without
   a plugin or a protocol of its own.
