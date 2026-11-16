@@ -39,7 +39,7 @@ reviewed with a message written in place or drafted by an agent, pushing, syncin
 picture of what is ahead and behind, and creating and switching branches, taking the changes
 along or leaving them. README.md describes the features.
 
-Next is milestone 8: merge conflicts in the same view.
+Next is milestone 8: agents as tabs of their own.
 
 ## Milestones
 
@@ -147,7 +147,46 @@ Done when: small fixes during review never require leaving the review.
 
 Done when: a normal day of commits, pushes and pulls needs no other git tool.
 
-### 8. Merge conflicts in the same view
+### 8. Agents as tabs of their own
+
+Until now an agent is whatever runs in a terminal, and the editor can't tell it from a shell:
+text meant for an agent can land at a shell prompt and be run as a command. The editor gets
+to know the agents, starts them itself and gives them a tab of their own.
+
+- Known agents: Claude Code (`claude`) and Opencode (`opencode`), found on the `PATH`. For
+  each the editor knows how to start it, how to start it with a first message and how to tell
+  it about `shepherd ctl`. What is known about an agent is kept in one place, so that adding
+  another one is a small change
+- Agent tab, a fourth kind of tab next to file, terminal and review. It runs the agent's own
+  program directly, with no shell around it, and shows its interface as a terminal does, with
+  the keys, mouse, colors and clipboard handling terminals already have. It is titled with
+  the agent's name and shows whether the agent works or waits. It has none of the shell
+  features: when the agent ends, the tab says so and offers to start it again, rather than
+  dropping to a prompt. Like any tab it is split, moved and popped out
+- New agent from the + of a tab bar, next to *New terminal* and *New review*, with the
+  agents that were found
+- Quick chat: Ctrl pressed twice, as Shift twice opens the search, opens a small modal over
+  the window it was pressed in, with a field for the message. It shows which agent is going
+  to be used and lets another one be picked; the choice is remembered. Enter sends, Shift+Enter
+  makes a new line, Esc closes. Sending starts a new session of the agent in a new Agent tab
+  in that window, with the message as the first thing said to it
+- Text from the editor goes to Agent tabs only: review comments, *Ask agent* and everything
+  later milestones hand to an agent. Plain terminals are never offered and never receive
+  text. With several Agent tabs open, the one used last comes first; with none open, a new
+  one is started with the text as its first message, as a quick chat does
+- *Draft* of a commit message works as a quick chat: it starts a new session of the chosen
+  agent in a new Agent tab with the request, and the commit box shows that the agent is
+  writing until the message lands
+- `shepherd ctl` and the state of the agents (working, waiting) follow the Agent tabs:
+  `shepherd ctl context` lists them apart from the terminals
+- An Agent tab that is open when the editor quits comes back on the next start, continuing
+  its conversation where the agent can do that
+
+Done when: Ctrl Ctrl, a sentence and Enter get an agent working in a tab of its own, a draft
+of a commit message needs no agent to be open first, and nothing the editor sends ever lands
+in a shell.
+
+### 9. Merge conflicts in the same view
 
 - Conflicts appear in the file's review as a special kind of hunk, during merge, rebase,
   pull and stash apply
@@ -158,7 +197,7 @@ Done when: a normal day of commits, pushes and pulls needs no other git tool.
 
 Done when: a conflicting pull is resolved without leaving the review.
 
-### 9. Reviewing commits
+### 10. Reviewing commits
 
 - History list of commits for the branch
 - Open one commit, or a range, in the same review, one file at a time, with the same
@@ -167,7 +206,7 @@ Done when: a conflicting pull is resolved without leaving the review.
 
 Done when: work an agent has already committed can be reviewed the same way as uncommitted work.
 
-### 10. Comfortable Kotlin editing
+### 11. Comfortable Kotlin editing
 
 The step that lets IntelliJ be closed for good.
 
@@ -183,7 +222,7 @@ The step that lets IntelliJ be closed for good.
 
 Done when: a day of Kotlin work happens here without missing IntelliJ.
 
-### 11. Run configurations
+### 12. Run configurations
 
 - Run configurations stored as plain files in the repository, so they can be committed and
   shared with the team
@@ -200,7 +239,8 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
 
 - Debugger
 - A plugin system
-- A built-in agent chat panel (agents live in terminal tabs)
+- An agent or a chat interface of the editor's own (an Agent tab shows the agent's own
+  program)
 - Git worktrees (all agents work in one checkout)
 - Kotlin analysis beyond the language server
 - Pull request review for GitHub/GitLab
@@ -242,11 +282,16 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
   git itself, away from the interface. A sync always merges what it pulls, fast-forwarding
   when it can, whatever `pull.rebase` says; uncommitted changes, with their review
   marks, are set aside for the pull and brought back. Until conflicts are shown in the review
-  (milestone 8), a pull that runs into them is taken back, and a sync is refused when the
+  (milestone 9), a pull that runs into them is taken back, and a sync is refused when the
   commits to pull touch files with uncommitted changes.
 - **Changes left on a branch live in git's stash.** Leaving the changes behind when switching
   stashes them under the name of the branch, and switching back brings them out again, review
   marks included, so they stay visible to plain git.
+- **Known agents in tabs of their own.** The editor starts the agents it knows (Claude Code,
+  Opencode) in Agent tabs and sends text only there, so it never has to guess whether a
+  terminal holds an agent or a shell. An Agent tab is the agent's own terminal program, not
+  a chat interface built by the editor. A quick chat and a draft always start a new session
+  in a new tab; review comments go to a session that is already open.
 - **Agents through the terminal.** Text for an agent is pasted into its terminal, and agents
   reach the editor with the `shepherd ctl` command over a socket, so any CLI agent works without
   a plugin or a protocol of its own.
