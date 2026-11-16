@@ -287,6 +287,7 @@ impl App {
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_width(ui.available_width());
         ui.add_space(8.0);
         if let Some(error) = &self.content.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -1154,6 +1155,27 @@ mod tests {
         let workspace = Workspace::default();
         let builder = viewport(Path::new("/work/shop"), &workspace.windows[0]);
         assert_eq!(builder.title.as_deref(), Some("Shepherd — /work/shop"));
+    }
+
+    #[test]
+    fn the_sidebar_keeps_its_width_when_there_are_no_changes() {
+        let (mut harness, dir) = harness("sidebar-width");
+        crate::git::tests::commit_all(&Repo::open(dir.path()).unwrap());
+        harness.state().watcher.refresh_now();
+        let width =
+            |harness: &Harness<'static, App>| harness.get_by_label("README.md").rect().width();
+        let before = width(&harness);
+
+        harness.get_by_label("Changes").click();
+        wait_for(&mut harness, "No changes");
+        for _ in 0..10 {
+            harness.run();
+        }
+        harness.get_by_label("Files").click();
+        for _ in 0..10 {
+            harness.run();
+        }
+        assert_eq!(width(&harness), before);
     }
 
     #[test]
