@@ -188,25 +188,9 @@ fn latest() -> Result<Option<Release>, String> {
         "--max-time".to_string(),
         "30".to_string(),
     ];
-    if let Some(token) = token() {
-        args.extend(["-H".to_string(), format!("Authorization: Bearer {token}")]);
-    }
     args.push(url);
     let body = run("curl", &args)?;
     parse(&body, VERSION, std::env::consts::OS, std::env::consts::ARCH)
-}
-
-fn token() -> Option<String> {
-    ["SHEPHERD_GITHUB_TOKEN", "GITHUB_TOKEN"]
-        .into_iter()
-        .find_map(|name| std::env::var(name).ok())
-        .filter(|token| !token.is_empty())
-        .or_else(|| {
-            let path = dirs::config()?.join("github-token");
-            let token = fs::read_to_string(path).ok()?;
-            let token = token.trim();
-            (!token.is_empty()).then(|| token.to_string())
-        })
 }
 
 fn archive_name(version: &str) -> String {
@@ -232,9 +216,6 @@ fn download(release: &Release) -> Result<(), String> {
         "-H".to_string(),
         "Accept: application/octet-stream".to_string(),
     ];
-    if let Some(token) = token() {
-        args.extend(["-H".to_string(), format!("Authorization: Bearer {token}")]);
-    }
     args.extend([
         "-o".to_string(),
         archive.display().to_string(),

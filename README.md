@@ -126,10 +126,7 @@ When it starts, Shepherd asks GitHub for the latest release. A newer one downloa
 background: on macOS a bar above the editor offers to restart into it, on Linux it offers to
 show the download. The version is under `⌘/`, next to a check for updates.
 
-The repository is public, so no token is needed. A fork kept private can set
-`SHEPHERD_GITHUB_TOKEN`, or put a token with read access in
-`~/Library/Application Support/Shepherd/github-token` on macOS, or
-`~/.config/shepherd/github-token` on Linux.
+The repository is public, so no token is needed.
 
 ## Development
 
