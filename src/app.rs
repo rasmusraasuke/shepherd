@@ -60,6 +60,7 @@ pub struct App {
     action: Option<Action>,
     titled_branch: String,
     updates: update::Updates,
+    build: update::Build,
 }
 
 struct Content {
@@ -259,6 +260,7 @@ impl App {
             agents,
             models,
             updates,
+            build: update::Build::watch(),
             search_in: None,
             double_shift: DoubleTap::shift(),
             double_ctrl: DoubleTap::ctrl(),
@@ -346,7 +348,11 @@ impl App {
 
     fn update_bar(&mut self, ui: &mut egui::Ui) {
         let phase = self.updates.phase();
-        if matches!(phase, update::Phase::Idle | update::Phase::Checking) {
+        let build = self.build.changed();
+        if !build {
+            ui.ctx().request_repaint_after(update::CHECK);
+        }
+        if matches!(phase, update::Phase::Idle | update::Phase::Checking) && !build {
             return;
         }
         egui::Panel::bottom("update")
@@ -372,10 +378,8 @@ impl App {
                         });
                         if install {
                             if ui.button("Restart and update").clicked() {
-                                match self.updates.install(&self.content.root) {
-                                    Ok(()) => {
-                                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close)
-                                    }
+                                match self.updates.install() {
+                                    Ok(()) => self.restart_now(ui.ctx()),
                                     Err(e) => self.updates.fail(e),
                                 }
                             }
@@ -394,9 +398,34 @@ impl App {
                             self.updates.dismiss();
                         }
                     }
-                    update::Phase::Idle | update::Phase::Checking => {}
+                    update::Phase::Idle | update::Phase::Checking => {
+                        if build {
+                            ui.label("A new build of Shepherd is on disk.");
+                            if ui
+                                .button("Restart")
+                                .on_hover_text(
+                                    "Files and the layout are saved. Terminals and running agents close.",
+                                )
+                                .clicked()
+                            {
+                                self.restart_now(ui.ctx());
+                            }
+                            if ui.small_button("Later").clicked() {
+                                self.build.dismiss();
+                            }
+                        }
+                    }
                 });
             });
+    }
+
+    fn restart_now(&mut self, ctx: &egui::Context) {
+        self.content.open_files.save_all();
+        self.save_layout();
+        match update::restart(&self.content.root) {
+            Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
+            Err(e) => self.updates.fail(e),
+        }
     }
 
     fn activity_bar(&mut self, ui: &mut egui::Ui) {

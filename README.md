@@ -126,6 +126,9 @@ When it starts, Shepherd asks GitHub for the latest release. A newer one downloa
 background: on macOS a bar above the editor offers to restart into it, on Linux it offers to
 show the download. The version is under `⌘/`, next to a check for updates.
 
+Shepherd also watches the binary it was started from. When you rebuild it locally, the bar
+offers to restart into the new build, and the tabs, splits and windows come back as they were.
+
 The repository is public, so no token is needed.
 
 ## Development

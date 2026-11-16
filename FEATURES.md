@@ -38,6 +38,9 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
 - **The branch in the title.** The title of every window ends with the current branch.
 - **Restored on restart.** Windows with their position and size, splits, open tabs, the
   sidebar, open or closed, and the expanded directories are saved per repository in `.git/shepherd-layout.json`.
+- **Restarting into a new build.** The program watches the binary it was started from. When a
+  new build replaces it, a bar above the editor offers to restart, and the layout comes back
+  as it was.
 
 ## Editing
 

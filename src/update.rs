@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 use serde::Deserialize;
@@ -10,6 +11,8 @@ use serde::Deserialize;
 use crate::dirs;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub const CHECK: Duration = Duration::from_secs(1);
 
 const REPOSITORY: &str = "rasmusraasuke/shepherd";
 
@@ -106,22 +109,13 @@ impl Updates {
         *self.phase.lock().unwrap() = Phase::Failed(error);
     }
 
-    pub fn install(&self, root: &Path) -> Result<(), String> {
+    pub fn install(&self) -> Result<(), String> {
         let Phase::Ready(_) = self.phase() else {
             return Err("No update is ready to install".to_string());
         };
         let bundle = bundled().ok_or("Shepherd is not running from an application bundle")?;
         let unpacked = updates_dir()?;
-        swap(&bundle, &unpacked.join("Shepherd.app"))?;
-        Command::new("open")
-            .arg("-n")
-            .arg("-a")
-            .arg(&bundle)
-            .arg("--args")
-            .arg(root)
-            .status()
-            .map_err(|e| format!("Cannot start the new Shepherd: {e}"))?;
-        Ok(())
+        swap(&bundle, &unpacked.join("Shepherd.app"))
     }
 
     pub fn reveal(&self) -> Result<(), String> {
@@ -155,6 +149,86 @@ pub fn bundled() -> Option<PathBuf> {
         .extension()
         .is_some_and(|extension| extension == "app")
         .then(|| bundle.to_path_buf())
+}
+
+pub fn restart(root: &Path) -> Result<(), String> {
+    match bundled() {
+        Some(bundle) => {
+            Command::new("open")
+                .arg("-n")
+                .arg("-a")
+                .arg(bundle)
+                .arg("--args")
+                .arg(root)
+                .status()
+                .map_err(|e| format!("Cannot start the new Shepherd: {e}"))?;
+        }
+        None => {
+            let exe = std::env::current_exe()
+                .map_err(|e| format!("Cannot find the shepherd program: {e}"))?;
+            Command::new(exe)
+                .arg(root)
+                .spawn()
+                .map_err(|e| format!("Cannot start the new Shepherd: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+pub struct Build {
+    path: PathBuf,
+    stamp: Option<Stamp>,
+    checked: Instant,
+    changed: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl Build {
+    pub fn watch() -> Self {
+        Self::at(std::env::current_exe().unwrap_or_default())
+    }
+
+    fn at(path: PathBuf) -> Self {
+        Self {
+            stamp: stamp(&path),
+            path,
+            checked: Instant::now(),
+            changed: false,
+        }
+    }
+
+    pub fn changed(&mut self) -> bool {
+        if self.checked.elapsed() >= CHECK {
+            self.check();
+        }
+        self.changed
+    }
+
+    fn check(&mut self) {
+        self.checked = Instant::now();
+        let stamp = stamp(&self.path);
+        if stamp.is_some() && stamp != self.stamp {
+            self.stamp = stamp;
+            self.changed = true;
+        }
+    }
+
+    pub fn dismiss(&mut self) {
+        self.changed = false;
+    }
+}
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let metadata = fs::metadata(path).ok()?;
+    Some(Stamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
 }
 
 fn swap(bundle: &Path, new: &Path) -> Result<(), String> {
@@ -495,5 +569,35 @@ mod tests {
         assert!(!dir.path().join(".Shepherd.app.old").exists());
         assert!(!dir.path().join(".Shepherd.app.new").exists());
         assert!(new.join("Contents/MacOS/shepherd").exists());
+    }
+
+    #[test]
+    fn notices_when_the_program_changes_on_disk() {
+        let dir = crate::testing::TempDir::new("update-build");
+        let path = dir.path().join("shepherd");
+        fs::write(&path, "first build").unwrap();
+        let mut build = Build::at(path.clone());
+        build.check();
+        assert!(!build.changed);
+
+        fs::write(&path, "a second, longer build").unwrap();
+        build.check();
+        assert!(build.changed);
+
+        build.dismiss();
+        build.check();
+        assert!(!build.changed);
+
+        fs::write(&path, "a third build, longer than the second").unwrap();
+        build.check();
+        assert!(build.changed);
+    }
+
+    #[test]
+    fn does_not_notice_a_program_that_is_not_there() {
+        let dir = crate::testing::TempDir::new("update-missing");
+        let mut build = Build::at(dir.path().join("shepherd"));
+        build.check();
+        assert!(!build.changed);
     }
 }
