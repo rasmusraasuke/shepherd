@@ -120,15 +120,17 @@ Without a path the current directory is opened. The path must be inside a git re
   mouse, colors and clipboard handling of a terminal. The tab is titled with the agent's name,
   shows with a dot whether it works or waits, and, once the agent ends, says so and offers to
   start it again rather than dropping to a prompt. Agent tabs are split, moved and popped out
-  like any other tab.
+  like any other tab. The model menu lists the models the agent offers: Claude Code's aliases
+  and the models `opencode models` lists.
 - **Quick chat.** Ctrl pressed twice opens a small window over the one it was pressed in. Pick
-  the agent to use, type the message and press Enter; Shift+Enter makes a new line and Esc
-  closes. The choice of agent is remembered. Sending starts a new session of that agent in a
-  new Agent tab with the message as its first words.
+  the agent and the model to use, type the message and press Enter; Shift+Enter makes a new
+  line and Esc closes. The choice of agent and model is remembered. Sending starts a new
+  session of that agent in a new Agent tab with the message as its first words.
 - **Only agents get the editor's text.** Review comments, *Ask agent* and *Draft* are offered
-  only Agent tabs, never plain terminals, so nothing the editor sends can land at a shell
-  prompt. With Agent tabs open, the one used last comes first; with none open, a new one is
-  started with the text as its first message.
+  only to the known agents, never plain terminals, so nothing the editor sends can land at a
+  shell prompt. With Agent tabs open, the one used last comes first; with none open, a new one
+  is started with the text as its first message. *Draft* runs in the background instead, with
+  an agent and model chosen for it alone.
 - **Back on restart.** An Agent tab that is open when the editor quits comes back on the next
   start and continues its conversation where the agent can.
 - **`shepherd ctl`.** The `shepherd ctl` command and the state of the agents work in Agent
@@ -224,10 +226,12 @@ the background; what it complains about is shown above the commit message.
   the same for everything. Hunks and single lines are chosen in the review itself.
 - **Commit.** Write the message below the tree and press *Commit* (Cmd+Enter in the
   message). *Commit and push* (Cmd+Shift+Enter) pushes right after.
-- **A message from an agent.** *Draft* starts the chosen agent in a new Agent tab with the
-  request to write the message for what is staged. While the agent writes, the message box
-  says so, until the message lands in it with `shepherd ctl commit-message`, to be read and
-  changed before committing; *Cancel* stops waiting for it.
+- **A message from an agent.** Above the commit message, *Draft* starts the chosen agent and
+  model in the background, with the request to write the message for what is staged. It has a
+  choice of agent and model of its own, so a cheaper model can write the message while a
+  smarter one does the work. While the agent writes, the message box says so, until the
+  message lands in it with `shepherd ctl commit-message`, to be read and changed before
+  committing; *Cancel* stops waiting for it.
 - **Sync and push.** *Sync ↓2* shows the commits there are to pull, as far as is known from
   the last fetch, and fetches and pulls, always merging and never rebasing. Uncommitted
   changes stay as they are, reviewed marks included. A pull that runs into conflicts is taken back, and when the commits to pull change a file with uncommitted

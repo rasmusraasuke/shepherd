@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Key, Modifiers, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 
-use crate::agents::{self, Agent};
+use crate::agents::{self, Agent, Model};
 use crate::buffer::Pos;
 use crate::comments;
 use crate::control::{self, Control};
@@ -50,6 +50,7 @@ pub struct App {
     quick_open: Option<(u64, QuickOpen)>,
     quick_chat: Option<(u64, QuickChat)>,
     agents: Vec<Agent>,
+    models: HashMap<Agent, Vec<Model>>,
     search_in: Option<u64>,
     double_shift: DoubleTap,
     double_ctrl: DoubleTap,
@@ -88,6 +89,9 @@ enum Action {
         agent: Option<u64>,
         text: String,
         window: usize,
+    },
+    Draft {
+        text: String,
     },
     Search(u64),
     Reveal(Reveal),
@@ -203,6 +207,7 @@ impl App {
             .inspect_err(|e| eprintln!("{e}"))
             .ok();
         let agents = agents::found(&std::env::var("PATH").unwrap_or_default());
+        let models = agents::models_for(&agents);
         let mut content = Content {
             review: Review::new(repo.clone()),
             open_files: OpenFiles::new(repo.root.clone()),
@@ -245,6 +250,7 @@ impl App {
             quick_open: None,
             quick_chat: None,
             agents,
+            models,
             search_in: None,
             double_shift: DoubleTap::shift(),
             double_ctrl: DoubleTap::ctrl(),
@@ -258,7 +264,23 @@ impl App {
     }
 
     fn chosen_agent(&self) -> Option<Agent> {
-        agents::chosen(&self.agents, self.workspace.agent)
+        self.workspace.agent.agent(&self.agents)
+    }
+
+    fn chosen_model(&self, agent: Agent) -> Option<String> {
+        (self.chosen_agent() == Some(agent))
+            .then(|| self.workspace.agent.model.clone())
+            .flatten()
+    }
+
+    fn draft_chosen_agent(&self) -> Option<Agent> {
+        self.workspace.draft_agent.agent(&self.agents)
+    }
+
+    fn draft_model(&self, agent: Agent) -> Option<String> {
+        (self.draft_chosen_agent() == Some(agent))
+            .then(|| self.workspace.draft_agent.model.clone())
+            .flatten()
     }
 
     fn review_agents(&self) -> review::Agents {
@@ -268,16 +290,28 @@ impl App {
         }
     }
 
+    fn draft_agents(&self) -> review::Agents {
+        review::Agents {
+            open: Vec::new(),
+            new: self
+                .draft_chosen_agent()
+                .map(|agent| agent.name().to_string()),
+        }
+    }
+
     fn open_agent(
         &mut self,
         window: usize,
         tabs: Option<TileId>,
         agent: Agent,
+        model: Option<String>,
         message: Option<String>,
         ctx: &egui::Context,
     ) {
         let session = agent.new_session();
-        let id = self.workspace.open_agent(window, tabs, agent, session);
+        let id = self
+            .workspace
+            .open_agent(window, tabs, agent, session, model);
         self.content.terminals.start(id, message);
         self.focus(window, ctx);
     }
@@ -373,19 +407,23 @@ impl App {
                 }
             }
             Sidebar::Changes => {
-                let agents = self.review_agents();
+                let agents = self.draft_agents();
+                let choice = &mut self.workspace.draft_agent;
                 let content = &mut self.content;
-                match content.flow.ui(ui, content.review.progress(), &agents) {
+                match content.flow.ui(
+                    ui,
+                    content.review.progress(),
+                    &agents,
+                    &self.agents,
+                    &self.models,
+                    choice,
+                ) {
                     Some(flow::Outcome::Run(op)) => {
                         content.open_files.save_all();
                         content.flow.run(op, ui.ctx());
                     }
-                    Some(flow::Outcome::Send { agent, text }) => {
-                        self.action = Some(Action::Send {
-                            agent,
-                            text,
-                            window: 0,
-                        })
+                    Some(flow::Outcome::Draft { text }) => {
+                        self.action = Some(Action::Draft { text })
                     }
                     Some(flow::Outcome::Mark(reviewed)) => {
                         content.review.set_reviewed("", reviewed)
@@ -537,15 +575,12 @@ impl App {
             .as_ref()
             .is_some_and(|(id, _)| *id == window_id)
         {
-            let found = self.agents.clone();
-            let chosen = &mut self.workspace.agent;
-            let outcome = self
-                .quick_chat
-                .as_mut()
-                .and_then(|(_, chat)| chat.ui(&ctx, &found, chosen));
+            let outcome = self.quick_chat.as_mut().and_then(|(_, chat)| {
+                chat.ui(&ctx, &self.agents, &self.models, &mut self.workspace.agent)
+            });
             match outcome {
                 Some(quick_chat::Outcome::Send(agent, text)) => {
-                    self.workspace.agent = Some(agent);
+                    self.workspace.agent.agent = Some(agent);
                     self.action = Some(Action::Send {
                         agent: None,
                         text,
@@ -597,7 +632,8 @@ impl App {
                 self.focus(window, ctx);
             }
             Action::NewAgent(window, tabs, agent) => {
-                self.open_agent(window, tabs, agent, None, ctx);
+                let model = self.chosen_model(agent);
+                self.open_agent(window, tabs, agent, model, None, ctx);
             }
             Action::NewReview(window, tabs) => {
                 self.workspace.add_tab(window, tabs, Tab::Review(None));
@@ -626,10 +662,25 @@ impl App {
                 Some(id) => self.content.terminals.send(id, &text),
                 None => {
                     if let Some(agent) = self.chosen_agent() {
-                        self.open_agent(window, None, agent, Some(text), ctx);
+                        let model = self.chosen_model(agent);
+                        self.open_agent(window, None, agent, model, Some(text), ctx);
                     }
                 }
             },
+            Action::Draft { text } => {
+                let result = match self.draft_chosen_agent() {
+                    Some(agent) => {
+                        let model = self.draft_model(agent);
+                        self.content
+                            .terminals
+                            .run_background(agent, model.as_deref(), &text)
+                    }
+                    None => Err("No agent was found: install Claude Code or Opencode".to_string()),
+                };
+                if let Err(error) = result {
+                    self.content.flow.fail(error);
+                }
+            }
             Action::Search(window_id) => {
                 self.search_in = Some(window_id);
                 let selected = self.content.open_files.selected_text();
@@ -984,8 +1035,17 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                 }
             }
             Tab::Terminal(id) => self.content.terminals.ui(ui, *id),
-            Tab::Agent { id, agent, session } => {
-                if let Some(new) = self.content.terminals.agent_ui(ui, *id, *agent, session) {
+            Tab::Agent {
+                id,
+                agent,
+                session,
+                model,
+            } => {
+                if let Some(new) =
+                    self.content
+                        .terminals
+                        .agent_ui(ui, *id, *agent, session, model.as_deref())
+                {
                     *session = new;
                 }
             }
@@ -1992,6 +2052,7 @@ mod tests {
             .terminals
             .run_agents_with(&program);
         harness.state_mut().agents = vec![Agent::Claude];
+        harness.state_mut().models = HashMap::from([(Agent::Claude, Agent::Claude.models())]);
         harness.run();
 
         let ctrl = |harness: &mut Harness<'_, App>, modifiers: Modifiers| {
@@ -2011,6 +2072,10 @@ mod tests {
         }
         harness.run();
         assert!(harness.state().quick_chat.is_some());
+        harness.get_by_label("Default model").click();
+        harness.run();
+        harness.get_by_label("Haiku").click();
+        harness.run();
         harness.event(egui::Event::Text("hello agent".to_string()));
         harness.key_press(Key::Enter);
         harness.run();
@@ -2027,7 +2092,10 @@ mod tests {
         let id = tabs[0]
             .iter()
             .find_map(|tab| match tab {
-                Tab::Agent { id, .. } => Some(*id),
+                Tab::Agent { id, model, .. } => {
+                    assert_eq!(model.as_deref(), Some("haiku"));
+                    Some(*id)
+                }
                 _ => None,
             })
             .unwrap();
@@ -2037,10 +2105,53 @@ mod tests {
             .content
             .terminals
             .screen(id)
-            .is_some_and(|screen| screen.contains("hello agent"))
+            .is_some_and(|screen| screen.contains("hello agent") && screen.contains("haiku"))
         {
             assert!(start.elapsed() < Duration::from_secs(5));
             harness.run();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn drafts_a_commit_message_in_the_background_with_its_own_model() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (mut harness, dir) = harness("draft-background");
+        let arguments = dir.path().join("draft-args");
+        let program = dir.write(
+            "agent",
+            format!(
+                "#!/bin/sh\necho \"$@\" > '{}'\nsleep 1\n",
+                arguments.display()
+            ),
+        );
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        harness
+            .state_mut()
+            .content
+            .terminals
+            .run_agents_with(&program);
+        harness.state_mut().agents = vec![Agent::Claude];
+        harness.state_mut().workspace.draft_agent = crate::agents::Choice {
+            agent: Some(Agent::Claude),
+            model: Some("haiku".to_string()),
+        };
+        harness.state_mut().action = Some(Action::Draft {
+            text: "write it".to_string(),
+        });
+        harness.run();
+        assert_eq!(open_tabs(&harness), [vec![Tab::Review(None)]]);
+
+        let start = Instant::now();
+        loop {
+            if let Ok(args) = fs::read_to_string(&arguments) {
+                assert!(args.contains("-p"), "{args}");
+                assert!(args.contains("--model haiku"), "{args}");
+                assert!(args.contains("write it"), "{args}");
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5));
             std::thread::sleep(Duration::from_millis(10));
         }
     }

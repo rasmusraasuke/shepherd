@@ -141,6 +141,35 @@ impl Terminals {
         self.focus(id);
     }
 
+    pub fn run_background(
+        &self,
+        agent: Agent,
+        model: Option<&str>,
+        message: &str,
+    ) -> Result<(), String> {
+        let command = agent.background_command(message, self.guide.as_deref(), model);
+        let program = self
+            .agent_program
+            .clone()
+            .unwrap_or_else(|| command.program.to_string());
+        let mut child = std::process::Command::new(&program);
+        child
+            .args(&command.args)
+            .current_dir(&self.root)
+            .envs(&self.env)
+            .envs(command.env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut child = child
+            .spawn()
+            .map_err(|e| format!("Cannot start {program}: {e}"))?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+
     fn running(&self) -> impl Iterator<Item = (u64, &Terminal)> {
         self.terminals
             .iter()
@@ -225,13 +254,14 @@ impl Terminals {
         id: u64,
         agent: Agent,
         session: &str,
+        model: Option<&str>,
     ) -> Option<String> {
-        self.show(ui, id, Some((agent, session)))
+        self.show(ui, id, Some((agent, session, model)))
     }
 
     fn spawn(
         &self,
-        agent: Option<(Agent, &str)>,
+        agent: Option<(Agent, &str, Option<&str>)>,
         start: Start,
         size: Size,
         style: &CodeStyle,
@@ -241,8 +271,8 @@ impl Terminals {
         let mut env = self.env.clone();
         let resumed = agent.is_some() && matches!(start, Start::Continue);
         let shell = match agent {
-            Some((agent, session)) => {
-                let command = agent.command(session, start, self.guide.as_deref());
+            Some((agent, session, model)) => {
+                let command = agent.command(session, start, self.guide.as_deref(), model);
                 env.extend(command.env);
                 let program = self.agent_program.clone();
                 Some(Shell::new(
@@ -253,12 +283,17 @@ impl Terminals {
             None => self.shell.clone(),
         };
         let mut terminal = Terminal::spawn(&self.root, shell, env, size, style, ctx, focus)?;
-        terminal.agent = agent.map(|(agent, _)| agent);
+        terminal.agent = agent.map(|(agent, _, _)| agent);
         terminal.resumed = resumed;
         Ok(terminal)
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, id: u64, agent: Option<(Agent, &str)>) -> Option<String> {
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: u64,
+        agent: Option<(Agent, &str, Option<&str>)>,
+    ) -> Option<String> {
         let size = egui::TextStyle::Monospace.resolve(ui.style()).size;
         let fonts_ready = terminal_text::fonts_ready(ui.ctx());
         let style = CodeStyle::with_font(
@@ -287,12 +322,12 @@ impl Terminals {
                 if let Some(start) = again {
                     let fresh = matches!(start, Start::New(_));
                     let session = match (agent, fresh) {
-                        (Some((agent, _)), true) => agent.new_session(),
+                        (Some((agent, _, _)), true) => agent.new_session(),
                         (_, _) => {
-                            agent.map_or_else(String::new, |(_, session)| session.to_string())
+                            agent.map_or_else(String::new, |(_, session, _)| session.to_string())
                         }
                     };
-                    let target = agent.map(|(agent, _)| (agent, session.as_str()));
+                    let target = agent.map(|(agent, _, model)| (agent, session.as_str(), model));
                     let terminal = self.spawn(target, start, size, &style, ui.ctx(), true);
                     self.terminals.insert(id, terminal);
                     if fresh {
@@ -1279,7 +1314,7 @@ mod tests {
             .with_max_steps(8)
             .build_ui_state(
                 |ui, terminals: &mut Terminals| {
-                    terminals.agent_ui(ui, 1, Agent::Claude, "s1");
+                    terminals.agent_ui(ui, 1, Agent::Claude, "s1", None);
                 },
                 terminals,
             );
@@ -1369,7 +1404,7 @@ mod tests {
             .with_max_steps(8)
             .build_ui_state(
                 |ui, terminals: &mut Terminals| {
-                    terminals.agent_ui(ui, 1, Agent::Claude, "s1");
+                    terminals.agent_ui(ui, 1, Agent::Claude, "s1", None);
                 },
                 terminals,
             );

@@ -38,8 +38,9 @@ change and its place in the file, and the git flow of a normal day: committing w
 reviewed with a message written in place or drafted by an agent, pushing, syncing with a
 picture of what is ahead and behind, and creating and switching branches, taking the changes
 along or leaving them, and agents as tabs of their own: Claude Code and Opencode found on
-the PATH, started in Agent tabs without a shell, reached with a quick chat on Ctrl Ctrl and
-sent the editor's text there and nowhere else. README.md describes the features.
+the PATH, started in Agent tabs without a shell, reached with a quick chat on Ctrl Ctrl with
+the agent and model chosen and remembered, and sent the editor's text there and nowhere else.
+README.md describes the features.
 
 Next is milestone 9: merge conflicts in the same view.
 
@@ -168,17 +169,16 @@ to know the agents, starts them itself and gives them a tab of their own.
 - New agent from the + of a tab bar, next to *New terminal* and *New review*, with the
   agents that were found
 - Quick chat: Ctrl pressed twice, as Shift twice opens the search, opens a small modal over
-  the window it was pressed in, with a field for the message. It shows which agent is going
-  to be used and lets another one be picked; the choice is remembered. Enter sends, Shift+Enter
-  makes a new line, Esc closes. Sending starts a new session of the agent in a new Agent tab
-  in that window, with the message as the first thing said to it
+  the window it was pressed in, with a field for the message. It shows which agent and model
+  are going to be used and lets another one be picked; the choice is remembered. Enter sends,
+  Shift+Enter makes a new line, Esc closes. Sending starts a new session of the agent in a new
+  Agent tab in that window, with the message as the first thing said to it
 - Text from the editor goes to Agent tabs only: review comments, *Ask agent* and everything
   later milestones hand to an agent. Plain terminals are never offered and never receive
   text. With several Agent tabs open, the one used last comes first; with none open, a new
   one is started with the text as its first message, as a quick chat does
-- *Draft* of a commit message works as a quick chat: it starts a new session of the chosen
-  agent in a new Agent tab with the request, and the commit box shows that the agent is
-  writing until the message lands
+- *Draft* of a commit message has an agent and a model of its own, and runs in the background:
+  the commit box shows that the agent is writing until the message lands
 - `shepherd ctl` and the state of the agents (working, waiting) follow the Agent tabs:
   `shepherd ctl context` lists them apart from the terminals
 - An Agent tab that is open when the editor quits comes back on the next start, continuing

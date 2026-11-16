@@ -6,7 +6,7 @@ use eframe::egui;
 use egui_tiles::{Container, Tile, TileId, Tree};
 use serde::{Deserialize, Serialize};
 
-use crate::agents::Agent;
+use crate::agents::{Agent, Choice};
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Tab {
@@ -17,6 +17,8 @@ pub enum Tab {
         id: u64,
         agent: Agent,
         session: String,
+        #[serde(default)]
+        model: Option<String>,
     },
 }
 
@@ -252,7 +254,8 @@ pub struct Workspace {
     pub sidebar_open: bool,
     pub expanded_dirs: BTreeSet<String>,
     pub collapsed_changes: BTreeSet<String>,
-    pub agent: Option<Agent>,
+    pub agent: Choice,
+    pub draft_agent: Choice,
     #[serde(skip)]
     pub last_review: Option<Tab>,
 }
@@ -265,7 +268,8 @@ impl Default for Workspace {
             sidebar_open: true,
             expanded_dirs: BTreeSet::new(),
             collapsed_changes: BTreeSet::new(),
-            agent: None,
+            agent: Choice::default(),
+            draft_agent: Choice::default(),
             last_review: None,
         }
     }
@@ -332,9 +336,19 @@ impl Workspace {
         tabs: Option<TileId>,
         agent: Agent,
         session: String,
+        model: Option<String>,
     ) -> u64 {
         let id = self.next_id();
-        self.add_tab(window, tabs, Tab::Agent { id, agent, session });
+        self.add_tab(
+            window,
+            tabs,
+            Tab::Agent {
+                id,
+                agent,
+                session,
+                model,
+            },
+        );
         id
     }
 
@@ -580,27 +594,29 @@ mod tests {
     #[test]
     fn opens_agent_tabs_that_share_their_ids_and_survive_a_restart() {
         let mut workspace = Workspace::default();
-        let id = workspace.open_agent(0, None, Agent::Claude, "s1".to_string());
+        let id = workspace.open_agent(0, None, Agent::Claude, "s1".to_string(), None);
         assert_eq!(id, 1);
         assert_eq!(tabs(&workspace.windows[0]), ["Claude Code", "Review"]);
         assert_eq!(workspace.open_terminal(0, None), 2);
-        let id = workspace.open_agent(0, None, Agent::Opencode, "s2".to_string());
+        let id = workspace.open_agent(0, None, Agent::Opencode, "s2".to_string(), None);
         assert_eq!(id, 3);
 
         let restored = Workspace::from_json(&workspace.to_json()).unwrap();
         let restored_tabs = restored.windows[0].tabs();
-        assert!(restored_tabs.iter().any(|tab| *tab
-            == &Tab::Agent {
-                id: 1,
-                agent: Agent::Claude,
-                session: "s1".to_string(),
-            }));
-        assert!(restored_tabs.iter().any(|tab| *tab
-            == &Tab::Agent {
-                id: 3,
-                agent: Agent::Opencode,
-                session: "s2".to_string(),
-            }));
+        let claude = Tab::Agent {
+            id: 1,
+            agent: Agent::Claude,
+            session: "s1".to_string(),
+            model: None,
+        };
+        let opencode = Tab::Agent {
+            id: 3,
+            agent: Agent::Opencode,
+            session: "s2".to_string(),
+            model: None,
+        };
+        assert!(restored_tabs.contains(&&claude));
+        assert!(restored_tabs.contains(&&opencode));
     }
 
     #[test]
@@ -655,7 +671,14 @@ mod tests {
         workspace.windows[1].size = Some(egui::vec2(300.0, 400.0));
         workspace.toggle_sidebar(Sidebar::Changes);
         workspace.expanded_dirs.insert("src".to_string());
-        workspace.agent = Some(Agent::Opencode);
+        workspace.agent = Choice {
+            agent: Some(Agent::Opencode),
+            model: Some("deepseek/deepseek-flash".to_string()),
+        };
+        workspace.draft_agent = Choice {
+            agent: Some(Agent::Claude),
+            model: Some("haiku".to_string()),
+        };
 
         let restored = Workspace::from_json(&workspace.to_json()).unwrap();
         assert!(
@@ -670,7 +693,20 @@ mod tests {
         assert_eq!(restored.windows[1].position, Some(egui::pos2(10.0, 20.0)));
         assert_eq!(restored.sidebar, Sidebar::Changes);
         assert!(restored.sidebar_open);
-        assert_eq!(restored.agent, Some(Agent::Opencode));
+        assert_eq!(
+            restored.agent,
+            Choice {
+                agent: Some(Agent::Opencode),
+                model: Some("deepseek/deepseek-flash".to_string()),
+            }
+        );
+        assert_eq!(
+            restored.draft_agent,
+            Choice {
+                agent: Some(Agent::Claude),
+                model: Some("haiku".to_string()),
+            }
+        );
     }
 
     #[test]

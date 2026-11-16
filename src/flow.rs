@@ -1,9 +1,12 @@
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
+use std::collections::HashMap;
+
 use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{self, Key, Modifiers, PopupCloseBehavior};
 
+use crate::agents::{self, Agent, Choice, Model};
 use crate::git::{Changes, Repo, Status};
 use crate::review::{self, Agents};
 
@@ -43,7 +46,7 @@ impl Op {
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
     Run(Op),
-    Send { agent: Option<u64>, text: String },
+    Draft { text: String },
     Mark(bool),
 }
 
@@ -91,6 +94,11 @@ impl Flow {
         self.drafting = false;
     }
 
+    pub fn fail(&mut self, error: String) {
+        self.error = Some(error);
+        self.drafting = false;
+    }
+
     pub fn run(&mut self, op: Op, ctx: &egui::Context) {
         let (sender, result) = mpsc::channel();
         let (repo, message) = (self.repo.clone(), self.message.trim().to_string());
@@ -129,6 +137,9 @@ impl Flow {
         ui: &mut egui::Ui,
         progress: (usize, usize),
         agents: &Agents,
+        found: &[Agent],
+        models: &HashMap<Agent, Vec<Model>>,
+        choice: &mut Choice,
     ) -> Option<Outcome> {
         let op = self.branch_ui(ui);
         ui.add_space(4.0);
@@ -136,7 +147,9 @@ impl Flow {
             .resizable(false)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
-            .show(ui, |ui| self.commit_ui(ui, progress, agents))
+            .show(ui, |ui| {
+                self.commit_ui(ui, progress, agents, found, models, choice)
+            })
             .inner;
         op.map(Outcome::Run).or(commit)
     }
@@ -244,6 +257,9 @@ impl Flow {
         ui: &mut egui::Ui,
         (done, total): (usize, usize),
         agents: &Agents,
+        found: &[Agent],
+        models: &HashMap<Agent, Vec<Model>>,
+        choice: &mut Choice,
     ) -> Option<Outcome> {
         let busy = self.running.is_some();
         let mut outcome = None;
@@ -287,6 +303,16 @@ impl Flow {
                 }
             });
         }
+        let can_draft = self.staged && !self.drafting;
+        ui.horizontal_wrapped(|ui| {
+            if review::new_agent_button(ui, "Draft", can_draft, agents) {
+                self.drafting = true;
+                outcome = Some(Outcome::Draft {
+                    text: DRAFT.to_string(),
+                });
+            }
+            agents::choice_ui(ui, found, models, choice);
+        });
         let id = egui::Id::unique("commit message");
         let focused = ui.memory(|m| m.has_focus(id));
         let key = |ui: &egui::Ui, modifiers| {
@@ -324,14 +350,6 @@ impl Flow {
                     outcome = Some(Outcome::Run(Op::Commit { push }));
                 }
             }
-            let can_draft = self.staged && !self.drafting;
-            if review::new_agent_button(ui, "Draft", can_draft, agents) {
-                self.drafting = true;
-                outcome = Some(Outcome::Send {
-                    agent: None,
-                    text: DRAFT.to_string(),
-                });
-            }
         });
         ui.add_space(2.0);
         outcome
@@ -352,6 +370,7 @@ mod tests {
     struct Shown {
         flow: Flow,
         asked: Option<Outcome>,
+        choice: Choice,
     }
 
     fn show(name: &str) -> (Harness<'static, Shown>, TempDir) {
@@ -360,13 +379,19 @@ mod tests {
         let shown = Shown {
             flow: Flow::new(repo),
             asked: None,
+            choice: Choice::default(),
         };
         let ui = |ui: &mut egui::Ui, shown: &mut Shown| {
             let agents = Agents {
                 open: vec![(1, "Claude Code".to_string())],
                 new: Some("Claude Code".to_string()),
             };
-            match shown.flow.ui(ui, (1, 2), &agents) {
+            let found = [Agent::Claude];
+            let models = HashMap::new();
+            match shown
+                .flow
+                .ui(ui, (1, 2), &agents, &found, &models, &mut shown.choice)
+            {
                 Some(Outcome::Run(op)) => shown.flow.run(op, ui.ctx()),
                 Some(asked) => shown.asked = Some(asked),
                 None => {}
@@ -410,6 +435,19 @@ mod tests {
     }
 
     #[test]
+    fn keeps_draft_and_the_agent_model_choice_above_the_commit_message() {
+        let (harness, _dir) = show("flow-draft-above");
+        let draft = harness.get_by_label("Draft").rect().bottom();
+        let message = harness
+            .get_by_role(egui::Role::MultilineTextInput)
+            .rect()
+            .top();
+        assert!(draft <= message);
+        harness.get_by_label("Default model");
+        harness.get_by_label("Claude Code");
+    }
+
+    #[test]
     fn commits_what_is_staged_with_the_message_and_pushes_it() {
         let (mut harness, dir) = show("flow-commit");
         let repo = harness.state().flow.repo.clone();
@@ -435,7 +473,7 @@ mod tests {
         harness.run_steps(4);
         assert!(matches!(
             &harness.state().asked,
-            Some(Outcome::Send { agent: None, text }) if text.contains("shepherd ctl commit-message")
+            Some(Outcome::Draft { text }) if text.contains("shepherd ctl commit-message")
         ));
         harness.get_by_label("An agent is writing the message…");
         assert!(harness.get_by_label("Draft").accesskit_node().is_disabled());

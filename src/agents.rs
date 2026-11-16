@@ -1,17 +1,43 @@
+use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher as _, Hasher as _};
 use std::path::Path;
 
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-pub const GUIDE: &str = "You run in a tab of the Shepherd editor, in which the user reviews the \
-changes you make. `shepherd ctl help` lists what you can ask the editor: what the user has open \
-and selected, their review comments and what they reviewed. It also shows them files and changes.";
+pub const GUIDE: &str = "You run in the Shepherd editor, in which the user reviews the changes \
+you make. `shepherd ctl help` lists what you can ask the editor: what the user has open and \
+selected, their review comments and what they reviewed. It also shows them files and changes.";
 
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Agent {
     Claude,
     Opencode,
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Model {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct Choice {
+    #[serde(default)]
+    pub agent: Option<Agent>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+impl Choice {
+    pub fn agent(&self, found: &[Agent]) -> Option<Agent> {
+        chosen(found, self.agent)
+    }
+
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref().filter(|model| !model.is_empty())
+    }
 }
 
 pub enum Start {
@@ -29,7 +55,8 @@ struct Spec {
     name: &'static str,
     program: &'static str,
     session: fn() -> String,
-    command: fn(&str, Start, Option<&Path>) -> Command,
+    command: fn(&str, Start, Option<&Path>, Option<&str>) -> Command,
+    background: fn(&str, Option<&Path>, Option<&str>) -> Command,
 }
 
 static CLAUDE: Spec = Spec {
@@ -37,6 +64,7 @@ static CLAUDE: Spec = Spec {
     program: "claude",
     session: claude_session,
     command: claude_command,
+    background: claude_background,
 };
 
 static OPENCODE: Spec = Spec {
@@ -44,6 +72,7 @@ static OPENCODE: Spec = Spec {
     program: "opencode",
     session: opencode_session,
     command: opencode_command,
+    background: opencode_background,
 };
 
 impl Agent {
@@ -68,8 +97,51 @@ impl Agent {
         (self.spec().session)()
     }
 
-    pub fn command(self, session: &str, start: Start, guide: Option<&Path>) -> Command {
-        (self.spec().command)(session, start, guide)
+    pub fn command(
+        self,
+        session: &str,
+        start: Start,
+        guide: Option<&Path>,
+        model: Option<&str>,
+    ) -> Command {
+        (self.spec().command)(session, start, guide, model)
+    }
+
+    pub fn background_command(
+        self,
+        message: &str,
+        guide: Option<&Path>,
+        model: Option<&str>,
+    ) -> Command {
+        (self.spec().background)(message, guide, model)
+    }
+
+    pub fn models(self) -> Vec<Model> {
+        match self {
+            Agent::Claude => [("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")]
+                .into_iter()
+                .map(|(name, value)| Model {
+                    name: name.to_string(),
+                    value: value.to_string(),
+                })
+                .collect(),
+            Agent::Opencode => std::process::Command::new(self.program())
+                .arg("models")
+                .output()
+                .ok()
+                .map(|output| {
+                    String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .map(|line| Model {
+                            name: line.to_string(),
+                            value: line.to_string(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
     }
 }
 
@@ -94,13 +166,21 @@ fn opencode_session() -> String {
     format!("ses_{a:016x}{:010x}", b & 0xff_ffff_ffff)
 }
 
-fn claude_command(session: &str, start: Start, guide: Option<&Path>) -> Command {
+fn claude_command(
+    session: &str,
+    start: Start,
+    guide: Option<&Path>,
+    model: Option<&str>,
+) -> Command {
     let text = |text: &str| text.to_string();
     let session_flag = match start {
         Start::New(_) => "--session-id",
         Start::Continue => "--resume",
     };
     let mut args = vec![text(session_flag), text(session)];
+    if let Some(model) = model {
+        args.extend([text("--model"), text(model)]);
+    }
     if guide.is_some() {
         args.extend([text("--append-system-prompt"), text(GUIDE)]);
     }
@@ -114,21 +194,78 @@ fn claude_command(session: &str, start: Start, guide: Option<&Path>) -> Command 
     }
 }
 
-fn opencode_command(session: &str, start: Start, guide: Option<&Path>) -> Command {
+fn opencode_command(
+    session: &str,
+    start: Start,
+    guide: Option<&Path>,
+    model: Option<&str>,
+) -> Command {
     let text = |text: &str| text.to_string();
     let mut args = vec![text("--session"), text(session)];
     if let Start::New(Some(message)) = start {
         args.extend([text("--prompt"), message]);
     }
-    let mut env = Vec::new();
-    if let Some(guide) = guide {
-        let config = serde_json::json!({ "instructions": [guide] });
-        env.push((text("OPENCODE_CONFIG_CONTENT"), config.to_string()));
-    }
+    let env = opencode_env(guide, model);
     Command {
         program: OPENCODE.program,
         args,
         env,
+    }
+}
+
+fn claude_background(message: &str, guide: Option<&Path>, model: Option<&str>) -> Command {
+    let text = |text: &str| text.to_string();
+    let mut args = vec![
+        text("-p"),
+        text("--permission-mode"),
+        text("dontAsk"),
+        text("--allowedTools"),
+        text("Bash(git diff:*)"),
+        text("Bash(shepherd ctl:*)"),
+    ];
+    if let Some(model) = model {
+        args.extend([text("--model"), text(model)]);
+    }
+    if guide.is_some() {
+        args.extend([text("--append-system-prompt"), text(GUIDE)]);
+    }
+    args.extend([text("--"), text(message)]);
+    Command {
+        program: CLAUDE.program,
+        args,
+        env: Vec::new(),
+    }
+}
+
+fn opencode_background(message: &str, guide: Option<&Path>, model: Option<&str>) -> Command {
+    let text = |text: &str| text.to_string();
+    let mut args = vec![text("run"), text("--auto")];
+    if let Some(model) = model {
+        args.extend([text("--model"), text(model)]);
+    }
+    args.push(text(message));
+    Command {
+        program: OPENCODE.program,
+        args,
+        env: opencode_env(guide, model),
+    }
+}
+
+fn opencode_env(guide: Option<&Path>, model: Option<&str>) -> Vec<(String, String)> {
+    let mut config = serde_json::Map::new();
+    if let Some(guide) = guide {
+        config.insert("instructions".to_string(), serde_json::json!([guide]));
+    }
+    if let Some(model) = model {
+        config.insert("model".to_string(), serde_json::json!(model));
+    }
+    if config.is_empty() {
+        Vec::new()
+    } else {
+        vec![(
+            "OPENCODE_CONFIG_CONTENT".to_string(),
+            serde_json::Value::Object(config).to_string(),
+        )]
     }
 }
 
@@ -144,13 +281,69 @@ pub fn chosen(found: &[Agent], remembered: Option<Agent>) -> Option<Agent> {
         .or_else(|| found.first().copied())
 }
 
+pub fn models_for(found: &[Agent]) -> HashMap<Agent, Vec<Model>> {
+    found.iter().map(|agent| (*agent, agent.models())).collect()
+}
+
+pub fn choice_ui(
+    ui: &mut egui::Ui,
+    found: &[Agent],
+    models: &HashMap<Agent, Vec<Model>>,
+    choice: &mut Choice,
+) {
+    let agent = choice.agent(found);
+    let name = agent.map_or("No agent found", Agent::name);
+    ui.menu_button(name, |ui| {
+        for found_agent in found {
+            if ui
+                .selectable_label(agent == Some(*found_agent), found_agent.name())
+                .clicked()
+            {
+                if choice.agent != Some(*found_agent) {
+                    choice.model = None;
+                }
+                choice.agent = Some(*found_agent);
+                ui.close();
+            }
+        }
+    });
+    let Some(agent) = agent else {
+        return;
+    };
+    let selected = choice.model().unwrap_or("Default model").to_string();
+    ui.menu_button(selected, |ui| {
+        if ui
+            .selectable_label(choice.model().is_none(), "Default")
+            .clicked()
+        {
+            choice.model = None;
+            ui.close();
+        }
+        if let Some(options) = models.get(&agent) {
+            egui::ScrollArea::vertical()
+                .max_height(300.0)
+                .show(ui, |ui| {
+                    for model in options {
+                        let chosen = choice.model() == Some(model.value.as_str());
+                        if ui.selectable_label(chosen, &model.name).clicked() {
+                            choice.model = Some(model.value.clone());
+                            ui.close();
+                        }
+                    }
+                });
+        }
+    })
+    .response
+    .on_hover_text("Model for new agent sessions");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::TempDir;
 
     fn args(agent: Agent, start: Start, guide: Option<&Path>) -> Vec<String> {
-        agent.command("s1", start, guide).args
+        agent.command("s1", start, guide, None).args
     }
 
     #[test]
@@ -198,7 +391,7 @@ mod tests {
     #[test]
     fn starts_opencode_with_a_session_a_first_message_and_the_guide() {
         let message = Start::New(Some("fix it".to_string()));
-        let command = Agent::Opencode.command("s1", message, Some(Path::new("/guide.md")));
+        let command = Agent::Opencode.command("s1", message, Some(Path::new("/guide.md")), None);
         assert_eq!(command.program, "opencode");
         assert_eq!(command.args, ["--session", "s1", "--prompt", "fix it"]);
         assert_eq!(
@@ -215,10 +408,92 @@ mod tests {
     }
 
     #[test]
+    fn starts_with_the_chosen_model() {
+        assert_eq!(
+            Agent::Claude
+                .command("s1", Start::New(None), None, Some("haiku"))
+                .args,
+            ["--session-id", "s1", "--model", "haiku"]
+        );
+        let command = Agent::Opencode.command(
+            "s1",
+            Start::New(None),
+            Some(Path::new("/guide.md")),
+            Some("deepseek/deepseek-flash"),
+        );
+        assert_eq!(
+            command.env,
+            [(
+                "OPENCODE_CONFIG_CONTENT".to_string(),
+                r#"{"instructions":["/guide.md"],"model":"deepseek/deepseek-flash"}"#.to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn starts_a_background_agent_without_a_terminal() {
+        let claude = Agent::Claude.background_command("write it", None, Some("haiku"));
+        assert_eq!(
+            claude.args,
+            [
+                "-p",
+                "--permission-mode",
+                "dontAsk",
+                "--allowedTools",
+                "Bash(git diff:*)",
+                "Bash(shepherd ctl:*)",
+                "--model",
+                "haiku",
+                "--",
+                "write it"
+            ]
+        );
+        let opencode = Agent::Opencode.background_command(
+            "write it",
+            Some(Path::new("/guide.md")),
+            Some("deepseek/deepseek-flash"),
+        );
+        assert_eq!(
+            opencode.args,
+            [
+                "run",
+                "--auto",
+                "--model",
+                "deepseek/deepseek-flash",
+                "write it"
+            ]
+        );
+        assert_eq!(
+            opencode.env,
+            [(
+                "OPENCODE_CONFIG_CONTENT".to_string(),
+                r#"{"instructions":["/guide.md"],"model":"deepseek/deepseek-flash"}"#.to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn knows_the_models_to_choose_from() {
+        let claude: Vec<String> = Agent::Claude
+            .models()
+            .into_iter()
+            .map(|model| model.value)
+            .collect();
+        assert_eq!(claude, ["opus", "sonnet", "haiku"]);
+        let choice = Choice {
+            agent: Some(Agent::Claude),
+            model: Some("haiku".to_string()),
+        };
+        assert_eq!(choice.agent(&[Agent::Claude]), Some(Agent::Claude));
+        assert_eq!(choice.model(), Some("haiku"));
+        assert_eq!(Choice::default().model(), None);
+    }
+
+    #[test]
     fn gives_every_agent_its_own_name_and_program() {
         for (index, agent) in Agent::ALL.iter().enumerate() {
             assert_eq!(
-                agent.command("s1", Start::Continue, None).program,
+                agent.command("s1", Start::Continue, None, None).program,
                 agent.program()
             );
             let before = &Agent::ALL[..index];

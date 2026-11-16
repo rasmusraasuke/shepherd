@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use eframe::egui::{self, Align2, Key, Modifiers};
 
-use crate::agents::{self, Agent};
+use crate::agents::{self, Agent, Choice, Model};
 
 pub struct QuickChat {
     message: String,
@@ -24,9 +26,10 @@ impl QuickChat {
         &mut self,
         ctx: &egui::Context,
         found: &[Agent],
-        chosen: &mut Option<Agent>,
+        models: &HashMap<Agent, Vec<Model>>,
+        choice: &mut Choice,
     ) -> Option<Outcome> {
-        let agent = agents::chosen(found, *chosen);
+        let agent = choice.agent(found);
         if ctx.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::NONE, Key::Enter)) {
             self.send = true;
         }
@@ -34,21 +37,7 @@ impl QuickChat {
         let area = egui::Modal::default_area(id).anchor(Align2::CENTER_TOP, [0.0, 120.0]);
         let modal = egui::Modal::new(id).area(area).show(ctx, |ui| {
             ui.set_width(440.0_f32.min(ctx.content_rect().width() - 40.0));
-            let selected = agent.map_or("no agent found", Agent::name);
-            ui.menu_button(selected, |ui| {
-                for agent in found {
-                    if ui
-                        .selectable_label(
-                            agents::chosen(found, *chosen) == Some(*agent),
-                            agent.name(),
-                        )
-                        .clicked()
-                    {
-                        *chosen = Some(*agent);
-                        ui.close();
-                    }
-                }
-            });
+            agents::choice_ui(ui, found, models, choice);
             let edit = egui::TextEdit::multiline(&mut self.message)
                 .hint_text("What should the agent do?")
                 .desired_rows(3)
