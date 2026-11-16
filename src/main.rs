@@ -19,6 +19,9 @@ mod quick_chat;
 mod quick_open;
 mod review;
 mod search;
+mod settings;
+#[cfg(target_os = "linux")]
+mod system_fonts;
 mod terminal;
 mod terminal_text;
 #[cfg(test)]

@@ -43,7 +43,8 @@ the agent and model chosen and remembered, and sent the editor's text there and 
 and shipping as a real application: an app bundle for macOS and a tarball for Linux built by
 scripts, releases made from a tag, and updates found and downloaded in the background, and
 pictures for agents: a screenshot pasted or dropped into an Agent tab or a quick chat
-becomes a file the agent reads.
+becomes a file the agent reads, and the same fonts everywhere: IBM Plex Sans and Lilex, with
+the system's fonts a switch away in the window under Cmd+/, kept in the editor's settings.
 FEATURES.md describes the features.
 
 Next is milestone 11: merge conflicts in the same view.

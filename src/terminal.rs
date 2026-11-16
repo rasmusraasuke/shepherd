@@ -103,6 +103,7 @@ pub struct Terminals {
     focus_on_start: HashSet<u64>,
     read_clipboard: fn() -> Option<String>,
     image_dir: PathBuf,
+    system_fonts: bool,
     last_used: Option<u64>,
     env: HashMap<String, String>,
     guide: Option<PathBuf>,
@@ -139,6 +140,7 @@ impl Terminals {
             focus_on_start: HashSet::new(),
             read_clipboard,
             image_dir,
+            system_fonts: false,
             last_used: None,
             env: HashMap::new(),
             guide: None,
@@ -158,6 +160,10 @@ impl Terminals {
 
     pub fn set_guide(&mut self, guide: PathBuf) {
         self.guide = Some(guide);
+    }
+
+    pub fn set_system_fonts(&mut self, system_fonts: bool) {
+        self.system_fonts = system_fonts;
     }
 
     pub fn start(&mut self, id: u64, prompt: Prompt) {
@@ -353,7 +359,7 @@ impl Terminals {
         agent: Option<(Agent, &str, Option<&str>)>,
     ) -> Option<String> {
         let size = egui::TextStyle::Monospace.resolve(ui.style()).size;
-        let fonts_ready = terminal_text::fonts_ready(ui.ctx());
+        let fonts_ready = terminal_text::fonts_ready(ui.ctx(), self.system_fonts);
         let style = CodeStyle::with_font(
             ui,
             egui::FontId::new(size, terminal_text::family(fonts_ready, false, false)),
@@ -477,6 +483,7 @@ struct Terminal {
     resumed: bool,
     images: Vec<PathBuf>,
     notice: Option<String>,
+    _slave: Option<std::fs::File>,
 }
 
 fn window_size(size: Size, style: &CodeStyle) -> WindowSize {
@@ -486,6 +493,25 @@ fn window_size(size: Size, style: &CodeStyle) -> WindowSize {
         cell_width: style.digit_width as u16,
         cell_height: style.row_height as u16,
     }
+}
+
+fn keep_slave(pty: &tty::Pty) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().ok()?;
+    let name = unsafe { libc::ptsname(pty.file().as_raw_fd()) };
+    if name.is_null() {
+        return None;
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().ok()?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(name)
+        .ok()
 }
 
 impl Terminal {
@@ -510,6 +536,7 @@ impl Terminal {
         };
         let pty = tty::new(&options, window_size(size, style), 0)
             .map_err(|e| format!("Cannot start the terminal: {e}"))?;
+        let slave = keep_slave(&pty);
         let child = pty.child().id();
         let (sender, events) = mpsc::channel();
         let output = Arc::new(Mutex::new(Output::default()));
@@ -550,6 +577,7 @@ impl Terminal {
             resumed: false,
             images: Vec::new(),
             notice: None,
+            _slave: slave,
         })
     }
 

@@ -11,6 +11,7 @@ alacritty_terminal = "0.26"
 arboard = { version = "3.7.0", default-features = false }
 eframe = "0.37.0"
 egui_tiles = "0.18"
+fontique = { version = "0.11.1", features = ["system", "fontconfig-dlopen"] }
 libc = "0.2"
 png = "0.18"
 serde = { version = "1.0.229", features = ["derive"] }

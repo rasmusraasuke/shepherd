@@ -1,15 +1,28 @@
+#[cfg(target_os = "macos")]
 use std::fs;
 use std::sync::Arc;
 
 use eframe::egui::epaint::QuadraticBezierShape;
 use eframe::egui::{self, Color32, FontData, FontFamily, Painter, Pos2, Rect, Stroke, Vec2};
 
+#[cfg(target_os = "macos")]
 const MENLO: &str = "/System/Library/Fonts/Menlo.ttc";
+const DEJAVU: &[u8] = include_bytes!("../assets/fonts/DejaVuSans.ttf");
 
+#[cfg(target_os = "macos")]
 const FALLBACKS: [(&str, f32); 2] = [
     ("/System/Library/Fonts/Supplemental/STIXTwoMath.otf", 0.25),
     ("/System/Library/Fonts/Apple Symbols.ttf", 0.15),
 ];
+
+fn bundled(bold: bool, italic: bool) -> &'static [u8] {
+    match (bold, italic) {
+        (false, false) => include_bytes!("../assets/fonts/lilex/Lilex-Regular.ttf"),
+        (true, false) => include_bytes!("../assets/fonts/lilex/Lilex-Bold.ttf"),
+        (false, true) => include_bytes!("../assets/fonts/lilex/Lilex-Italic.ttf"),
+        (true, true) => include_bytes!("../assets/fonts/lilex/Lilex-BoldItalic.ttf"),
+    }
+}
 
 pub fn family(fonts_ready: bool, bold: bool, italic: bool) -> FontFamily {
     if !fonts_ready {
@@ -24,7 +37,7 @@ pub fn family(fonts_ready: bool, bold: bool, italic: bool) -> FontFamily {
     FontFamily::Name(name.into())
 }
 
-pub fn fonts_ready(ctx: &egui::Context) -> bool {
+pub fn fonts_ready(ctx: &egui::Context, system_fonts: bool) -> bool {
     if ctx.fonts(|fonts| {
         fonts
             .definitions()
@@ -33,43 +46,70 @@ pub fn fonts_ready(ctx: &egui::Context) -> bool {
     }) {
         return true;
     }
-    let id = egui::Id::unique("terminal fonts added");
-    if !ctx.data_mut(|data| std::mem::replace(data.get_temp_mut_or_default::<bool>(id), true)) {
-        install_fonts(ctx);
-    }
+    install_fonts(ctx, system_fonts);
     false
 }
 
-fn install_fonts(ctx: &egui::Context) {
+fn install_fonts(ctx: &egui::Context, system_fonts: bool) {
     let mut definitions = ctx.fonts(|fonts| fonts.definitions().clone());
-    let mut fallbacks: Vec<String> = FALLBACKS
-        .iter()
-        .filter_map(|(path, y_offset_factor)| {
-            let font = fs::read(path).ok()?;
-            let tweak = egui::FontTweak {
-                y_offset_factor: *y_offset_factor,
-                ..Default::default()
-            };
-            definitions.font_data.insert(
-                path.to_string(),
-                Arc::new(FontData::from_owned(font).tweak(tweak)),
-            );
-            Some(path.to_string())
-        })
-        .collect();
+    definitions.font_data.insert(
+        "symbols".to_string(),
+        Arc::new(FontData::from_static(DEJAVU)),
+    );
+    let mut fallbacks: Vec<String> = Vec::new();
+    #[cfg(target_os = "macos")]
+    if system_fonts {
+        fallbacks = FALLBACKS
+            .iter()
+            .filter_map(|(path, y_offset_factor)| {
+                let font = fs::read(path).ok()?;
+                let tweak = egui::FontTweak {
+                    y_offset_factor: *y_offset_factor,
+                    ..Default::default()
+                };
+                definitions.font_data.insert(
+                    path.to_string(),
+                    Arc::new(FontData::from_owned(font).tweak(tweak)),
+                );
+                Some(path.to_string())
+            })
+            .collect();
+    }
     fallbacks.extend(definitions.families[&FontFamily::Monospace].clone());
-    let menlo: Option<egui::epaint::text::Blob> =
-        fs::read(MENLO).ok().map(|font| Arc::new(font) as _);
+    fallbacks.retain(|name| name != "symbols");
+    fallbacks.push("symbols".to_string());
+    #[cfg(target_os = "macos")]
+    let menlo: Option<egui::epaint::text::Blob> = system_fonts
+        .then(|| fs::read(MENLO).ok().map(|font| Arc::new(font) as _))
+        .flatten();
     for (index, (bold, italic)) in [(false, false), (true, false), (false, true), (true, true)]
         .into_iter()
         .enumerate()
     {
         let mut fonts = fallbacks.clone();
-        if let Some(menlo) = &menlo {
-            let name = format!("{MENLO}#{index}");
+        if system_fonts {
+            #[cfg(target_os = "macos")]
+            if let Some(menlo) = &menlo {
+                let name = format!("{MENLO}#{index}");
+                definitions.font_data.insert(
+                    name.clone(),
+                    Arc::new(FontData::from_blob(menlo.clone(), index as u32)),
+                );
+                fonts.insert(0, name);
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(font) =
+                crate::system_fonts::font(&[fontique::GenericFamily::Monospace], bold, italic)
+            {
+                let name = format!("system-{index}");
+                definitions.font_data.insert(name.clone(), Arc::new(font));
+                fonts.insert(0, name);
+            }
+        } else {
+            let name = format!("lilex-{index}");
             definitions.font_data.insert(
                 name.clone(),
-                Arc::new(FontData::from_blob(menlo.clone(), index as u32)),
+                Arc::new(FontData::from_static(bundled(bold, italic))),
             );
             fonts.insert(0, name);
         }
@@ -332,6 +372,44 @@ mod tests {
         assert_eq!(braille_dots('⠋'), [(0, 0), (1, 0), (0, 1)]);
         assert_eq!(braille_dots('⢀'), [(3, 1)]);
         assert_eq!(braille_dots('⣿').len(), 8);
+    }
+
+    #[test]
+    fn keeps_the_same_fonts_unless_the_system_fonts_are_chosen() {
+        let bundled = ctx(false)
+            .fonts(|fonts| fonts.definitions().families[&family(true, false, false)].clone());
+        assert!(bundled[0].starts_with("lilex-"));
+        assert_eq!(bundled.last().unwrap(), "symbols");
+
+        let system = ctx(true)
+            .fonts(|fonts| fonts.definitions().families[&family(true, false, false)].clone());
+        assert!(!system[0].starts_with("lilex-"));
+        assert_eq!(system.last().unwrap(), "symbols");
+    }
+
+    fn ctx(system_fonts: bool) -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+        assert!(!fonts_ready(&ctx, system_fonts));
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+        assert!(fonts_ready(&ctx, system_fonts));
+        ctx
+    }
+
+    #[test]
+    fn installs_the_fonts_again_after_the_theme_changes_them() {
+        let ctx = ctx(false);
+        crate::theme::apply(&ctx, true);
+        assert!(!fonts_ready(&ctx, true));
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+        assert!(fonts_ready(&ctx, true));
+        let system =
+            ctx.fonts(|fonts| fonts.definitions().families[&family(true, false, false)].clone());
+        assert!(!system[0].starts_with("lilex-"));
+        assert_eq!(system.last().unwrap(), "symbols");
     }
 
     #[test]

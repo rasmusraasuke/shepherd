@@ -52,7 +52,7 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
     ),
 ];
 
-pub fn ui(ui: &mut egui::Ui) -> bool {
+pub fn ui(ui: &mut egui::Ui, system_fonts: &mut bool) -> bool {
     ui.set_width(640.0);
     ui.label(RichText::new("Keyboard shortcuts").strong().size(16.0));
     ui.add_space(12.0);
@@ -76,14 +76,16 @@ pub fn ui(ui: &mut egui::Ui) -> bool {
     });
     ui.add_space(4.0);
     ui.separator();
+    let mut check = false;
     ui.horizontal(|ui| {
-        ui.weak(format!("Shepherd {}", crate::update::VERSION));
+        ui.checkbox(system_fonts, "Use the system fonts")
+            .on_hover_text("Use this computer's fonts instead of the ones Shepherd ships");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.small_button("Check for updates").clicked()
-        })
-        .inner
-    })
-    .inner
+            check = ui.small_button("Check for updates").clicked();
+        });
+    });
+    ui.weak(format!("Shepherd {}", crate::update::VERSION));
+    check
 }
 
 pub struct DoubleTap {

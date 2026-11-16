@@ -403,7 +403,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(260.0, 500.0))
             .build_ui_state(ui, shown);
-        crate::theme::apply(&harness.ctx);
+        crate::theme::apply(&harness.ctx, false);
         refresh(&mut harness.state_mut().flow);
         harness.run();
         (harness, dir)

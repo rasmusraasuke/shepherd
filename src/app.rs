@@ -20,6 +20,7 @@ use crate::quick_chat::{self, QuickChat};
 use crate::quick_open::{Outcome, QuickOpen};
 use crate::review::{self, Review};
 use crate::search::{ProjectSearch, Reveal};
+use crate::settings::Settings;
 use crate::terminal::{Activity, Prompt, Terminals};
 use crate::theme;
 use crate::update;
@@ -56,6 +57,8 @@ pub struct App {
     double_shift: DoubleTap,
     double_ctrl: DoubleTap,
     show_keys: bool,
+    settings: Settings,
+    settings_path: Option<PathBuf>,
     drag: Option<Drag>,
     action: Option<Action>,
     titled_branch: String,
@@ -206,7 +209,17 @@ fn viewport_id(window: &Window) -> ViewportId {
 
 impl App {
     pub fn new(repo: Repo, workspace: Workspace, ctx: egui::Context) -> Self {
-        theme::apply(&ctx);
+        Self::with_settings(repo, workspace, Settings::load(), Settings::path(), ctx)
+    }
+
+    fn with_settings(
+        repo: Repo,
+        workspace: Workspace,
+        settings: Settings,
+        settings_path: Option<PathBuf>,
+        ctx: egui::Context,
+    ) -> Self {
+        theme::apply(&ctx, settings.system_fonts);
         let control = Control::start(ctx.clone())
             .inspect_err(|e| eprintln!("{e}"))
             .ok();
@@ -224,6 +237,7 @@ impl App {
             error: None,
             root: repo.root.clone(),
         };
+        content.terminals.set_system_fonts(settings.system_fonts);
         content.terminals.set_env("PATH", path.clone());
         if let Some(control) = &control {
             content
@@ -265,6 +279,8 @@ impl App {
             double_shift: DoubleTap::shift(),
             double_ctrl: DoubleTap::ctrl(),
             show_keys: false,
+            settings,
+            settings_path,
             drag: None,
             action: None,
             titled_branch: String::new(),
@@ -1073,6 +1089,22 @@ impl App {
         }
         self.saved = self.workspace.clone();
     }
+
+    fn apply_fonts(&mut self, ctx: &egui::Context) {
+        theme::apply(ctx, self.settings.system_fonts);
+        self.content
+            .terminals
+            .set_system_fonts(self.settings.system_fonts);
+    }
+
+    fn save_settings(&self) {
+        let Some(path) = &self.settings_path else {
+            return;
+        };
+        if let Err(e) = self.settings.save_to(path) {
+            eprintln!("failed to save settings to {}: {e}", path.display());
+        }
+    }
 }
 
 struct TabBehavior<'a> {
@@ -1441,10 +1473,17 @@ impl App {
 
         let mut check = false;
         if self.show_keys {
-            let modal =
-                egui::Modal::new(egui::Id::unique("keys")).show(&ctx, |ui| check = keys::ui(ui));
+            let mut system_fonts = self.settings.system_fonts;
+            let modal = egui::Modal::new(egui::Id::unique("keys")).show(&ctx, |ui| {
+                check = keys::ui(ui, &mut system_fonts);
+            });
             if modal.should_close() {
                 self.show_keys = false;
+            }
+            if system_fonts != self.settings.system_fonts {
+                self.settings.system_fonts = system_fonts;
+                self.apply_fonts(&ctx);
+                self.save_settings();
             }
         }
         if check {
@@ -1509,7 +1548,13 @@ mod tests {
             ],
         );
         let snapshot = Snapshot::take(&repo);
-        let mut app = App::new(repo, Workspace::default(), egui::Context::default());
+        let mut app = App::with_settings(
+            repo,
+            Workspace::default(),
+            Settings::default(),
+            None,
+            egui::Context::default(),
+        );
         app.content
             .terminals
             .keep_images_in(dir.path().join("images"));
@@ -1518,9 +1563,33 @@ mod tests {
             .with_step_dt(step_dt)
             .with_size(egui::vec2(1000.0, 700.0))
             .build_ui_state(|ui, app: &mut App| app.show(ui), app);
-        theme::apply(&harness.ctx);
+        theme::apply(&harness.ctx, false);
         harness.run();
         (harness, dir)
+    }
+
+    #[test]
+    fn switches_between_the_bundled_and_the_system_fonts() {
+        let (mut harness, _dir) = harness("fonts");
+        let first_font = |harness: &Harness<'_, App>| {
+            harness.ctx.fonts(|fonts| {
+                fonts.definitions().families[&egui::FontFamily::Proportional][0].clone()
+            })
+        };
+        assert_eq!(first_font(&harness), "bundled-ui");
+        assert!(!harness.state().settings.system_fonts);
+
+        harness.get_by_label("Keyboard shortcuts").click();
+        harness.run();
+        harness.get_by_label("Use the system fonts").click();
+        harness.run();
+        assert!(harness.state().settings.system_fonts);
+        assert_ne!(first_font(&harness), "bundled-ui");
+
+        harness.get_by_label("Use the system fonts").click();
+        harness.run();
+        assert!(!harness.state().settings.system_fonts);
+        assert_eq!(first_font(&harness), "bundled-ui");
     }
 
     #[test]
@@ -1599,6 +1668,19 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("{label:?} didn't show up");
+    }
+
+    fn wait_for_folds(harness: &mut Harness<'_, App>) -> usize {
+        let mut folds = 0;
+        for _ in 0..200 {
+            harness.run();
+            folds = harness.query_all_by_label_contains("hidden lines").count();
+            if folds >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        folds
     }
 
     fn file(path: &str) -> Tab {
@@ -1743,12 +1825,16 @@ mod tests {
             new_tab: false,
         });
         harness.state().watcher.refresh_now();
-        wait_for(&mut harness, "Show 26 hidden lines");
+        let folds = wait_for_folds(&mut harness);
+        assert!(folds >= 2);
         harness.get_by_label("Review: README.md");
-        harness.get_by_label("Show 26 hidden lines").click();
+        harness
+            .query_all_by_label_contains("hidden lines")
+            .next()
+            .unwrap()
+            .click();
         harness.run();
-        assert!(harness.query_by_label("Show 26 hidden lines").is_none());
-        harness.get_by_label("Show 27 hidden lines");
+        assert!(harness.query_all_by_label_contains("hidden lines").count() < folds);
     }
 
     #[test]

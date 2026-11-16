@@ -107,7 +107,8 @@ A few keys to start with:
 
 - `⌘P` opens a file by name, `⇧⇧` searches the project
 - `⌃⌃` chats with an agent, `⌘T` opens a terminal
-- `⌘/` shows every shortcut, and the version
+- `⌘/` shows every shortcut, the version, and a switch between the bundled and the system's
+  fonts
 
 ## Agents
 
@@ -163,3 +164,6 @@ and is not offered as an update.
 ## License
 
 MIT © 2026 Rasmus Raasuke. See [LICENSE](LICENSE).
+
+Shepherd embeds IBM Plex Sans and Lilex (under the SIL Open Font License) and DejaVu Sans
+(under the Bitstream Vera license). Their licenses are in [assets/fonts](assets/fonts).

@@ -54,6 +54,10 @@ app=target/$name.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/shepherd"
+mkdir -p "$app/Contents/Resources/fonts/ibm-plex-sans" "$app/Contents/Resources/fonts/lilex"
+cp assets/fonts/DejaVuSans-LICENSE.txt "$app/Contents/Resources/fonts/"
+cp assets/fonts/ibm-plex-sans/LICENSE.txt "$app/Contents/Resources/fonts/ibm-plex-sans/"
+cp assets/fonts/lilex/LICENSE.txt "$app/Contents/Resources/fonts/lilex/"
 
 if [ -f assets/icon.png ]; then
     iconset=target/$name.iconset
