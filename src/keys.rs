@@ -1,6 +1,6 @@
 use eframe::egui::{self, RichText};
 
-const DOUBLE_SHIFT: f64 = 0.4;
+const DOUBLE_TAP: f64 = 0.4;
 
 const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
     (
@@ -8,6 +8,7 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("Open a file", "⌘P"),
             ("Search in files", "⇧⇧  ⌘⇧F"),
+            ("Quick chat with an agent", "⌃⌃"),
             ("New terminal", "⌘T"),
             ("Next tab under the pointer", "⌃Tab"),
             ("Save now", "⌘S"),
@@ -75,8 +76,9 @@ pub fn ui(ui: &mut egui::Ui) {
     });
 }
 
-#[derive(Default)]
-pub struct DoubleShift {
+pub struct DoubleTap {
+    modifier: egui::Modifiers,
+    keys: [egui::Key; 2],
     held: Option<Hold>,
     tapped: Option<f64>,
 }
@@ -86,44 +88,64 @@ struct Hold {
     second: bool,
 }
 
-impl DoubleShift {
+impl DoubleTap {
+    fn new(modifier: egui::Modifiers, keys: [egui::Key; 2]) -> Self {
+        Self {
+            modifier,
+            keys,
+            held: None,
+            tapped: None,
+        }
+    }
+
+    pub fn shift() -> Self {
+        Self::new(
+            egui::Modifiers::SHIFT,
+            [egui::Key::ShiftLeft, egui::Key::ShiftRight],
+        )
+    }
+
+    pub fn ctrl() -> Self {
+        Self::new(
+            egui::Modifiers::CTRL,
+            [egui::Key::ControlLeft, egui::Key::ControlRight],
+        )
+    }
+
     pub fn follow(&mut self, events: &[egui::Event], time: f64) -> bool {
-        let mut shift_alone = self.held.is_some();
+        let mut alone = self.held.is_some();
         let mut fired = false;
         for event in events {
             let other = match event {
                 egui::Event::ModifiersChanged(modifiers) => {
-                    shift_alone = *modifiers == egui::Modifiers::SHIFT;
+                    alone = *modifiers == self.modifier;
                     false
                 }
-                egui::Event::Key {
-                    key: egui::Key::ShiftLeft | egui::Key::ShiftRight,
-                    ..
-                } => continue,
+                egui::Event::Key { key, .. } if self.keys.contains(key) => continue,
                 egui::Event::Key { .. }
                 | egui::Event::Text(_)
                 | egui::Event::PointerButton { pressed: true, .. } => true,
                 _ => continue,
             };
-            fired |= self.update(shift_alone, other, time);
+            fired |= self.update(alone, other, time);
         }
         fired
     }
 
-    fn update(&mut self, shift_alone: bool, other_input: bool, time: f64) -> bool {
+    fn update(&mut self, alone: bool, other_input: bool, time: f64) -> bool {
         if other_input {
             self.tapped = None;
             if let Some(hold) = &mut self.held {
                 hold.clean = false;
             }
         }
-        match (self.held.take(), shift_alone) {
+        match (self.held.take(), alone) {
             (None, true) => {
                 self.held = Some(Hold {
                     clean: !other_input,
                     second: self
                         .tapped
-                        .is_some_and(|tapped| time - tapped <= DOUBLE_SHIFT),
+                        .is_some_and(|tapped| time - tapped <= DOUBLE_TAP),
                 });
             }
             (Some(hold), true) => self.held = Some(hold),
@@ -143,7 +165,7 @@ mod tests {
     use super::*;
 
     fn taps(steps: &[(bool, bool, f64)]) -> Vec<bool> {
-        let mut double_shift = DoubleShift::default();
+        let mut double_shift = DoubleTap::shift();
         steps
             .iter()
             .map(|&(shift, other, time)| double_shift.update(shift, other, time))
@@ -166,11 +188,11 @@ mod tests {
             shift_key(false),
             modifiers(egui::Modifiers::NONE),
         ];
-        let mut double_shift = DoubleShift::default();
+        let mut double_shift = DoubleTap::shift();
         assert!(!double_shift.follow(&tap, 0.0));
         assert!(double_shift.follow(&tap, 0.2));
 
-        let mut double_shift = DoubleShift::default();
+        let mut double_shift = DoubleTap::shift();
         let typed = [
             modifiers(egui::Modifiers::SHIFT),
             egui::Event::Text("A".to_string()),
@@ -180,6 +202,19 @@ mod tests {
         assert!(!double_shift.follow(&tap, 0.2));
         assert!(double_shift.follow(&tap, 0.4));
         assert!(!double_shift.follow(&[modifiers(egui::Modifiers::COMMAND)], 0.5));
+    }
+
+    #[test]
+    fn follows_the_control_key_the_same_way() {
+        let tap = [
+            egui::Event::ModifiersChanged(egui::Modifiers::CTRL),
+            egui::Event::ModifiersChanged(egui::Modifiers::NONE),
+        ];
+        let mut double_ctrl = DoubleTap::ctrl();
+        assert!(!double_ctrl.follow(&tap, 0.0));
+        assert!(double_ctrl.follow(&tap, 0.2));
+        assert!(!DoubleTap::shift().follow(&tap, 0.0));
+        assert!(!DoubleTap::shift().follow(&tap, 0.2));
     }
 
     #[test]

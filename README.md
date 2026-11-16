@@ -15,8 +15,8 @@ Without a path the current directory is opened. The path must be inside a git re
 
 ### Workspace
 
-- **Tabs.** Reviews, files and terminals open as tabs in the main space. A tab closes with its ×
-  or a middle click.
+- **Tabs.** Reviews, files, terminals and agents open as tabs in the main space. A tab closes
+  with its × or a middle click.
 - **Splits.** Drag a tab to the edge of another tab to place them side by side or below
   each other. Drag it onto another tab bar to move it there. Drag the line between splits
   to resize them. Ctrl+Tab cycles through the tabs under the pointer.
@@ -82,6 +82,7 @@ Without a path the current directory is opened. The path must be inside a git re
 | Cmd+Z / Cmd+Shift+Z           | Undo / redo                             |
 | Cmd+F                         | Find and replace                        |
 | Shift Shift / Cmd+Shift+F     | Search in files                         |
+| Ctrl Ctrl                     | Quick chat with an agent                |
 | Cmd+S                         | Save now                                |
 | Cmd+/                         | All keyboard shortcuts                  |
 
@@ -110,6 +111,29 @@ Without a path the current directory is opened. The path must be inside a git re
   program is working: it keeps writing to the terminal, as agents do while they work. Once it
   stops, the dot turns orange, until the terminal gets the keyboard again: an agent is done,
   or waits for an answer.
+
+### Agents
+
+- **Agent tabs.** Claude Code and Opencode are found on the `PATH`. *New agent* from the + at
+  the right of any tab bar starts one in a tab of its own, next to *New terminal* and *New
+  review*. The agent's own program runs directly, without a shell around it, with the keys,
+  mouse, colors and clipboard handling of a terminal. The tab is titled with the agent's name,
+  shows with a dot whether it works or waits, and, once the agent ends, says so and offers to
+  start it again rather than dropping to a prompt. Agent tabs are split, moved and popped out
+  like any other tab.
+- **Quick chat.** Ctrl pressed twice opens a small window over the one it was pressed in. Pick
+  the agent to use, type the message and press Enter; Shift+Enter makes a new line and Esc
+  closes. The choice of agent is remembered. Sending starts a new session of that agent in a
+  new Agent tab with the message as its first words.
+- **Only agents get the editor's text.** Review comments, *Ask agent* and *Draft* are offered
+  only Agent tabs, never plain terminals, so nothing the editor sends can land at a shell
+  prompt. With Agent tabs open, the one used last comes first; with none open, a new one is
+  started with the text as its first message.
+- **Back on restart.** An Agent tab that is open when the editor quits comes back on the next
+  start and continues its conversation where the agent can.
+- **`shepherd ctl`.** The `shepherd ctl` command and the state of the agents work in Agent
+  tabs as they do in terminals. `shepherd ctl context` lists the Agent tabs apart from the
+  terminals, and `shepherd ctl terminal <id>` shows what any of them shows.
 
 ### Review
 
@@ -200,10 +224,10 @@ the background; what it complains about is shown above the commit message.
   the same for everything. Hunks and single lines are chosen in the review itself.
 - **Commit.** Write the message below the tree and press *Commit* (Cmd+Enter in the
   message). *Commit and push* (Cmd+Shift+Enter) pushes right after.
-- **A message from an agent.** *Draft* asks an agent in a terminal to write the message for
-  what is staged. While the agent writes, the message box says so, until the message lands
-  in it with `shepherd ctl commit-message`, to be read and changed before committing;
-  *Cancel* stops waiting for it.
+- **A message from an agent.** *Draft* starts the chosen agent in a new Agent tab with the
+  request to write the message for what is staged. While the agent writes, the message box
+  says so, until the message lands in it with `shepherd ctl commit-message`, to be read and
+  changed before committing; *Cancel* stops waiting for it.
 - **Sync and push.** *Sync ↓2* shows the commits there are to pull, as far as is known from
   the last fetch, and fetches and pulls, always merging and never rebasing. Uncommitted
   changes stay as they are, reviewed marks included. A pull that runs into conflicts is taken back, and when the commits to pull change a file with uncommitted
@@ -230,12 +254,13 @@ the background; what it complains about is shown above the commit message.
   show up as not reviewed anyway. Comments are kept while the editor runs, not across restarts.
 - **Asking an agent.** *Ask agent* in the same box sends the selected lines with what was
   written to an agent right away, without keeping a comment.
-- **Which agent.** Text goes to a terminal tab, pasted as if typed and followed by Enter, so
-  any CLI agent works. With several terminals open, the buttons become menus listing them,
-  the one used last first.
-- **`shepherd ctl`.** Programs in the editor's terminals can ask the editor what the user sees
-  and have it show things, with the `shepherd ctl` command that is on the PATH there. Tell
-  your agent about it, for example in `CLAUDE.md` or `AGENTS.md`:
+- **Which agent.** Text goes to Agent tabs only, pasted as if typed and followed by Enter, so
+  any CLI agent works. With several Agent tabs open, the buttons become menus listing them,
+  the one used last first; with none open, the chosen agent is started in a new tab with the
+  text as its first message.
+- **`shepherd ctl`.** Programs in the editor's terminals and Agent tabs can ask the editor
+  what the user sees and have it show things, with the `shepherd ctl` command that is on the
+  PATH there. Tell your agent about it, for example in `CLAUDE.md` or `AGENTS.md`:
 
   | Command | What it does |
   |---------|--------------|
@@ -244,7 +269,7 @@ the background; what it complains about is shown above the commit message.
   | `shepherd ctl comments` | The review comments on the uncommitted changes |
   | `shepherd ctl review-state` | Which changed lines are reviewed (staged), by file |
   | `shepherd ctl terminals` | The terminals and what their programs are doing |
-  | `shepherd ctl terminal <id>` | What a terminal shows |
+  | `shepherd ctl terminal <id>` | What a terminal or Agent tab shows |
   | `shepherd ctl open <path>[:<line>[-<line>]]` | Opens a file, selecting the lines |
   | `shepherd ctl review [<path>]` | Shows a file's changes for review, or the next file to review |
   | `shepherd ctl commit-message <message>` | Puts a commit message into the editor, for the user to commit with |

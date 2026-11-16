@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Key, Modifiers, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 
+use crate::agents::{self, Agent};
 use crate::buffer::Pos;
 use crate::comments;
 use crate::control::{self, Control};
@@ -14,7 +15,8 @@ use crate::file_view::OpenFiles;
 use crate::flow::{self, Flow};
 use crate::git::Repo;
 use crate::icons::{self, Icon};
-use crate::keys::{self, DoubleShift};
+use crate::keys::{self, DoubleTap};
+use crate::quick_chat::{self, QuickChat};
 use crate::quick_open::{Outcome, QuickOpen};
 use crate::review::{self, Review};
 use crate::search::{ProjectSearch, Reveal};
@@ -46,8 +48,11 @@ pub struct App {
     last_save: Instant,
     viewports: HashMap<u64, ViewportBuilder>,
     quick_open: Option<(u64, QuickOpen)>,
+    quick_chat: Option<(u64, QuickChat)>,
+    agents: Vec<Agent>,
     search_in: Option<u64>,
-    double_shift: DoubleShift,
+    double_shift: DoubleTap,
+    double_ctrl: DoubleTap,
     show_keys: bool,
     drag: Option<Drag>,
     action: Option<Action>,
@@ -69,6 +74,7 @@ struct Content {
 enum Action {
     Open(Tab, usize),
     NewTerminal(usize, Option<TileId>),
+    NewAgent(usize, Option<TileId>, Agent),
     NewReview(usize, Option<TileId>),
     Review {
         path: String,
@@ -79,8 +85,9 @@ enum Action {
         line: usize,
     },
     Send {
-        terminal: u64,
+        agent: Option<u64>,
         text: String,
+        window: usize,
     },
     Search(u64),
     Reveal(Reveal),
@@ -195,6 +202,7 @@ impl App {
         let control = Control::start(ctx.clone())
             .inspect_err(|e| eprintln!("{e}"))
             .ok();
+        let agents = agents::found(&std::env::var("PATH").unwrap_or_default());
         let mut content = Content {
             review: Review::new(repo.clone()),
             open_files: OpenFiles::new(repo.root.clone()),
@@ -216,6 +224,12 @@ impl App {
                 control.socket().display().to_string(),
             );
         }
+        if !agents.is_empty() {
+            let guide = repo.layout_path().with_file_name("shepherd-agent-guide.md");
+            if fs::write(&guide, agents::GUIDE).is_ok() {
+                content.terminals.set_guide(guide);
+            }
+        }
         Self {
             control,
             content,
@@ -229,8 +243,11 @@ impl App {
             layout_path: repo.layout_path(),
             last_save: Instant::now(),
             quick_open: None,
+            quick_chat: None,
+            agents,
             search_in: None,
-            double_shift: DoubleShift::default(),
+            double_shift: DoubleTap::shift(),
+            double_ctrl: DoubleTap::ctrl(),
             show_keys: false,
             drag: None,
             action: None,
@@ -238,6 +255,31 @@ impl App {
             watcher: Watcher::spawn(repo.clone(), ctx),
             repo,
         }
+    }
+
+    fn chosen_agent(&self) -> Option<Agent> {
+        agents::chosen(&self.agents, self.workspace.agent)
+    }
+
+    fn review_agents(&self) -> review::Agents {
+        review::Agents {
+            open: self.content.terminals.agents(),
+            new: self.chosen_agent().map(|agent| agent.name().to_string()),
+        }
+    }
+
+    fn open_agent(
+        &mut self,
+        window: usize,
+        tabs: Option<TileId>,
+        agent: Agent,
+        message: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        let session = agent.new_session();
+        let id = self.workspace.open_agent(window, tabs, agent, session);
+        self.content.terminals.start(id, message);
+        self.focus(window, ctx);
     }
 
     fn apply(&mut self, snapshot: Result<Snapshot, String>) {
@@ -331,15 +373,19 @@ impl App {
                 }
             }
             Sidebar::Changes => {
+                let agents = self.review_agents();
                 let content = &mut self.content;
-                let agents = content.terminals.agents();
                 match content.flow.ui(ui, content.review.progress(), &agents) {
                     Some(flow::Outcome::Run(op)) => {
                         content.open_files.save_all();
                         content.flow.run(op, ui.ctx());
                     }
-                    Some(flow::Outcome::Send { terminal, text }) => {
-                        self.action = Some(Action::Send { terminal, text })
+                    Some(flow::Outcome::Send { agent, text }) => {
+                        self.action = Some(Action::Send {
+                            agent,
+                            text,
+                            window: 0,
+                        })
                     }
                     Some(flow::Outcome::Mark(reviewed)) => {
                         content.review.set_reviewed("", reviewed)
@@ -362,6 +408,8 @@ impl App {
     fn window_ui(&mut self, ui: &mut egui::Ui, index: usize) {
         let ctx = ui.ctx().clone();
         let window_count = self.workspace.windows.len();
+        let agents = self.review_agents();
+        let found = self.agents.clone();
         let window = &mut self.workspace.windows[index];
         let window_id = window.id;
 
@@ -383,6 +431,10 @@ impl App {
             || ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F))
         {
             self.action = Some(Action::Search(window_id));
+        }
+        let double_ctrl = ctx.input(|i| i.focused && self.double_ctrl.follow(&i.events, i.time));
+        if double_ctrl {
+            self.quick_chat = Some((window_id, QuickChat::new()));
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::T)) {
             self.action = Some(Action::NewTerminal(index, None));
@@ -436,10 +488,10 @@ impl App {
                     empty_ui(ui);
                     return;
                 }
-                let agents = self.content.terminals.agents();
                 let mut behavior = TabBehavior {
                     font: egui::TextStyle::Button.resolve(ui.style()),
                     agents: &agents,
+                    found: &found,
                     content: &mut self.content,
                     window: index,
                     window_count,
@@ -476,6 +528,32 @@ impl App {
                     self.quick_open = None;
                 }
                 Some(Outcome::Closed) => self.quick_open = None,
+                None => {}
+            }
+        }
+
+        if self
+            .quick_chat
+            .as_ref()
+            .is_some_and(|(id, _)| *id == window_id)
+        {
+            let found = self.agents.clone();
+            let chosen = &mut self.workspace.agent;
+            let outcome = self
+                .quick_chat
+                .as_mut()
+                .and_then(|(_, chat)| chat.ui(&ctx, &found, chosen));
+            match outcome {
+                Some(quick_chat::Outcome::Send(agent, text)) => {
+                    self.workspace.agent = Some(agent);
+                    self.action = Some(Action::Send {
+                        agent: None,
+                        text,
+                        window: index,
+                    });
+                    self.quick_chat = None;
+                }
+                Some(quick_chat::Outcome::Closed) => self.quick_chat = None,
                 None => {}
             }
         }
@@ -518,6 +596,9 @@ impl App {
                 self.content.terminals.focus(id);
                 self.focus(window, ctx);
             }
+            Action::NewAgent(window, tabs, agent) => {
+                self.open_agent(window, tabs, agent, None, ctx);
+            }
             Action::NewReview(window, tabs) => {
                 self.workspace.add_tab(window, tabs, Tab::Review(None));
                 self.workspace.last_review = Some(Tab::Review(None));
@@ -537,7 +618,18 @@ impl App {
                     ctx,
                 );
             }
-            Action::Send { terminal, text } => self.content.terminals.send(terminal, &text),
+            Action::Send {
+                agent,
+                text,
+                window,
+            } => match agent {
+                Some(id) => self.content.terminals.send(id, &text),
+                None => {
+                    if let Some(agent) = self.chosen_agent() {
+                        self.open_agent(window, None, agent, Some(text), ctx);
+                    }
+                }
+            },
             Action::Search(window_id) => {
                 self.search_in = Some(window_id);
                 let selected = self.content.open_files.selected_text();
@@ -640,6 +732,7 @@ impl App {
                 }
                 Tab::File(path) => format!("- file {path}"),
                 Tab::Terminal(id) => format!("- terminal {id}"),
+                Tab::Agent { id, agent, .. } => format!("- agent {id}: {}", agent.name()),
             })
             .collect();
         let comments = self.content.review.comments().len();
@@ -661,6 +754,7 @@ impl App {
                 }
             ),
             self.terminals(),
+            self.agents_state(),
         ]
         .join("\n\n")
     }
@@ -697,34 +791,39 @@ impl App {
         )
     }
 
-    fn terminals(&self) -> String {
-        let terminals = &self.content.terminals;
-        let lines: Vec<String> = self
-            .workspace
+    fn state_of(&self, id: u64, title: String) -> String {
+        let activity = match self.content.terminals.activity(id) {
+            Some(Activity::Working) => "working",
+            Some(Activity::Waiting) => "stopped, waiting",
+            Some(Activity::Idle) => "idle",
+            Some(Activity::Ended) => "ended",
+            None => "not started",
+        };
+        format!("{title} ({activity})")
+    }
+
+    fn tabs_of(&self, agent: bool) -> Vec<(u64, String)> {
+        self.workspace
             .windows
             .iter()
             .flat_map(|window| window.tabs())
-            .filter_map(|tab| {
-                if let Tab::Terminal(id) = tab {
-                    Some(*id)
-                } else {
-                    None
-                }
+            .filter_map(|tab| match tab {
+                Tab::Agent {
+                    id, agent: held, ..
+                } if agent => Some((*id, held.name().to_string())),
+                Tab::Terminal(id) if !agent => Some((*id, "Terminal".to_string())),
+                _ => None,
             })
-            .map(|id| {
-                let activity = match terminals.activity(id) {
-                    Some(Activity::Working) => "working",
-                    Some(Activity::Waiting) => "stopped, waiting",
-                    Some(Activity::Idle) => "idle",
-                    Some(Activity::Ended) => "ended",
-                    None => "not started",
-                };
-                format!(
-                    "- terminal {id}: {} ({activity})",
-                    terminals
-                        .title(id)
-                        .unwrap_or_else(|| "Terminal".to_string())
-                )
+            .collect()
+    }
+
+    fn terminals(&self) -> String {
+        let lines: Vec<String> = self
+            .tabs_of(false)
+            .into_iter()
+            .map(|(id, fallback)| {
+                let title = self.content.terminals.title(id).unwrap_or(fallback);
+                format!("- terminal {id}: {}", self.state_of(id, title))
             })
             .collect();
         if lines.is_empty() {
@@ -732,6 +831,25 @@ impl App {
         } else {
             format!(
                 "Terminals (`shepherd ctl terminal <id>` shows one):\n{}",
+                lines.join("\n")
+            )
+        }
+    }
+
+    fn agents_state(&self) -> String {
+        let lines: Vec<String> = self
+            .tabs_of(true)
+            .into_iter()
+            .map(|(id, fallback)| {
+                let title = self.content.terminals.title(id).unwrap_or(fallback);
+                format!("- agent {id}: {}", self.state_of(id, title))
+            })
+            .collect();
+        if lines.is_empty() {
+            "Agents: none".to_string()
+        } else {
+            format!(
+                "Agents (`shepherd ctl terminal <id>` shows one):\n{}",
                 lines.join("\n")
             )
         }
@@ -797,7 +915,8 @@ impl App {
 
 struct TabBehavior<'a> {
     content: &'a mut Content,
-    agents: &'a [review::Agent],
+    agents: &'a review::Agents,
+    found: &'a [Agent],
     font: egui::FontId,
     window: usize,
     window_count: usize,
@@ -837,8 +956,12 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                             new_tab: false,
                         })
                     }
-                    Some(review::Outcome::Send { terminal, text }) => {
-                        *self.action = Some(Action::Send { terminal, text })
+                    Some(review::Outcome::Send { agent, text }) => {
+                        *self.action = Some(Action::Send {
+                            agent,
+                            text,
+                            window: self.window,
+                        })
                     }
                     Some(review::Outcome::Open { path, line }) => {
                         let place = Pos::new(line, 0);
@@ -861,17 +984,24 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                 }
             }
             Tab::Terminal(id) => self.content.terminals.ui(ui, *id),
+            Tab::Agent { id, agent, session } => {
+                if let Some(new) = self.content.terminals.agent_ui(ui, *id, *agent, session) {
+                    *session = new;
+                }
+            }
         }
         UiResponse::None
     }
 
     fn tab_title_for_pane(&mut self, tab: &Tab) -> egui::WidgetText {
-        let Tab::Terminal(id) = tab else {
-            return tab.title().into();
+        let id = match tab {
+            Tab::Terminal(id) => *id,
+            Tab::Agent { id, .. } => *id,
+            _ => return tab.title().into(),
         };
         let terminals = &self.content.terminals;
-        let title = terminals.title(*id).unwrap_or_else(|| tab.title());
-        let dot = match terminals.activity(*id) {
+        let title = terminals.title(id).unwrap_or_else(|| tab.title());
+        let dot = match terminals.activity(id) {
             Some(Activity::Working) => review::NEW_COLOR,
             Some(Activity::Waiting) => WAITING_COLOR,
             _ => return title.into(),
@@ -897,6 +1027,11 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         ui.menu_button("+", |ui| {
             if ui.button("New terminal (Cmd+T)").clicked() {
                 *self.action = Some(Action::NewTerminal(self.window, Some(tile_id)));
+            }
+            for agent in self.found {
+                if ui.button(format!("New {} agent", agent.name())).clicked() {
+                    *self.action = Some(Action::NewAgent(self.window, Some(tile_id), *agent));
+                }
             }
             if ui.button("New review").clicked() {
                 *self.action = Some(Action::NewReview(self.window, Some(tile_id)));
@@ -984,7 +1119,9 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
     fn on_tab_close(&mut self, tiles: &mut Tiles<Tab>, tile_id: TileId) -> bool {
         match tiles.get_pane(&tile_id) {
             Some(Tab::File(path)) => self.content.open_files.close(path),
-            Some(Tab::Terminal(id)) => self.content.terminals.close(*id),
+            Some(Tab::Terminal(id)) | Some(Tab::Agent { id, .. }) => {
+                self.content.terminals.close(*id)
+            }
             _ => {}
         }
         true
@@ -1843,6 +1980,108 @@ mod tests {
     }
 
     #[test]
+    fn opens_the_quick_chat_with_control_pressed_twice_and_starts_an_agent_tab() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (mut harness, dir) = harness_stepping("double-control", 0.05);
+        let program = dir.write("agent", "#!/bin/sh\necho \"args: $@\"\nsleep 5\n");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        harness
+            .state_mut()
+            .content
+            .terminals
+            .run_agents_with(&program);
+        harness.state_mut().agents = vec![Agent::Claude];
+        harness.run();
+
+        let ctrl = |harness: &mut Harness<'_, App>, modifiers: Modifiers| {
+            harness.event(egui::Event::Key {
+                key: Key::ControlLeft,
+                physical_key: Some(Key::ControlLeft),
+                pressed: modifiers.ctrl,
+                repeat: false,
+                modifiers,
+            });
+            harness.event(egui::Event::ModifiersChanged(modifiers));
+            harness.step();
+        };
+        for _ in 0..2 {
+            ctrl(&mut harness, Modifiers::CTRL);
+            ctrl(&mut harness, Modifiers::NONE);
+        }
+        harness.run();
+        assert!(harness.state().quick_chat.is_some());
+        harness.event(egui::Event::Text("hello agent".to_string()));
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert!(harness.state().quick_chat.is_none());
+
+        let tabs = open_tabs(&harness);
+        assert!(tabs[0].iter().any(|tab| matches!(
+            tab,
+            Tab::Agent {
+                agent: Agent::Claude,
+                ..
+            }
+        )));
+        let id = tabs[0]
+            .iter()
+            .find_map(|tab| match tab {
+                Tab::Agent { id, .. } => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let start = Instant::now();
+        while !harness
+            .state()
+            .content
+            .terminals
+            .screen(id)
+            .is_some_and(|screen| screen.contains("hello agent"))
+        {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            harness.run();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn opens_an_agent_from_the_plus_of_a_tab_bar_and_lists_it_apart_from_terminals() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (mut harness, dir) = harness("agent-tab");
+        let program = dir.write("agent", "#!/bin/sh\necho \"args: $@\"\nsleep 5\n");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        harness
+            .state_mut()
+            .content
+            .terminals
+            .run_agents_with(&program);
+        harness.state_mut().agents = vec![Agent::Claude];
+        harness.run();
+
+        harness.get_by_label("+").click();
+        harness.run();
+        harness.get_by_label("New Claude Code agent").click();
+        harness.run();
+        let tabs = open_tabs(&harness);
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].len(), 2);
+        assert!(matches!(
+            tabs[0][1],
+            Tab::Agent {
+                id: 1,
+                agent: Agent::Claude,
+                ..
+            }
+        ));
+
+        let context = ask(&mut harness, &["context"]).unwrap();
+        assert!(context.contains("Terminals: none"), "{context}");
+        assert!(context.contains("- agent 1: Claude Code"), "{context}");
+    }
+
+    #[test]
     fn runs_a_program_in_a_new_terminal_that_takes_the_keyboard() {
         let (mut harness, _dir) = harness("terminal-tab");
         harness.state_mut().content.terminals.run("/bin/cat", &[]);
@@ -1881,9 +2120,11 @@ mod tests {
             .find_pane(&Tab::Terminal(1))
             .unwrap();
         let state = harness.state_mut();
+        let agents = review::Agents::default();
         let mut behavior = TabBehavior {
             content: &mut state.content,
-            agents: &[],
+            agents: &agents,
+            found: &[],
             font: egui::FontId::default(),
             window: 0,
             window_count: 1,

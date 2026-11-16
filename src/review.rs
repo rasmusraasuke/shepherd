@@ -37,12 +37,16 @@ pub struct Review {
     unseen: HashSet<String>,
 }
 
-pub type Agent = (u64, String);
+#[derive(Default)]
+pub struct Agents {
+    pub open: Vec<(u64, String)>,
+    pub new: Option<String>,
+}
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
     Show(String),
-    Send { terminal: u64, text: String },
+    Send { agent: Option<u64>, text: String },
     Open { path: String, line: usize },
 }
 
@@ -732,7 +736,7 @@ impl Review {
         ui: &mut egui::Ui,
         path: Option<&str>,
         active: bool,
-        agents: &[Agent],
+        agents: &Agents,
         open_files: &mut OpenFiles,
     ) -> Option<Outcome> {
         let Some(path) = path else {
@@ -809,11 +813,11 @@ impl Review {
                 format!("Send {unsent} comments")
             };
             if unsent > 0
-                && let Some(terminal) = send_button(ui, &label, true, agents)
+                && let Some(agent) = send_button(ui, &label, true, agents)
             {
                 let text = comments::feedback(comments.iter().filter(|comment| !comment.sent));
                 comments.iter_mut().for_each(|comment| comment.sent = true);
-                outcome = Some(Outcome::Send { terminal, text });
+                outcome = Some(Outcome::Send { agent, text });
             }
         });
         if let Some(error) = error {
@@ -876,9 +880,9 @@ impl Review {
                         view.draft.clear();
                         view.selection = None;
                     }
-                    Some(Draft::Ask(terminal)) if !lines.is_empty() => {
+                    Some(Draft::Ask(agent)) if !lines.is_empty() => {
                         outcome = Some(Outcome::Send {
-                            terminal,
+                            agent,
                             text: comments::quote(path, &lines, &view.draft),
                         });
                         view.draft.clear();
@@ -944,12 +948,12 @@ impl Review {
 
 enum Draft {
     Comment,
-    Ask(u64),
+    Ask(Option<u64>),
     Revert,
     Cancel,
 }
 
-fn draft_ui(ui: &mut egui::Ui, id: egui::Id, view: &mut View, agents: &[Agent]) -> Option<Draft> {
+fn draft_ui(ui: &mut egui::Ui, id: egui::Id, view: &mut View, agents: &Agents) -> Option<Draft> {
     let focused = ui.memory(|m| m.has_focus(id));
     let submit = focused && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
     ui.add_space(4.0);
@@ -973,8 +977,8 @@ fn draft_ui(ui: &mut egui::Ui, id: egui::Id, view: &mut View, agents: &[Agent]) 
         {
             draft = Some(Draft::Comment);
         }
-        if let Some(terminal) = send_button(ui, "Ask agent", ready, agents) {
-            draft = Some(Draft::Ask(terminal));
+        if let Some(agent) = send_button(ui, "Ask agent", ready, agents) {
+            draft = Some(Draft::Ask(agent));
         }
         if ui
             .button("Revert")
@@ -993,31 +997,55 @@ fn draft_ui(ui: &mut egui::Ui, id: egui::Id, view: &mut View, agents: &[Agent]) 
     draft
 }
 
-pub fn send_button(ui: &mut egui::Ui, label: &str, enabled: bool, agents: &[Agent]) -> Option<u64> {
-    match agents {
-        [] => {
+fn send_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    enabled: bool,
+    agents: &Agents,
+) -> Option<Option<u64>> {
+    match (agents.open.as_slice(), agents.new.as_deref()) {
+        ([], None) => {
             ui.add_enabled(false, egui::Button::new(label))
-                .on_disabled_hover_text("Open a terminal with an agent first");
+                .on_disabled_hover_text("No agent was found: install Claude Code or Opencode");
             None
         }
-        [(terminal, title)] => ui
+        ([], Some(name)) => ui
+            .add_enabled(enabled, egui::Button::new(label))
+            .on_hover_text(format!("Start {name} with it"))
+            .clicked()
+            .then_some(None),
+        ([(agent, title)], _) => ui
             .add_enabled(enabled, egui::Button::new(label))
             .on_hover_text(format!("Send to {title}"))
             .clicked()
-            .then_some(*terminal),
-        _ => {
+            .then_some(Some(*agent)),
+        (open, _) => {
             let mut chosen = None;
             ui.add_enabled_ui(enabled, |ui| {
                 ui.menu_button(label, |ui| {
-                    for (terminal, title) in agents {
+                    for (agent, title) in open {
                         if ui.button(title).clicked() {
-                            chosen = Some(*terminal);
+                            chosen = Some(Some(*agent));
                         }
                     }
                 })
             });
             chosen
         }
+    }
+}
+
+pub fn new_agent_button(ui: &mut egui::Ui, label: &str, enabled: bool, agents: &Agents) -> bool {
+    match agents.new.as_deref() {
+        None => {
+            ui.add_enabled(false, egui::Button::new(label))
+                .on_disabled_hover_text("No agent was found: install Claude Code or Opencode");
+            false
+        }
+        Some(name) => ui
+            .add_enabled(enabled, egui::Button::new(label))
+            .on_hover_text(format!("Start {name} with it"))
+            .clicked(),
     }
 }
 
@@ -1992,15 +2020,26 @@ diff --git a/b.txt b/b.txt
     }
 
     fn show(review: Review, path: Option<&'static str>, height: f32) -> Harness<'static, Shown> {
+        show_with(
+            review,
+            path,
+            height,
+            Agents {
+                open: vec![(1, "agent".to_string())],
+                new: None,
+            },
+        )
+    }
+
+    fn show_with(
+        review: Review,
+        path: Option<&'static str>,
+        height: f32,
+        agents: Agents,
+    ) -> Harness<'static, Shown> {
         let files = OpenFiles::new(review.repo.root.clone());
         let ui = move |ui: &mut egui::Ui, shown: &mut Shown| {
-            if let Some(asked) = shown.review.ui(
-                ui,
-                path,
-                true,
-                &[(1, "agent".to_string())],
-                &mut shown.files,
-            ) {
+            if let Some(asked) = shown.review.ui(ui, path, true, &agents, &mut shown.files) {
                 shown.asked = Some(asked);
             }
         };
@@ -2074,10 +2113,36 @@ diff --git a/b.txt b/b.txt
             "@a.txt, removed line 2 of the committed version\n```diff\n-2\n```\nWhy?".to_string();
         assert_eq!(
             harness.state().asked,
-            Some(Outcome::Send { terminal: 1, text })
+            Some(Outcome::Send {
+                agent: Some(1),
+                text
+            })
         );
         assert!(harness.state().review.comments().is_empty());
         assert!(harness.query_by_label("Ask agent").is_none());
+    }
+
+    #[test]
+    fn starts_a_new_agent_for_comments_when_none_is_open() {
+        let (review, _dir) = review("new-agent", &[("a.txt", TEN, &TEN.replace("2\n", "two\n"))]);
+        let mut harness = show_with(
+            review,
+            Some("a.txt"),
+            600.0,
+            Agents {
+                open: Vec::new(),
+                new: Some("Claude Code".to_string()),
+            },
+        );
+        comment_on_row(&mut harness, 1.0, "Use 2");
+        harness.get_by_label("Comment").click();
+        harness.run();
+        harness.get_by_label("Send 1 comment").click();
+        harness.run();
+        assert!(matches!(
+            harness.state().asked,
+            Some(Outcome::Send { agent: None, .. })
+        ));
     }
 
     #[test]
@@ -2120,7 +2185,10 @@ diff --git a/b.txt b/b.txt
         );
         assert_eq!(
             harness.state().asked,
-            Some(Outcome::Send { terminal: 1, text })
+            Some(Outcome::Send {
+                agent: Some(1),
+                text
+            })
         );
         assert!(harness.state().review.comments()[0].sent);
         assert!(harness.query_by_label("Send 1 comment").is_none());

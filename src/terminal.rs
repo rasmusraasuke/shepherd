@@ -16,6 +16,7 @@ use alacritty_terminal::tty::{self, Shell};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use eframe::egui::{self, Color32, Event, EventFilter, Key, Modifiers, Sense, Vec2};
 
+use crate::agents::{Agent, Start};
 use crate::code::CodeStyle;
 use crate::terminal_text;
 
@@ -39,6 +40,7 @@ pub enum Activity {
 struct Output {
     last: Option<Instant>,
     ended: bool,
+    failed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -73,7 +75,11 @@ impl EventListener for Listener {
         if let Ok(mut output) = self.output.lock() {
             match event {
                 TermEvent::Wakeup => output.last = Some(Instant::now()),
-                TermEvent::Exit | TermEvent::ChildExit(_) => output.ended = true,
+                TermEvent::ChildExit(status) => {
+                    output.ended = true;
+                    output.failed = !status.success();
+                }
+                TermEvent::Exit => output.ended = true,
                 _ => {}
             }
         }
@@ -90,6 +96,9 @@ pub struct Terminals {
     read_clipboard: fn() -> Option<String>,
     last_used: Option<u64>,
     env: HashMap<String, String>,
+    guide: Option<PathBuf>,
+    agent_program: Option<String>,
+    starts: HashMap<u64, Option<String>>,
 }
 
 fn read_clipboard() -> Option<String> {
@@ -113,11 +122,23 @@ impl Terminals {
             read_clipboard,
             last_used: None,
             env: HashMap::new(),
+            guide: None,
+            agent_program: None,
+            starts: HashMap::new(),
         }
     }
 
     pub fn set_env(&mut self, name: &str, value: String) {
         self.env.insert(name.to_string(), value);
+    }
+
+    pub fn set_guide(&mut self, guide: PathBuf) {
+        self.guide = Some(guide);
+    }
+
+    pub fn start(&mut self, id: u64, message: Option<String>) {
+        self.starts.insert(id, message);
+        self.focus(id);
     }
 
     fn running(&self) -> impl Iterator<Item = (u64, &Terminal)> {
@@ -145,14 +166,16 @@ impl Terminals {
         let mut agents: Vec<(u64, String)> = self
             .running()
             .filter(|(_, terminal)| terminal.activity != Activity::Ended)
-            .map(|(id, _)| (id, self.title(id).unwrap_or_else(|| "Terminal".to_string())))
+            .filter_map(|(id, terminal)| Some((id, terminal.agent?.name().to_string())))
             .collect();
         agents.sort_by_key(|(id, _)| (Some(*id) != self.last_used, *id));
         agents
     }
 
     pub fn send(&mut self, id: u64, text: &str) {
-        if let Some(Ok(terminal)) = self.terminals.get_mut(&id) {
+        if let Some(Ok(terminal)) = self.terminals.get_mut(&id)
+            && terminal.agent.is_some()
+        {
             let mode = *terminal.term.lock().mode();
             let mut input = paste_bytes(text, mode);
             input.push(b'\r');
@@ -163,7 +186,10 @@ impl Terminals {
 
     pub fn title(&self, id: u64) -> Option<String> {
         let terminal = self.terminals.get(&id)?.as_ref().ok()?;
-        let title = terminal.title.clone().filter(|title| !title.is_empty());
+        let title = match terminal.agent {
+            Some(agent) => Some(agent.name().to_string()),
+            None => terminal.title.clone().filter(|title| !title.is_empty()),
+        };
         if terminal.activity == Activity::Ended {
             Some(format!(
                 "{} (exited)",
@@ -185,9 +211,54 @@ impl Terminals {
 
     pub fn close(&mut self, id: u64) {
         self.terminals.remove(&id);
+        self.focus_on_start.remove(&id);
+        self.starts.remove(&id);
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, id: u64) {
+        self.show(ui, id, None);
+    }
+
+    pub fn agent_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: u64,
+        agent: Agent,
+        session: &str,
+    ) -> Option<String> {
+        self.show(ui, id, Some((agent, session)))
+    }
+
+    fn spawn(
+        &self,
+        agent: Option<(Agent, &str)>,
+        start: Start,
+        size: Size,
+        style: &CodeStyle,
+        ctx: &egui::Context,
+        focus: bool,
+    ) -> Result<Terminal, String> {
+        let mut env = self.env.clone();
+        let resumed = agent.is_some() && matches!(start, Start::Continue);
+        let shell = match agent {
+            Some((agent, session)) => {
+                let command = agent.command(session, start, self.guide.as_deref());
+                env.extend(command.env);
+                let program = self.agent_program.clone();
+                Some(Shell::new(
+                    program.unwrap_or_else(|| command.program.to_string()),
+                    command.args,
+                ))
+            }
+            None => self.shell.clone(),
+        };
+        let mut terminal = Terminal::spawn(&self.root, shell, env, size, style, ctx, focus)?;
+        terminal.agent = agent.map(|(agent, _)| agent);
+        terminal.resumed = resumed;
+        Ok(terminal)
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui, id: u64, agent: Option<(Agent, &str)>) -> Option<String> {
         let size = egui::TextStyle::Monospace.resolve(ui.style()).size;
         let fonts_ready = terminal_text::fonts_ready(ui.ctx());
         let style = CodeStyle::with_font(
@@ -195,42 +266,54 @@ impl Terminals {
             egui::FontId::new(size, terminal_text::family(fonts_ready, false, false)),
         );
         let size = size_for(ui.available_rect_before_wrap(), &style);
-        let focus = &mut self.focus_on_start;
-        let terminal = self.terminals.entry(id).or_insert_with(|| {
-            Terminal::spawn(
-                &self.root,
-                self.shell.clone(),
-                &self.env,
-                size,
-                &style,
-                ui.ctx(),
-                focus.remove(&id),
-            )
-        });
-        match terminal {
-            Ok(terminal) => {
+        if !self.terminals.contains_key(&id) {
+            let start = self.starts.remove(&id).map_or(Start::Continue, Start::New);
+            let focus = self.focus_on_start.remove(&id);
+            let terminal = self.spawn(agent, start, size, &style, ui.ctx(), focus);
+            self.terminals.insert(id, terminal);
+        }
+        match self.terminals.get_mut(&id) {
+            Some(Ok(terminal)) => {
                 if terminal.ui(ui, id, &style, fonts_ready, self.read_clipboard) {
                     self.last_used = Some(id);
                 }
-                if terminal.restart {
-                    let terminal = Terminal::spawn(
-                        &self.root,
-                        self.shell.clone(),
-                        &self.env,
-                        size,
-                        &style,
-                        ui.ctx(),
-                        true,
-                    );
+                let again = if terminal.restart {
+                    Some(Start::Continue)
+                } else if terminal.resume_failed() {
+                    Some(Start::New(None))
+                } else {
+                    None
+                };
+                if let Some(start) = again {
+                    let fresh = matches!(start, Start::New(_));
+                    let session = match (agent, fresh) {
+                        (Some((agent, _)), true) => agent.new_session(),
+                        (_, _) => {
+                            agent.map_or_else(String::new, |(_, session)| session.to_string())
+                        }
+                    };
+                    let target = agent.map(|(agent, _)| (agent, session.as_str()));
+                    let terminal = self.spawn(target, start, size, &style, ui.ctx(), true);
                     self.terminals.insert(id, terminal);
+                    if fresh {
+                        return Some(session);
+                    }
                 }
+                None
             }
-            Err(message) => {
+            Some(Err(message)) => {
                 ui.centered_and_justified(|ui| {
                     ui.colored_label(ui.visuals().error_fg_color, message.as_str())
                 });
+                None
             }
+            None => None,
         }
+    }
+
+    #[cfg(test)]
+    pub fn run_agents_with(&mut self, program: &std::path::Path) {
+        self.agent_program = Some(program.display().to_string());
     }
 
     #[cfg(test)]
@@ -269,6 +352,8 @@ struct Terminal {
     mouse_button: Option<u8>,
     mouse_cell: Option<(usize, usize)>,
     restart: bool,
+    agent: Option<Agent>,
+    resumed: bool,
 }
 
 fn window_size(size: Size, style: &CodeStyle) -> WindowSize {
@@ -284,13 +369,12 @@ impl Terminal {
     fn spawn(
         root: &std::path::Path,
         shell: Option<Shell>,
-        env: &HashMap<String, String>,
+        mut env: HashMap<String, String>,
         size: Size,
         style: &CodeStyle,
         ctx: &egui::Context,
         focus: bool,
     ) -> Result<Self, String> {
-        let mut env = env.clone();
         env.extend([
             ("TERM".to_string(), "xterm-256color".to_string()),
             ("COLORTERM".to_string(), "truecolor".to_string()),
@@ -336,6 +420,8 @@ impl Terminal {
             mouse_button: None,
             mouse_cell: None,
             restart: false,
+            agent: None,
+            resumed: false,
         })
     }
 
@@ -360,6 +446,14 @@ impl Terminal {
             _ if self.worked => Activity::Waiting,
             _ => Activity::Idle,
         };
+    }
+
+    fn resume_failed(&self) -> bool {
+        self.resumed
+            && self
+                .output
+                .lock()
+                .is_ok_and(|output| output.ended && output.failed)
     }
 
     fn handle_reports(
@@ -456,7 +550,8 @@ impl Terminal {
 
         let mut term = self.term.lock();
         response.widget_info(|| {
-            let mut info = egui::WidgetInfo::labeled(egui::Role::Terminal, true, "Terminal");
+            let label = self.agent.map_or("Terminal", Agent::name);
+            let mut info = egui::WidgetInfo::labeled(egui::Role::Terminal, true, label);
             info.current_text_value = Some(screen_text(&term));
             info
         });
@@ -658,8 +753,12 @@ impl Terminal {
                     .max_rect(place)
                     .layout(egui::Layout::right_to_left(egui::Align::Max)),
                 |ui| {
-                    self.restart |= ui.button("Restart").on_hover_text("Enter").clicked();
-                    ui.weak("The process has ended");
+                    let (ended, again) = match self.agent {
+                        Some(agent) => (format!("{} has ended", agent.name()), "Start again"),
+                        None => ("The process has ended".to_string(), "Restart"),
+                    };
+                    self.restart |= ui.button(again).on_hover_text("Enter").clicked();
+                    ui.weak(ended);
                 },
             );
         }
@@ -1160,6 +1259,33 @@ mod tests {
         (harness, dir)
     }
 
+    fn agent_harness(
+        name: &str,
+        script: &str,
+        fresh: bool,
+    ) -> (Harness<'static, Terminals>, TempDir) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new(name);
+        let program = dir.write("agent", script);
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut terminals = Terminals::new(dir.path().to_path_buf());
+        terminals.run_agents_with(&program);
+        if fresh {
+            terminals.start(1, None);
+        }
+        let harness = Harness::builder()
+            .with_size(Vec2::new(600.0, 400.0))
+            .with_max_steps(8)
+            .build_ui_state(
+                |ui, terminals: &mut Terminals| {
+                    terminals.agent_ui(ui, 1, Agent::Claude, "s1");
+                },
+                terminals,
+            );
+        (harness, dir)
+    }
+
     fn wait(
         harness: &mut Harness<'_, Terminals>,
         what: &str,
@@ -1230,25 +1356,47 @@ mod tests {
     }
 
     #[test]
-    fn sends_text_to_the_program_as_if_typed_with_enter() {
+    fn sends_text_to_agent_tabs_as_if_typed_with_enter() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let dir = TempDir::new("terminal-send");
+        let script = dir.write("agent", "#!/bin/sh\nread line\necho hi $line\nsleep 5\n");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut terminals = Terminals::new(dir.path().to_path_buf());
-        terminals.set_env("GREETING", "hi".to_string());
-        terminals.run(
-            "/bin/sh",
-            &["-c", "read line; echo $GREETING $line; sleep 5"],
-        );
+        terminals.run_agents_with(&script);
         let mut harness = Harness::builder()
             .with_size(Vec2::new(600.0, 400.0))
             .with_max_steps(8)
             .build_ui_state(
-                |ui, terminals: &mut Terminals| terminals.ui(ui, 1),
+                |ui, terminals: &mut Terminals| {
+                    terminals.agent_ui(ui, 1, Agent::Claude, "s1");
+                },
                 terminals,
             );
         harness.run();
-        assert_eq!(harness.state().agents(), [(1, "Terminal".to_string())]);
+        assert_eq!(harness.state().agents(), [(1, "Claude Code".to_string())]);
         harness.state_mut().send(1, "hello");
         wait_for_screen(&mut harness, "hi hello");
+    }
+
+    #[test]
+    fn starts_an_agent_fresh_or_continues_its_session() {
+        let script = "#!/bin/sh\necho \"args: $@\"\nsleep 5\n";
+        let (mut fresh, _dir) = agent_harness("agent-new", script, true);
+        fresh.run();
+        wait_for_screen(&mut fresh, "args: --session-id s1");
+
+        let (mut resumed, _dir) = agent_harness("agent-resume", script, false);
+        resumed.run();
+        wait_for_screen(&mut resumed, "args: --resume s1");
+    }
+
+    #[test]
+    fn never_sends_text_into_a_plain_terminal() {
+        let (mut harness, _dir) = harness("terminal-no-send", "sleep 5");
+        harness.state_mut().send(1, "hello");
+        harness.run_steps(4);
+        assert_eq!(harness.state().screen(1).unwrap(), "");
     }
 
     #[test]

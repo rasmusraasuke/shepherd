@@ -1,3 +1,4 @@
+mod agents;
 mod app;
 mod buffer;
 mod code;
@@ -12,6 +13,7 @@ mod highlight;
 mod icons;
 mod keys;
 mod line_diff;
+mod quick_chat;
 mod quick_open;
 mod review;
 mod search;

@@ -23,13 +23,13 @@ around that loop.
 
 ## Where we are
 
-Milestones 1 to 7 are done: a workspace of tabs, splits and windows that survives
+Milestones 1 to 8 are done: a workspace of tabs, splits and windows that survives
 restarts, with file editing (undo, find and replace, syntax highlighting, saving on its own,
 reloading of files changed on disk), search across the project, terminals good enough for
 CLI agents, and a review of one file at a time, chosen from the tree of changed files, with
 context shown on request, highlighted diffs with changes within lines, progress per
 directory and moving on to the next file to review, review marks that are git's staging
-area, line by line, and agents in the loop: comments on lines sent to agents in terminal tabs,
+area, line by line, and agents in the loop: comments on lines sent to agents in Agent tabs,
 the state of the agents in the tab titles, new changes marked, and `shepherd ctl` for agents to
 read what the editor shows and have it show files and reviews, and fixing in the review:
 the review is the file and is edited anywhere, with the changes found again as they are
@@ -37,9 +37,11 @@ typed, reverting hunks or lines as edits that are undone with Cmd+Z, and jumping
 change and its place in the file, and the git flow of a normal day: committing what is
 reviewed with a message written in place or drafted by an agent, pushing, syncing with a
 picture of what is ahead and behind, and creating and switching branches, taking the changes
-along or leaving them. README.md describes the features.
+along or leaving them, and agents as tabs of their own: Claude Code and Opencode found on
+the PATH, started in Agent tabs without a shell, reached with a quick chat on Ctrl Ctrl and
+sent the editor's text there and nowhere else. README.md describes the features.
 
-Next is milestone 8: agents as tabs of their own.
+Next is milestone 9: merge conflicts in the same view.
 
 ## Milestones
 
@@ -147,7 +149,7 @@ Done when: small fixes during review never require leaving the review.
 
 Done when: a normal day of commits, pushes and pulls needs no other git tool.
 
-### 8. Agents as tabs of their own
+### 8. Agents as tabs of their own (completed)
 
 Until now an agent is whatever runs in a terminal, and the editor can't tell it from a shell:
 text meant for an agent can land at a shell prompt and be run as a command. The editor gets

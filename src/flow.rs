@@ -5,7 +5,7 @@ use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{self, Key, Modifiers, PopupCloseBehavior};
 
 use crate::git::{Changes, Repo, Status};
-use crate::review::{self, Agent};
+use crate::review::{self, Agents};
 
 const DRAFT: &str = "Write a commit message for the staged changes, which `git diff --cached` \
 shows, and put it into the editor with `shepherd ctl commit-message \"<message>\"`. Don't commit.";
@@ -43,7 +43,7 @@ impl Op {
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
     Run(Op),
-    Send { terminal: u64, text: String },
+    Send { agent: Option<u64>, text: String },
     Mark(bool),
 }
 
@@ -128,7 +128,7 @@ impl Flow {
         &mut self,
         ui: &mut egui::Ui,
         progress: (usize, usize),
-        agents: &[Agent],
+        agents: &Agents,
     ) -> Option<Outcome> {
         let op = self.branch_ui(ui);
         ui.add_space(4.0);
@@ -243,7 +243,7 @@ impl Flow {
         &mut self,
         ui: &mut egui::Ui,
         (done, total): (usize, usize),
-        agents: &[Agent],
+        agents: &Agents,
     ) -> Option<Outcome> {
         let busy = self.running.is_some();
         let mut outcome = None;
@@ -325,10 +325,10 @@ impl Flow {
                 }
             }
             let can_draft = self.staged && !self.drafting;
-            if let Some(terminal) = review::send_button(ui, "Draft", can_draft, agents) {
+            if review::new_agent_button(ui, "Draft", can_draft, agents) {
                 self.drafting = true;
                 outcome = Some(Outcome::Send {
-                    terminal,
+                    agent: None,
                     text: DRAFT.to_string(),
                 });
             }
@@ -362,7 +362,10 @@ mod tests {
             asked: None,
         };
         let ui = |ui: &mut egui::Ui, shown: &mut Shown| {
-            let agents = [(1, "agent".to_string())];
+            let agents = Agents {
+                open: vec![(1, "Claude Code".to_string())],
+                new: Some("Claude Code".to_string()),
+            };
             match shown.flow.ui(ui, (1, 2), &agents) {
                 Some(Outcome::Run(op)) => shown.flow.run(op, ui.ctx()),
                 Some(asked) => shown.asked = Some(asked),
@@ -432,7 +435,7 @@ mod tests {
         harness.run_steps(4);
         assert!(matches!(
             &harness.state().asked,
-            Some(Outcome::Send { terminal: 1, text }) if text.contains("shepherd ctl commit-message")
+            Some(Outcome::Send { agent: None, text }) if text.contains("shepherd ctl commit-message")
         ));
         harness.get_by_label("An agent is writing the message…");
         assert!(harness.get_by_label("Draft").accesskit_node().is_disabled());

@@ -6,11 +6,18 @@ use eframe::egui;
 use egui_tiles::{Container, Tile, TileId, Tree};
 use serde::{Deserialize, Serialize};
 
+use crate::agents::Agent;
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Tab {
     Review(Option<String>),
     File(String),
     Terminal(u64),
+    Agent {
+        id: u64,
+        agent: Agent,
+        session: String,
+    },
 }
 
 impl Tab {
@@ -21,6 +28,7 @@ impl Tab {
             Tab::Review(Some(path)) => format!("Review: {}", name(path)),
             Tab::File(path) => name(path),
             Tab::Terminal(_) => "Terminal".to_string(),
+            Tab::Agent { agent, .. } => agent.name().to_string(),
         }
     }
 
@@ -28,7 +36,7 @@ impl Tab {
         match self {
             Tab::Review(path) => path.as_deref(),
             Tab::File(path) => Some(path),
-            Tab::Terminal(_) => None,
+            Tab::Terminal(_) | Tab::Agent { .. } => None,
         }
     }
 }
@@ -244,6 +252,7 @@ pub struct Workspace {
     pub sidebar_open: bool,
     pub expanded_dirs: BTreeSet<String>,
     pub collapsed_changes: BTreeSet<String>,
+    pub agent: Option<Agent>,
     #[serde(skip)]
     pub last_review: Option<Tab>,
 }
@@ -256,6 +265,7 @@ impl Default for Workspace {
             sidebar_open: true,
             expanded_dirs: BTreeSet::new(),
             collapsed_changes: BTreeSet::new(),
+            agent: None,
             last_review: None,
         }
     }
@@ -297,22 +307,34 @@ impl Workspace {
         window.add_to(tabs.or_else(|| window.target_tabs()), tab);
     }
 
-    pub fn open_terminal(&mut self, window: usize, tabs: Option<TileId>) -> u64 {
-        let id = self
-            .windows
+    fn next_id(&self) -> u64 {
+        self.windows
             .iter()
             .flat_map(|window| window.tabs())
-            .filter_map(|tab| {
-                if let Tab::Terminal(id) = tab {
-                    Some(*id)
-                } else {
-                    None
-                }
+            .filter_map(|tab| match tab {
+                Tab::Terminal(id) | Tab::Agent { id, .. } => Some(*id),
+                _ => None,
             })
             .max()
             .unwrap_or(0)
-            + 1;
+            + 1
+    }
+
+    pub fn open_terminal(&mut self, window: usize, tabs: Option<TileId>) -> u64 {
+        let id = self.next_id();
         self.add_tab(window, tabs, Tab::Terminal(id));
+        id
+    }
+
+    pub fn open_agent(
+        &mut self,
+        window: usize,
+        tabs: Option<TileId>,
+        agent: Agent,
+        session: String,
+    ) -> u64 {
+        let id = self.next_id();
+        self.add_tab(window, tabs, Tab::Agent { id, agent, session });
         id
     }
 
@@ -556,6 +578,32 @@ mod tests {
     }
 
     #[test]
+    fn opens_agent_tabs_that_share_their_ids_and_survive_a_restart() {
+        let mut workspace = Workspace::default();
+        let id = workspace.open_agent(0, None, Agent::Claude, "s1".to_string());
+        assert_eq!(id, 1);
+        assert_eq!(tabs(&workspace.windows[0]), ["Claude Code", "Review"]);
+        assert_eq!(workspace.open_terminal(0, None), 2);
+        let id = workspace.open_agent(0, None, Agent::Opencode, "s2".to_string());
+        assert_eq!(id, 3);
+
+        let restored = Workspace::from_json(&workspace.to_json()).unwrap();
+        let restored_tabs = restored.windows[0].tabs();
+        assert!(restored_tabs.iter().any(|tab| *tab
+            == &Tab::Agent {
+                id: 1,
+                agent: Agent::Claude,
+                session: "s1".to_string(),
+            }));
+        assert!(restored_tabs.iter().any(|tab| *tab
+            == &Tab::Agent {
+                id: 3,
+                agent: Agent::Opencode,
+                session: "s2".to_string(),
+            }));
+    }
+
+    #[test]
     fn closing_a_window_brings_its_tabs_back() {
         let mut workspace = Workspace::default();
         let review = tile_of(&workspace.windows[0], &Tab::Review(None));
@@ -607,6 +655,7 @@ mod tests {
         workspace.windows[1].size = Some(egui::vec2(300.0, 400.0));
         workspace.toggle_sidebar(Sidebar::Changes);
         workspace.expanded_dirs.insert("src".to_string());
+        workspace.agent = Some(Agent::Opencode);
 
         let restored = Workspace::from_json(&workspace.to_json()).unwrap();
         assert!(
@@ -621,6 +670,7 @@ mod tests {
         assert_eq!(restored.windows[1].position, Some(egui::pos2(10.0, 20.0)));
         assert_eq!(restored.sidebar, Sidebar::Changes);
         assert!(restored.sidebar_open);
+        assert_eq!(restored.agent, Some(Agent::Opencode));
     }
 
     #[test]
