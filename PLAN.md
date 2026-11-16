@@ -44,7 +44,7 @@ and shipping as a real application: an app bundle for macOS and a tarball for Li
 scripts, releases made from a tag, and updates found and downloaded in the background.
 FEATURES.md describes the features.
 
-Next is milestone 10: merge conflicts in the same view.
+Next is milestone 10: images for agents.
 
 ## Milestones
 
@@ -214,7 +214,29 @@ versioned, published and able to replace itself.
 Done when: a new version is tagged, and the app installed in `/Applications` finds it,
 downloads it and restarts into it.
 
-### 10. Merge conflicts in the same view
+### 10. Images for agents
+
+An agent's work often starts from a picture: a screenshot of a bug, a design or an error in a
+browser. Until now only text can be pasted into an Agent tab, so a screenshot has to be saved to
+a file by hand and its path typed.
+
+- Cmd+V in an Agent tab with an image on the clipboard writes it to a file in a temporary
+  directory and pastes its path into the agent as text is pasted, with no Enter pressed, so the
+  agent reads the image as any other file. When the clipboard holds both text and an image, the
+  text wins, as before
+- Dropping image files on an Agent tab does the same, one path per image
+- A quick chat takes images the same way, pasted or dropped into its field, and sends their paths
+  with the message
+- Each known agent says how it is handed an image, so an agent whose interface has a way of its
+  own can use it, and adding an agent stays a small change
+- Temporary images are kept while the agent that was given them runs and removed when its tab is
+  closed or when they are old, so screenshots do not pile up
+- Plain terminals are left alone: an image is only turned into a path in Agent tabs
+
+Done when: a screenshot pasted into an Agent tab, or attached to a quick chat, reaches the agent
+as an image without saving it by hand.
+
+### 11. Merge conflicts in the same view
 
 - Conflicts appear in the file's review as a special kind of hunk, during merge, rebase,
   pull and stash apply
@@ -225,7 +247,7 @@ downloads it and restarts into it.
 
 Done when: a conflicting pull is resolved without leaving the review.
 
-### 11. Reviewing commits
+### 12. Reviewing commits
 
 - History list of commits for the branch
 - Open one commit, or a range, in the same review, one file at a time, with the same
@@ -234,7 +256,7 @@ Done when: a conflicting pull is resolved without leaving the review.
 
 Done when: work an agent has already committed can be reviewed the same way as uncommitted work.
 
-### 12. Comfortable Kotlin editing
+### 13. Comfortable Kotlin editing
 
 The step that lets IntelliJ be closed for good.
 
@@ -250,7 +272,7 @@ The step that lets IntelliJ be closed for good.
 
 Done when: a day of Kotlin work happens here without missing IntelliJ.
 
-### 13. Run configurations
+### 14. Run configurations
 
 - Run configurations stored as plain files in the repository, so they can be committed and
   shared with the team
@@ -310,7 +332,7 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
   git itself, away from the interface. A sync always merges what it pulls, fast-forwarding
   when it can, whatever `pull.rebase` says; uncommitted changes, with their review
   marks, are set aside for the pull and brought back. Until conflicts are shown in the review
-  (milestone 9), a pull that runs into them is taken back, and a sync is refused when the
+  (milestone 11), a pull that runs into them is taken back, and a sync is refused when the
   commits to pull touch files with uncommitted changes.
 - **Changes left on a branch live in git's stash.** Leaving the changes behind when switching
   stashes them under the name of the branch, and switching back brings them out again, review
