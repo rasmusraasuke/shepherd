@@ -3032,6 +3032,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "egui_tiles",
+ "libc",
  "png",
  "serde",
  "serde_json",

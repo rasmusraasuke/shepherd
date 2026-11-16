@@ -11,6 +11,7 @@ alacritty_terminal = "0.26"
 arboard = { version = "3.7.0", default-features = false }
 eframe = "0.37.0"
 egui_tiles = "0.18"
+libc = "0.2"
 png = "0.18"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

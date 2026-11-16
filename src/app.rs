@@ -1479,6 +1479,10 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.content.open_files.save_all();
         self.save_layout();
+        self.content.terminals.shutdown();
+        self.quick_chat = None;
+        self.control = None;
+        std::process::exit(0);
     }
 }
 

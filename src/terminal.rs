@@ -25,9 +25,16 @@ const PADDING: f32 = 4.0;
 
 type ClipboardAnswer = Arc<dyn Fn(&str) -> String + Sync + Send>;
 
+type Worker = std::thread::JoinHandle<(
+    EventLoop<tty::Pty, Listener>,
+    alacritty_terminal::event_loop::State,
+)>;
+
 const BUSY: Duration = Duration::from_millis(1500);
 
 const ECHO: Duration = Duration::from_millis(1000);
+
+const STOP_WAIT: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Activity {
@@ -101,6 +108,7 @@ pub struct Terminals {
     guide: Option<PathBuf>,
     agent_program: Option<String>,
     starts: HashMap<u64, Prompt>,
+    background: Arc<Mutex<Vec<u32>>>,
 }
 
 fn read_clipboard() -> Option<String> {
@@ -136,6 +144,7 @@ impl Terminals {
             guide: None,
             agent_program: None,
             starts: HashMap::new(),
+            background: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -179,8 +188,12 @@ impl Terminals {
         let mut child = child
             .spawn()
             .map_err(|e| format!("Cannot start {program}: {e}"))?;
+        let id = child.id();
+        self.background.lock().unwrap().push(id);
+        let background = self.background.clone();
         std::thread::spawn(move || {
             let _ = child.wait();
+            background.lock().unwrap().retain(|pid| *pid != id);
         });
         Ok(())
     }
@@ -258,6 +271,34 @@ impl Terminals {
         self.focus_on_start.remove(&id);
         if let Some(pending) = self.starts.remove(&id) {
             images::remove(&pending.images);
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        let mut stopping: Vec<Terminal> = self
+            .terminals
+            .drain()
+            .filter_map(|(_, terminal)| terminal.ok())
+            .collect();
+        for terminal in &mut stopping {
+            terminal.stop();
+        }
+        if !stopping.is_empty() {
+            std::thread::sleep(STOP_WAIT);
+        }
+        for terminal in &mut stopping {
+            terminal.kill();
+            terminal.join();
+        }
+        for pending in self.starts.drain().map(|(_, pending)| pending) {
+            images::remove(&pending.images);
+        }
+        self.focus_on_start.clear();
+        let pids = std::mem::take(&mut *self.background.lock().unwrap());
+        for pid in pids {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
         }
     }
 
@@ -417,6 +458,8 @@ struct Terminal {
     term: Arc<FairMutex<Term<Listener>>>,
     notifier: Notifier,
     events: Receiver<TermEvent>,
+    worker: Option<Worker>,
+    child: u32,
     title: Option<String>,
     output: Arc<Mutex<Output>>,
     activity: Activity,
@@ -467,6 +510,7 @@ impl Terminal {
         };
         let pty = tty::new(&options, window_size(size, style), 0)
             .map_err(|e| format!("Cannot start the terminal: {e}"))?;
+        let child = pty.child().id();
         let (sender, events) = mpsc::channel();
         let output = Arc::new(Mutex::new(Output::default()));
         let listener = Listener {
@@ -482,11 +526,13 @@ impl Terminal {
         let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)
             .map_err(|e| format!("Cannot start the terminal: {e}"))?;
         let notifier = Notifier(event_loop.channel());
-        event_loop.spawn();
+        let worker = event_loop.spawn();
         Ok(Self {
             term,
             notifier,
             events,
+            worker: Some(worker),
+            child,
             title: None,
             output,
             activity: Activity::Idle,
@@ -900,8 +946,32 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = self.notifier.0.send(Msg::Shutdown);
+        self.stop();
         images::remove(&self.images);
+    }
+}
+
+impl Terminal {
+    fn stop(&mut self) {
+        if self.worker.is_none() {
+            return;
+        }
+        let _ = self.notifier.0.send(Msg::Shutdown);
+        unsafe {
+            libc::kill(-(self.child as libc::pid_t), libc::SIGHUP);
+        }
+    }
+
+    fn kill(&self) {
+        unsafe {
+            libc::kill(-(self.child as libc::pid_t), libc::SIGKILL);
+        }
+    }
+
+    fn join(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -1552,6 +1622,21 @@ mod tests {
         harness.state_mut().send(1, "hello");
         harness.run_steps(4);
         assert_eq!(harness.state().screen(1).unwrap(), "");
+    }
+
+    #[test]
+    fn shutdown_ends_the_program_of_every_terminal() {
+        let (mut harness, _dir) = harness(
+            "terminal-shutdown",
+            "trap '' HUP; echo ready; while true; do sleep 0.1; done",
+        );
+        wait_for_screen(&mut harness, "ready");
+        let pid = harness.state().terminals[&1].as_ref().unwrap().child as libc::pid_t;
+
+        harness.state_mut().shutdown();
+
+        assert!(!harness.state().is_open(1));
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the program is gone");
     }
 
     #[test]
