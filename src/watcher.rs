@@ -43,9 +43,9 @@ impl Watcher {
             let mut last = None;
             loop {
                 let refreshes = asked.load(Ordering::SeqCst);
-                let snapshot = Snapshot::take(&repo);
+                let snapshot = (refreshes, Snapshot::take(&repo));
                 if last.as_ref() != Some(&snapshot) {
-                    if sender.send((refreshes, snapshot.clone())).is_err() {
+                    if sender.send(snapshot.clone()).is_err() {
                         break;
                     }
                     ctx.request_repaint();
@@ -75,5 +75,37 @@ impl Watcher {
     pub fn refresh_now(&self) {
         self.refreshes.fetch_add(1, Ordering::SeqCst);
         let _ = self.wake.send(());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::git::tests::temp_repo;
+
+    fn next(watcher: &Watcher) -> Option<Snapshot> {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(1) {
+            if let Some(snapshot) = watcher.changed() {
+                return snapshot.ok();
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    #[test]
+    fn hands_over_a_refresh_even_when_it_was_seen_before_it_was_asked_for() {
+        let (repo, dir) = temp_repo("watcher-refresh", &[("a.txt", "a\n")]);
+        let watcher = Watcher::spawn(repo, egui::Context::default());
+        assert!(next(&watcher).is_some());
+        dir.write("b.txt", "b\n");
+        watcher.refresh_now();
+        thread::sleep(Duration::from_millis(300));
+        watcher.refresh_now();
+        let snapshot = next(&watcher).expect("no snapshot after the refresh");
+        assert!(snapshot.files.contains(&"b.txt".to_string()));
     }
 }
