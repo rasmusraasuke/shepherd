@@ -16,7 +16,7 @@ use alacritty_terminal::tty::{self, Shell};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use eframe::egui::{self, Color32, Event, EventFilter, Key, Modifiers, Sense, Vec2};
 
-use crate::agents::{Agent, Start};
+use crate::agents::{self, Agent, Start};
 use crate::code::CodeStyle;
 use crate::images;
 use crate::terminal_text;
@@ -322,8 +322,10 @@ impl Terminals {
         self.show(ui, id, Some((agent, session, model)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         &self,
+        id: u64,
         agent: Option<(Agent, &str, Option<&str>)>,
         start: Start,
         size: Size,
@@ -337,6 +339,7 @@ impl Terminals {
             Some((agent, session, model)) => {
                 let command = agent.command(session, start, self.guide.as_deref(), model);
                 env.extend(command.env);
+                env.insert(agents::AGENT_VARIABLE.to_string(), id.to_string());
                 let program = self.agent_program.clone();
                 Some(Shell::new(
                     program.unwrap_or_else(|| command.program.to_string()),
@@ -371,7 +374,7 @@ impl Terminals {
                 None => Start::Continue,
             };
             let focus = self.focus_on_start.remove(&id);
-            let mut terminal = self.spawn(agent, start, size, &style, ui.ctx(), focus);
+            let mut terminal = self.spawn(id, agent, start, size, &style, ui.ctx(), focus);
             if let (Ok(terminal), Some(pending)) = (&mut terminal, pending) {
                 terminal.images = pending.images;
             }
@@ -409,7 +412,7 @@ impl Terminals {
                         Some(Ok(old)) => std::mem::take(&mut old.images),
                         _ => Vec::new(),
                     };
-                    let mut terminal = self.spawn(target, start, size, &style, ui.ctx(), true);
+                    let mut terminal = self.spawn(id, target, start, size, &style, ui.ctx(), true);
                     if let Ok(terminal) = &mut terminal {
                         terminal.images = images;
                     }

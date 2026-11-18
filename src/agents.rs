@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
+use std::fs;
 use std::hash::{BuildHasher as _, Hasher as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, containers::menu::MenuButton};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,10 @@ use crate::theme;
 pub const GUIDE: &str = "You run in the Shepherd editor, in which the user reviews the changes \
 you make. `shepherd ctl help` lists what you can ask the editor: what the user has open and \
 selected, their review comments and what they reviewed. It also shows them files and changes.";
+
+pub const AGENT_VARIABLE: &str = "SHEPHERD_AGENT";
+
+const OPENCODE_PLUGIN: &str = include_str!("../assets/opencode-plugin.js");
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Agent {
@@ -197,7 +202,12 @@ fn claude_command(
         args.extend([text("--model"), text(model)]);
     }
     if guide.is_some() {
-        args.extend([text("--append-system-prompt"), text(GUIDE)]);
+        args.extend([
+            text("--append-system-prompt"),
+            text(GUIDE),
+            text("--settings"),
+            session_hook(),
+        ]);
     }
     if let Start::New(Some(message)) = start {
         args.extend([text("--"), message]);
@@ -207,6 +217,16 @@ fn claude_command(
         args,
         env: Vec::new(),
     }
+}
+
+fn session_hook() -> String {
+    let command = format!("shepherd ctl agent-session \"${AGENT_VARIABLE}\" \"$(cat)\" >/dev/null");
+    serde_json::json!({
+        "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": command}]}]
+        }
+    })
+    .to_string()
 }
 
 fn opencode_command(
@@ -220,12 +240,47 @@ fn opencode_command(
     if let Start::New(Some(message)) = start {
         args.extend([text("--prompt"), message]);
     }
-    let env = opencode_env(guide, model);
+    let mut env = opencode_env(guide, model);
+    if let Some(guide) = guide {
+        let user = fs::read_to_string(opencode_cli_config()).ok();
+        env.push((
+            "OPENCODE_CLI_CONFIG_CONTENT".to_string(),
+            opencode_plugins(&opencode_plugin(guide), user.as_deref()),
+        ));
+    }
     Command {
         program: OPENCODE.program,
         args,
         env,
     }
+}
+
+pub fn write_guide(guide: &Path) -> bool {
+    let plugin = opencode_plugin(guide);
+    fs::write(guide, GUIDE).is_ok()
+        && fs::create_dir_all(&plugin).is_ok()
+        && fs::write(plugin.join("tui.js"), OPENCODE_PLUGIN).is_ok()
+}
+
+fn opencode_plugin(guide: &Path) -> PathBuf {
+    guide.with_file_name("shepherd-opencode")
+}
+
+fn opencode_cli_config() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_default()
+        .join("opencode/cli.json")
+}
+
+fn opencode_plugins(plugin: &Path, user: Option<&str>) -> String {
+    let mut plugins = user
+        .and_then(|user| serde_json::from_str::<serde_json::Value>(user).ok())
+        .and_then(|user| user["plugins"].as_array().cloned())
+        .unwrap_or_default();
+    plugins.push(serde_json::json!(plugin));
+    serde_json::json!({ "plugins": plugins }).to_string()
 }
 
 fn claude_background(message: &str, guide: Option<&Path>, model: Option<&str>) -> Command {
@@ -485,7 +540,14 @@ mod tests {
                 Start::New(None),
                 Some(Path::new("/guide.md"))
             ),
-            ["--session-id", "s1", "--append-system-prompt", GUIDE]
+            [
+                "--session-id",
+                "s1",
+                "--append-system-prompt",
+                GUIDE,
+                "--settings",
+                &session_hook()
+            ]
         );
         assert_eq!(
             args(Agent::Claude, Start::Continue, None),
@@ -500,12 +562,13 @@ mod tests {
         assert_eq!(command.program, "opencode");
         assert_eq!(command.args, ["--session", "s1", "--prompt", "fix it"]);
         assert_eq!(
-            command.env,
-            [(
+            command.env[0],
+            (
                 "OPENCODE_CONFIG_CONTENT".to_string(),
                 r#"{"instructions":["/guide.md"]}"#.to_string()
-            )]
+            )
         );
+        assert_eq!(command.env[1].0, "OPENCODE_CLI_CONFIG_CONTENT");
         assert_eq!(
             args(Agent::Opencode, Start::Continue, None),
             ["--session", "s1"]
@@ -527,11 +590,40 @@ mod tests {
             Some("deepseek/deepseek-flash"),
         );
         assert_eq!(
-            command.env,
-            [(
+            command.env[0],
+            (
                 "OPENCODE_CONFIG_CONTENT".to_string(),
                 r#"{"instructions":["/guide.md"],"model":"deepseek/deepseek-flash"}"#.to_string()
-            )]
+            )
+        );
+    }
+
+    #[test]
+    fn adds_the_session_plugin_to_the_opencode_plugins_of_the_user() {
+        let plugin = Path::new("/repo/.git/shepherd-opencode");
+        assert_eq!(
+            opencode_plugins(plugin, None),
+            r#"{"plugins":["/repo/.git/shepherd-opencode"]}"#
+        );
+        assert_eq!(
+            opencode_plugins(plugin, Some(r#"{"theme":{},"plugins":["mine"]}"#)),
+            r#"{"plugins":["mine","/repo/.git/shepherd-opencode"]}"#
+        );
+        assert_eq!(
+            opencode_plugins(plugin, Some("not json")),
+            r#"{"plugins":["/repo/.git/shepherd-opencode"]}"#
+        );
+    }
+
+    #[test]
+    fn writes_the_guide_and_the_opencode_plugin_beside_it() {
+        let dir = TempDir::new("guide");
+        let guide = dir.path().join("guide.md");
+        assert!(write_guide(&guide));
+        assert_eq!(fs::read_to_string(&guide).unwrap(), GUIDE);
+        assert_eq!(
+            fs::read_to_string(opencode_plugin(&guide).join("tui.js")).unwrap(),
+            OPENCODE_PLUGIN
         );
     }
 

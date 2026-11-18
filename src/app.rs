@@ -272,7 +272,7 @@ impl App {
         }
         if !agents.is_empty() {
             let guide = repo.layout_path().with_file_name("shepherd-agent-guide.md");
-            if fs::write(&guide, agents::GUIDE).is_ok() {
+            if agents::write_guide(&guide) {
                 content.terminals.set_guide(guide);
             }
         }
@@ -917,6 +917,21 @@ impl App {
                     ctx,
                 );
                 Ok(format!("Opened {place}"))
+            }
+            (Some("agent-session"), Some(id)) => {
+                let session = args
+                    .get(2)
+                    .and_then(|hook| serde_json::from_str::<serde_json::Value>(hook).ok())
+                    .and_then(|hook| hook["session_id"].as_str().map(str::to_string))
+                    .ok_or("No session_id in the hook input")?;
+                let found = id
+                    .parse()
+                    .is_ok_and(|id| self.workspace.set_session(id, session.clone()));
+                if found {
+                    Ok(format!("Agent {id} continues in session {session}"))
+                } else {
+                    Err(format!("No agent {id}"))
+                }
             }
             (Some("commit-message"), Some(_)) => {
                 self.content.flow.set_message(args[1..].join(" "));
@@ -2586,6 +2601,31 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         asking.join().unwrap()
+    }
+
+    #[test]
+    fn agents_tell_the_editor_which_session_they_continue_in() {
+        let (mut harness, _dir) = harness("agent-session");
+        let id = harness.state_mut().workspace.open_agent(
+            0,
+            None,
+            Agent::Claude,
+            "s1".to_string(),
+            None,
+        );
+        let hook = r#"{"session_id":"s2","source":"clear"}"#;
+        assert_eq!(
+            ask(&mut harness, &["agent-session", &id.to_string(), hook]),
+            Ok(format!("Agent {id} continues in session s2"))
+        );
+        assert!(open_tabs(&harness)[0].contains(&Tab::Agent {
+            id,
+            agent: Agent::Claude,
+            session: "s2".to_string(),
+            model: None,
+        }));
+        assert!(ask(&mut harness, &["agent-session", "99", hook]).is_err());
+        assert!(ask(&mut harness, &["agent-session", &id.to_string(), "{}"]).is_err());
     }
 
     #[test]

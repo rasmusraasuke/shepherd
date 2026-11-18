@@ -134,7 +134,10 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   is started with the text as its first message. *Draft* runs in the background instead, with
   an agent and model chosen for it alone.
 - **Back on restart.** An Agent tab that is open when the editor quits comes back on the next
-  start and continues its conversation where the agent can.
+  start and continues its conversation where the agent can. The agent tells the editor each
+  session it moves to, so after `/clear`, `/new`, `/resume` or `/sessions` the tab comes back in
+  the session it ended in, not the one it was opened with. Claude Code does so from a session
+  start hook, Opencode from a small terminal plugin that keeps the user's own plugins loaded.
 - **`shepherd ctl`.** The `shepherd ctl` command and the state of the agents work in Agent
   tabs as they do in terminals. `shepherd ctl context` lists the Agent tabs apart from the
   terminals, and `shepherd ctl terminal <id>` shows what any of them shows.

@@ -352,6 +352,16 @@ impl Workspace {
         id
     }
 
+    pub fn set_session(&mut self, agent_id: u64, new: String) -> bool {
+        let session = self.windows.iter_mut().find_map(|window| {
+            window.tree.tiles.tiles_mut().find_map(|tile| match tile {
+                Tile::Pane(Tab::Agent { id, session, .. }) if *id == agent_id => Some(session),
+                _ => None,
+            })
+        });
+        session.map(|session| *session = new).is_some()
+    }
+
     fn find(&self, tab: &Tab) -> Option<(usize, TileId)> {
         self.windows
             .iter()
@@ -617,6 +627,23 @@ mod tests {
         };
         assert!(restored_tabs.contains(&&claude));
         assert!(restored_tabs.contains(&&opencode));
+    }
+
+    #[test]
+    fn agent_tabs_follow_the_session_their_agent_moved_to() {
+        let mut workspace = Workspace::default();
+        let id = workspace.open_agent(0, None, Agent::Claude, "s1".to_string(), None);
+        let claude = |session: &str| Tab::Agent {
+            id,
+            agent: Agent::Claude,
+            session: session.to_string(),
+            model: None,
+        };
+        workspace.move_tab(0, tile_of(&workspace.windows[0], &claude("s1")), None);
+
+        assert!(workspace.set_session(id, "s2".to_string()));
+        assert!(!workspace.set_session(id + 1, "s3".to_string()));
+        assert_eq!(workspace.windows[1].tabs(), [&claude("s2")]);
     }
 
     #[test]
