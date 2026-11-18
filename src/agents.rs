@@ -6,6 +6,7 @@ use std::path::Path;
 use eframe::egui::{self, containers::menu::MenuButton};
 use serde::{Deserialize, Serialize};
 
+use crate::icons::{self, Icon};
 use crate::theme;
 
 pub const GUIDE: &str = "You run in the Shepherd editor, in which the user reviews the changes \
@@ -341,49 +342,92 @@ pub fn choice_ui(
 ) {
     let agent = choice.agent(found);
     let name = agent.map_or("No agent found", Agent::name);
-    let (response, _) = MenuButton::from_button(theme::dropdown(name)).ui(ui, |ui| {
-        for found_agent in found {
-            if ui
-                .selectable_label(agent == Some(*found_agent), found_agent.name())
-                .clicked()
-            {
-                if choice.agent != Some(*found_agent) {
-                    choice.model = None;
-                }
-                choice.agent = Some(*found_agent);
-                ui.close();
-            }
-        }
-    });
+    let (response, _) = MenuButton::from_button(theme::dropdown(name))
+        .ui(ui, |ui| agent_options(ui, found, choice));
     theme::caret(ui, &response);
     let Some(agent) = agent else {
         return;
     };
     let selected = choice.model().unwrap_or("Default model").to_string();
-    let (response, _) = MenuButton::from_button(theme::dropdown(selected)).ui(ui, |ui| {
-        if ui
-            .selectable_label(choice.model().is_none(), "Default")
-            .clicked()
-        {
-            choice.model = None;
-            ui.close();
-        }
-        if let Some(options) = models.get(&agent) {
-            egui::ScrollArea::vertical()
-                .max_height(300.0)
-                .show(ui, |ui| {
-                    for model in options {
-                        let chosen = choice.model() == Some(model.value.as_str());
-                        if ui.selectable_label(chosen, &model.name).clicked() {
-                            choice.model = Some(model.value.clone());
-                            ui.close();
-                        }
-                    }
-                });
-        }
-    });
+    let (response, _) = MenuButton::from_button(theme::dropdown(selected))
+        .ui(ui, |ui| model_options(ui, agent, models, choice));
     theme::caret(ui, &response);
     response.on_hover_text("Model for new agent sessions");
+}
+
+pub fn choice_menu(
+    ui: &mut egui::Ui,
+    found: &[Agent],
+    models: &HashMap<Agent, Vec<Model>>,
+    choice: &mut Choice,
+) {
+    let agent = choice.agent(found);
+    let more = egui::Atom::custom(egui::IdSalt::new("more"), egui::vec2(14.0, 14.0));
+    let (response, _) = MenuButton::from_button(theme::quiet(more)).ui(ui, |ui| {
+        let name = agent.map_or("No agent found", Agent::name);
+        ui.menu_button(format!("Harness: {name}"), |ui| {
+            agent_options(ui, found, choice)
+        });
+        if let Some(agent) = agent {
+            let model = choice.model().unwrap_or("Default").to_string();
+            ui.menu_button(format!("Model: {model}"), |ui| {
+                model_options(ui, agent, models, choice)
+            });
+        }
+    });
+    let color = ui.style().interact(&response).fg_stroke.color;
+    icons::paint(
+        ui.painter(),
+        response.rect.center(),
+        14.0,
+        Icon::More,
+        color,
+    );
+    response.on_hover_text("Harness and model of the agent");
+}
+
+fn agent_options(ui: &mut egui::Ui, found: &[Agent], choice: &mut Choice) {
+    let agent = choice.agent(found);
+    for found_agent in found {
+        if ui
+            .selectable_label(agent == Some(*found_agent), found_agent.name())
+            .clicked()
+        {
+            if choice.agent != Some(*found_agent) {
+                choice.model = None;
+            }
+            choice.agent = Some(*found_agent);
+            ui.close();
+        }
+    }
+}
+
+fn model_options(
+    ui: &mut egui::Ui,
+    agent: Agent,
+    models: &HashMap<Agent, Vec<Model>>,
+    choice: &mut Choice,
+) {
+    if ui
+        .selectable_label(choice.model().is_none(), "Default")
+        .clicked()
+    {
+        choice.model = None;
+        ui.close();
+    }
+    if let Some(options) = models.get(&agent) {
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .show(ui, |ui| {
+                for model in options {
+                    let chosen = choice.model() == Some(model.value.as_str());
+                    if ui.selectable_label(chosen, &model.name).clicked() {
+                        choice.model = Some(model.value.clone());
+                        ui.close();
+                    }
+                }
+            });
+    }
 }
 
 #[cfg(test)]

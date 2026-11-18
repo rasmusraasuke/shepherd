@@ -322,17 +322,17 @@ impl Flow {
             });
         });
         let can_draft = self.staged && !self.drafting;
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            if review::new_agent_button(ui, "Draft", can_draft, agents) {
-                self.drafting = true;
-                outcome = Some(Outcome::Draft {
-                    text: DRAFT.to_string(),
-                });
-            }
-            ui.add_space(4.0);
-            ui.weak("with");
-            agents::choice_ui(ui, found, models, choice);
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                agents::choice_menu(ui, found, models, choice);
+                if review::new_agent_button(ui, "Draft", can_draft, agents) {
+                    self.drafting = true;
+                    outcome = Some(Outcome::Draft {
+                        text: DRAFT.to_string(),
+                    });
+                }
+            });
         });
         let id = egui::Id::unique("commit message");
         let focused = ui.memory(|m| m.has_focus(id));
@@ -463,16 +463,29 @@ mod tests {
     }
 
     #[test]
-    fn keeps_draft_and_the_agent_model_choice_above_the_commit_message() {
-        let (harness, _dir) = show("flow-draft-above");
-        let draft = harness.get_by_label("Draft").rect().bottom();
+    fn keeps_draft_and_its_agent_menu_above_the_commit_message() {
+        let (mut harness, _dir) = show("flow-draft-above");
+        let draft = harness.get_by_label("Draft").rect();
         let message = harness
             .get_by_role(egui::Role::MultilineTextInput)
             .rect()
             .top();
-        assert!(draft <= message);
-        harness.get_by_label("Default model");
-        harness.get_by_label("Claude Code");
+        assert!(draft.bottom() <= message);
+        assert!(harness.query_by_label("Claude Code").is_none());
+        assert!(harness.query_by_label("Default model").is_none());
+        harness
+            .get_by_label("Harness and model of the agent")
+            .hover();
+        harness.run();
+        let menu = harness.get_by_label("Harness and model of the agent");
+        assert!(menu.rect().left() >= draft.right());
+        menu.click();
+        harness.run();
+        harness.get_by_label("Harness: Claude Code").click();
+        harness.run();
+        harness.get_by_label("Claude Code").click();
+        harness.run();
+        assert_eq!(harness.state().choice.agent, Some(Agent::Claude));
     }
 
     #[test]

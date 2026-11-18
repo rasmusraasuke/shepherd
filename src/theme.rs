@@ -103,11 +103,11 @@ pub fn primary(ui: &egui::Ui, label: &str) -> egui::Button<'static> {
         .stroke(Stroke::NONE)
 }
 
-pub fn quiet(label: impl Into<egui::WidgetText>) -> egui::Button<'static> {
+pub fn quiet(label: impl egui::IntoAtoms<'static>) -> egui::Button<'static> {
     egui::Button::new(label).frame_when_inactive(false)
 }
 
-pub fn dropdown(label: impl Into<egui::WidgetText>) -> egui::Button<'static> {
+pub fn dropdown(label: impl egui::IntoAtoms<'static>) -> egui::Button<'static> {
     quiet(label).right_text(egui::Atom::custom(
         egui::IdSalt::new("caret"),
         egui::vec2(7.0, 7.0),

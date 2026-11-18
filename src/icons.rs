@@ -5,6 +5,7 @@ pub enum Icon {
     Files,
     Review,
     Keys,
+    More,
     Folder { open: bool },
     File(FileType),
 }
@@ -154,6 +155,11 @@ pub fn paint(painter: &Painter, center: Pos2, size: f32, icon: Icon, color: Colo
                 painter.circle_filled(at(x, 7.3), 0.8 * scale, color);
             }
             line(&[(5.5, 11.0), (12.5, 11.0)]);
+        }
+        Icon::More => {
+            for x in [4.0, 9.0, 14.0] {
+                painter.circle_filled(at(x, 9.0), 1.4 * scale, color);
+            }
         }
         Icon::Folder { open: false } => line(&[
             (1.5, 4.0),

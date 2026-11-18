@@ -244,7 +244,7 @@ the background; what it complains about is shown above the commit message.
 - **A message from an agent.** Above the commit message, *Draft* starts the chosen agent and
   model in the background, with the request to write the message for what is staged. It has a
   choice of agent and model of its own, so a cheaper model can write the message while a
-  smarter one does the work. While the agent writes, the message box says so, until the
+  smarter one does the work; the ⋯ menu next to *Draft*, on the right, has the harness and the model to pick. While the agent writes, the message box says so, until the
   message lands in it with `shepherd ctl commit-message`, to be read and changed before
   committing; *Cancel* stops waiting for it.
 - **Sync and push.** *Sync ↓2* shows the commits there are to pull, as far as is known from
