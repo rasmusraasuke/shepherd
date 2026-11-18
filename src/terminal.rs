@@ -16,7 +16,7 @@ use alacritty_terminal::tty::{self, Shell};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use eframe::egui::{self, Color32, Event, EventFilter, Key, Modifiers, Sense, Vec2};
 
-use crate::agents::{self, Agent, Start};
+use crate::agents::{self, Agent, Start, Tuning};
 use crate::code::CodeStyle;
 use crate::images;
 use crate::terminal_text;
@@ -174,10 +174,10 @@ impl Terminals {
     pub fn run_background(
         &self,
         agent: Agent,
-        model: Option<&str>,
+        tuning: &Tuning,
         message: &str,
     ) -> Result<(), String> {
-        let command = agent.background_command(message, self.guide.as_deref(), model);
+        let command = agent.background_command(message, self.guide.as_deref(), tuning);
         let program = self
             .agent_program
             .clone()
@@ -317,16 +317,16 @@ impl Terminals {
         id: u64,
         agent: Agent,
         session: &str,
-        model: Option<&str>,
+        tuning: &Tuning,
     ) -> Option<String> {
-        self.show(ui, id, Some((agent, session, model)))
+        self.show(ui, id, Some((agent, session, tuning)))
     }
 
     #[allow(clippy::too_many_arguments)]
     fn spawn(
         &self,
         id: u64,
-        agent: Option<(Agent, &str, Option<&str>)>,
+        agent: Option<(Agent, &str, &Tuning)>,
         start: Start,
         size: Size,
         style: &CodeStyle,
@@ -336,8 +336,8 @@ impl Terminals {
         let mut env = self.env.clone();
         let resumed = agent.is_some() && matches!(start, Start::Continue);
         let shell = match agent {
-            Some((agent, session, model)) => {
-                let command = agent.command(session, start, self.guide.as_deref(), model);
+            Some((agent, session, tuning)) => {
+                let command = agent.command(session, start, self.guide.as_deref(), tuning);
                 env.extend(command.env);
                 env.insert(agents::AGENT_VARIABLE.to_string(), id.to_string());
                 let program = self.agent_program.clone();
@@ -358,7 +358,7 @@ impl Terminals {
         &mut self,
         ui: &mut egui::Ui,
         id: u64,
-        agent: Option<(Agent, &str, Option<&str>)>,
+        agent: Option<(Agent, &str, &Tuning)>,
     ) -> Option<String> {
         let size = egui::TextStyle::Monospace.resolve(ui.style()).size;
         let fonts_ready = terminal_text::fonts_ready(ui.ctx(), self.system_fonts);
@@ -407,7 +407,7 @@ impl Terminals {
                             agent.map_or_else(String::new, |(_, session, _)| session.to_string())
                         }
                     };
-                    let target = agent.map(|(agent, _, model)| (agent, session.as_str(), model));
+                    let target = agent.map(|(agent, _, tuning)| (agent, session.as_str(), tuning));
                     let images = match self.terminals.get_mut(&id) {
                         Some(Ok(old)) => std::mem::take(&mut old.images),
                         _ => Vec::new(),
@@ -1528,7 +1528,7 @@ mod tests {
             .with_max_steps(8)
             .build_ui_state(
                 |ui, terminals: &mut Terminals| {
-                    terminals.agent_ui(ui, 1, Agent::Claude, "s1", None);
+                    terminals.agent_ui(ui, 1, Agent::Claude, "s1", &Tuning::default());
                 },
                 terminals,
             );
@@ -1618,7 +1618,7 @@ mod tests {
             .with_max_steps(8)
             .build_ui_state(
                 |ui, terminals: &mut Terminals| {
-                    terminals.agent_ui(ui, 1, Agent::Claude, "s1", None);
+                    terminals.agent_ui(ui, 1, Agent::Claude, "s1", &Tuning::default());
                 },
                 terminals,
             );
@@ -1796,7 +1796,7 @@ mod tests {
             .with_max_steps(8)
             .build_ui_state(
                 |ui, terminals: &mut Terminals| {
-                    terminals.agent_ui(ui, 1, Agent::Claude, "s1", None);
+                    terminals.agent_ui(ui, 1, Agent::Claude, "s1", &Tuning::default());
                 },
                 terminals,
             );

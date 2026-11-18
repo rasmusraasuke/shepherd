@@ -134,10 +134,10 @@ mod tests {
             chat: QuickChat::new(dir.path().join("images")),
             choice: Choice {
                 agent: Some(Agent::Claude),
-                model: None,
+                ..Choice::default()
             },
             found: vec![Agent::Claude],
-            models: HashMap::from([(Agent::Claude, Agent::Claude.models(&HashMap::new()))]),
+            models: HashMap::from([(Agent::Claude, crate::agents::tests::claude_sample())]),
             outcome: None,
         };
         let mut harness = Harness::builder()

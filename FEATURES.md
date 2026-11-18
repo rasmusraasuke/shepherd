@@ -122,11 +122,14 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   mouse, colors and clipboard handling of a terminal. The tab is titled with the agent's name,
   shows with a dot whether it works or waits, and, once the agent ends, says so and offers to
   start it again rather than dropping to a prompt. Agent tabs are split, moved and popped out
-  like any other tab. The model menu lists the models the agent offers: Claude Code's aliases
-  and the models `opencode models` lists.
+  like any other tab. The model menu lists the models the installed agent offers, by name:
+  Claude Code's are asked of Claude Code itself, Opencode's of its server, and both are
+  loaded in the background so the editor starts without waiting. Next to it an effort menu
+  lists the reasoning levels the chosen model supports, passed as `--effort` to Claude Code
+  and as the `#variant` of the model to Opencode; a model without levels hides it.
 - **Quick chat.** Ctrl pressed twice opens a small window over the one it was pressed in. Pick
-  the agent and the model to use, type the message and press Enter; Shift+Enter makes a new
-  line and Esc closes. The choice of agent and model is remembered. Sending starts a new
+  the agent, the model and the effort to use, type the message and press Enter; Shift+Enter
+  makes a new line and Esc closes. The choice is remembered. Sending starts a new
   session of that agent in a new Agent tab with the message as its first words.
 - **Only agents get the editor's text.** Review comments, *Ask agent* and *Draft* are offered
   only to the known agents, never plain terminals, so nothing the editor sends can land at a

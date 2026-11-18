@@ -7,7 +7,7 @@ use eframe::egui::containers::menu::MenuButton;
 use eframe::egui::{self, Key, Modifiers, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 
-use crate::agents::{self, Agent, Model};
+use crate::agents::{self, Agent, Choice, Model, Tuning};
 use crate::buffer::Pos;
 use crate::comments;
 use crate::control::{self, Control};
@@ -60,6 +60,7 @@ pub struct App {
     quick_chat: Option<(u64, QuickChat)>,
     agents: Vec<Agent>,
     models: HashMap<Agent, Vec<Model>>,
+    loading_models: Option<std::sync::mpsc::Receiver<HashMap<Agent, Vec<Model>>>>,
     search_in: Option<u64>,
     double_shift: DoubleTap,
     double_ctrl: DoubleTap,
@@ -240,14 +241,15 @@ impl App {
             .ok();
         let path = agents::search_path();
         let agents = agents::found(&path);
-        let mut agent_env = HashMap::new();
+        let mut agent_env = HashMap::from([("PATH".to_string(), path.clone())]);
         if let Some(control) = &control {
             agent_env.insert(
                 control::SOCKET_VARIABLE.to_string(),
                 control.socket().display().to_string(),
             );
         }
-        let models = agents::models_for(&agents, &agent_env);
+        let loading_models =
+            cfg!(not(test)).then(|| agents::load_models(agents.clone(), agent_env, ctx.clone()));
         let mut content = Content {
             review: Review::new(repo.clone()),
             open_files: OpenFiles::new(repo.root.clone()),
@@ -294,7 +296,8 @@ impl App {
             quick_open: None,
             quick_chat: None,
             agents,
-            models,
+            models: HashMap::new(),
+            loading_models,
             updates,
             build: update::Build::watch(),
             search_in: None,
@@ -316,20 +319,16 @@ impl App {
         self.workspace.agent.agent(&self.agents)
     }
 
-    fn chosen_model(&self, agent: Agent) -> Option<String> {
-        (self.chosen_agent() == Some(agent))
-            .then(|| self.workspace.agent.model.clone())
-            .flatten()
+    fn tuning(&self, choice: &Choice, agent: Agent) -> Tuning {
+        if choice.agent(&self.agents) == Some(agent) {
+            choice.tuning.clone()
+        } else {
+            Tuning::default()
+        }
     }
 
     fn draft_chosen_agent(&self) -> Option<Agent> {
         self.workspace.draft_agent.agent(&self.agents)
-    }
-
-    fn draft_model(&self, agent: Agent) -> Option<String> {
-        (self.draft_chosen_agent() == Some(agent))
-            .then(|| self.workspace.draft_agent.model.clone())
-            .flatten()
     }
 
     fn review_agents(&self) -> review::Agents {
@@ -353,14 +352,14 @@ impl App {
         window: usize,
         tabs: Option<TileId>,
         agent: Agent,
-        model: Option<String>,
+        tuning: Tuning,
         prompt: Prompt,
         ctx: &egui::Context,
     ) {
         let session = agent.new_session();
         let id = self
             .workspace
-            .open_agent(window, tabs, agent, session, model);
+            .open_agent(window, tabs, agent, session, tuning);
         self.content.terminals.start(id, prompt);
         self.focus(window, ctx);
     }
@@ -803,8 +802,8 @@ impl App {
                 self.focus(window, ctx);
             }
             Action::NewAgent(window, tabs, agent) => {
-                let model = self.chosen_model(agent);
-                self.open_agent(window, tabs, agent, model, Prompt::default(), ctx);
+                let tuning = self.tuning(&self.workspace.agent, agent);
+                self.open_agent(window, tabs, agent, tuning, Prompt::default(), ctx);
             }
             Action::NewReview(window, tabs) => {
                 self.workspace.add_tab(window, tabs, Tab::Review(None));
@@ -834,12 +833,12 @@ impl App {
                 Some(id) => self.content.terminals.send(id, &text),
                 None => {
                     if let Some(agent) = self.chosen_agent() {
-                        let model = self.chosen_model(agent);
+                        let tuning = self.tuning(&self.workspace.agent, agent);
                         self.open_agent(
                             window,
                             None,
                             agent,
-                            model,
+                            tuning,
                             Prompt {
                                 message: Some(text),
                                 images,
@@ -852,10 +851,8 @@ impl App {
             Action::Draft { text } => {
                 let result = match self.draft_chosen_agent() {
                     Some(agent) => {
-                        let model = self.draft_model(agent);
-                        self.content
-                            .terminals
-                            .run_background(agent, model.as_deref(), &text)
+                        let tuning = self.tuning(&self.workspace.draft_agent, agent);
+                        self.content.terminals.run_background(agent, &tuning, &text)
                     }
                     None => Err("No agent was found: install Claude Code or Opencode".to_string()),
                 };
@@ -1253,12 +1250,12 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                 id,
                 agent,
                 session,
-                model,
+                tuning,
             } => {
-                if let Some(new) =
-                    self.content
-                        .terminals
-                        .agent_ui(ui, *id, *agent, session, model.as_deref())
+                if let Some(new) = self
+                    .content
+                    .terminals
+                    .agent_ui(ui, *id, *agent, session, tuning)
                 {
                     *session = new;
                 }
@@ -1481,6 +1478,14 @@ impl App {
         let ctx = ui.ctx().clone();
         if let Some(snapshot) = self.watcher.changed() {
             self.apply(snapshot);
+        }
+        if let Some(models) = self
+            .loading_models
+            .as_ref()
+            .and_then(|loading| loading.try_recv().ok())
+        {
+            self.models = models;
+            self.loading_models = None;
         }
         self.content.terminals.update(&ctx);
         if self.content.flow.finished(&ctx) {
@@ -2364,7 +2369,7 @@ mod tests {
             .run_agents_with(&program);
         harness.state_mut().agents = vec![Agent::Claude];
         harness.state_mut().models =
-            HashMap::from([(Agent::Claude, Agent::Claude.models(&HashMap::new()))]);
+            HashMap::from([(Agent::Claude, crate::agents::tests::claude_sample())]);
         harness.run();
 
         let ctrl = |harness: &mut Harness<'_, App>, modifiers: Modifiers| {
@@ -2387,6 +2392,10 @@ mod tests {
         harness.get_by_label("Default model").click();
         harness.run();
         harness.get_by_label("Haiku").click();
+        harness.run();
+        harness.get_by_label("Default effort").click();
+        harness.run();
+        harness.get_by_label("high").click();
         harness.run();
         harness.event(egui::Event::Text("hello agent ".to_string()));
         harness.run();
@@ -2416,8 +2425,9 @@ mod tests {
         let id = tabs[0]
             .iter()
             .find_map(|tab| match tab {
-                Tab::Agent { id, model, .. } => {
-                    assert_eq!(model.as_deref(), Some("haiku"));
+                Tab::Agent { id, tuning, .. } => {
+                    assert_eq!(tuning.model(), Some("haiku"));
+                    assert_eq!(tuning.effort(), Some("high"));
                     Some(*id)
                 }
                 _ => None,
@@ -2474,7 +2484,10 @@ mod tests {
         harness.state_mut().agents = vec![Agent::Claude];
         harness.state_mut().workspace.draft_agent = crate::agents::Choice {
             agent: Some(Agent::Claude),
-            model: Some("haiku".to_string()),
+            tuning: Tuning {
+                model: Some("haiku".to_string()),
+                effort: Some("max".to_string()),
+            },
         };
         harness.state_mut().action = Some(Action::Draft {
             text: "write it".to_string(),
@@ -2486,7 +2499,7 @@ mod tests {
         loop {
             if let Ok(args) = fs::read_to_string(&arguments) {
                 assert!(args.contains("-p"), "{args}");
-                assert!(args.contains("--model haiku"), "{args}");
+                assert!(args.contains("--model haiku --effort max"), "{args}");
                 assert!(args.contains("write it"), "{args}");
                 break;
             }
@@ -2611,7 +2624,7 @@ mod tests {
             None,
             Agent::Claude,
             "s1".to_string(),
-            None,
+            Tuning::default(),
         );
         let hook = r#"{"session_id":"s2","source":"clear"}"#;
         assert_eq!(
@@ -2622,7 +2635,7 @@ mod tests {
             id,
             agent: Agent::Claude,
             session: "s2".to_string(),
-            model: None,
+            tuning: Tuning::default(),
         }));
         assert!(ask(&mut harness, &["agent-session", "99", hook]).is_err());
         assert!(ask(&mut harness, &["agent-session", &id.to_string(), "{}"]).is_err());
