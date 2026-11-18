@@ -165,5 +165,5 @@ and is not offered as an update.
 
 MIT © 2026 Rasmus Raasuke. See [LICENSE](LICENSE).
 
-Shepherd embeds IBM Plex Sans and Lilex (under the SIL Open Font License) and DejaVu Sans
-(under the Bitstream Vera license). Their licenses are in [assets/fonts](assets/fonts).
+Shepherd embeds IBM Plex Sans, Lilex, JuliaMono and Noto Emoji, all under the SIL Open Font
+License. Their licenses are in [assets/fonts](assets/fonts).

@@ -22,10 +22,10 @@ staging=target/linux/$name
 rm -rf "$staging"
 mkdir -p "$staging"
 cp "target/$target/release/shepherd" "$staging/shepherd"
-mkdir -p "$staging/fonts/ibm-plex-sans" "$staging/fonts/lilex"
-cp assets/fonts/DejaVuSans-LICENSE.txt "$staging/fonts/"
-cp assets/fonts/ibm-plex-sans/LICENSE.txt "$staging/fonts/ibm-plex-sans/"
-cp assets/fonts/lilex/LICENSE.txt "$staging/fonts/lilex/"
+for font in ibm-plex-sans lilex juliamono noto-emoji; do
+    mkdir -p "$staging/fonts/$font"
+    cp "assets/fonts/$font/LICENSE.txt" "$staging/fonts/$font/"
+done
 cp packaging/linux/shepherd.desktop "$staging/shepherd.desktop"
 cp packaging/linux/install.sh "$staging/install.sh"
 cp assets/icon.png "$staging/shepherd.png"

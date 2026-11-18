@@ -33,7 +33,8 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
 - **Quiet by design.** No toolbar and no status bar: the bar of icons, the sidebar and the
   tabs, with the code taking the rest. One calm palette in dark and in light, following the system, with a
   single blue accent and soft diff colors. The same fonts everywhere: IBM Plex Sans for the
-  interface, Lilex for code and terminals, and DejaVu Sans for the symbols they leave out.
+  interface, Lilex for code and terminals, JuliaMono for the symbols they leave out and Noto Emoji for
+  emoji, so the arrows, bullets and stars agents draw show on any system.
   Under `⌘/` the system's own fonts can be chosen instead. The tab shown in each group is the
   one in bright text. With no tab open, the main space shows the few keys to start with.
 - **The branch in the title.** The title of every window ends with the current branch.

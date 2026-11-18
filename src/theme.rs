@@ -8,10 +8,20 @@ use eframe::egui::{
 
 const UI_FONT: &str = "/System/Library/Fonts/SFNS.ttf";
 const CODE_FONT: &str = "/System/Library/Fonts/SFNSMono.ttf";
-const SYMBOLS_FONT: &str = "/System/Library/Fonts/Apple Symbols.ttf";
 const UI_BUNDLED: &[u8] = include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
 const CODE_BUNDLED: &[u8] = include_bytes!("../assets/fonts/lilex/Lilex-Regular.ttf");
-const SYMBOLS_FALLBACK: &[u8] = include_bytes!("../assets/fonts/DejaVuSans.ttf");
+const SYMBOLS: [(&str, &[u8], f32); 2] = [
+    (
+        "symbols",
+        include_bytes!("../assets/fonts/juliamono/JuliaMono-Regular.ttf"),
+        1.0,
+    ),
+    (
+        "emoji",
+        include_bytes!("../assets/fonts/noto-emoji/NotoEmoji-Regular.ttf"),
+        0.81,
+    ),
+];
 
 pub struct Palette {
     pub dark: bool,
@@ -123,12 +133,22 @@ pub fn caret(ui: &egui::Ui, response: &egui::Response) {
 }
 
 fn fonts(system_fonts: bool) -> FontDefinitions {
-    let mut definitions = FontDefinitions::default();
+    let mut definitions = FontDefinitions::empty();
+    for (name, font, family) in [
+        ("bundled-ui", UI_BUNDLED, FontFamily::Proportional),
+        ("bundled-code", CODE_BUNDLED, FontFamily::Monospace),
+    ] {
+        add(
+            &mut definitions,
+            name,
+            Arc::new(FontData::from_static(font)),
+            family,
+        );
+    }
     if system_fonts {
-        for (name, path, family, first) in [
-            ("ui", UI_FONT, FontFamily::Proportional, true),
-            ("code", CODE_FONT, FontFamily::Monospace, true),
-            ("ui-symbols", SYMBOLS_FONT, FontFamily::Proportional, false),
+        for (name, path, family) in [
+            ("ui", UI_FONT, FontFamily::Proportional),
+            ("code", CODE_FONT, FontFamily::Monospace),
         ] {
             let Ok(font) = fs::read(path) else {
                 continue;
@@ -138,7 +158,6 @@ fn fonts(system_fonts: bool) -> FontDefinitions {
                 name,
                 Arc::new(FontData::from_owned(font)),
                 family,
-                first,
             );
         }
         #[cfg(target_os = "linux")]
@@ -154,7 +173,6 @@ fn fonts(system_fonts: bool) -> FontDefinitions {
                     "ui",
                     Arc::new(font),
                     FontFamily::Proportional,
-                    true,
                 );
             }
             if let Some(font) = crate::system_fonts::font(&[GenericFamily::Monospace], false, false)
@@ -164,50 +182,43 @@ fn fonts(system_fonts: bool) -> FontDefinitions {
                     "code",
                     Arc::new(font),
                     FontFamily::Monospace,
-                    true,
                 );
             }
         }
-    } else {
-        add(
-            &mut definitions,
-            "bundled-ui",
-            Arc::new(FontData::from_static(UI_BUNDLED)),
-            FontFamily::Proportional,
-            true,
-        );
-        add(
-            &mut definitions,
-            "bundled-code",
-            Arc::new(FontData::from_static(CODE_BUNDLED)),
-            FontFamily::Monospace,
-            true,
-        );
     }
+    let symbols = add_symbols(&mut definitions);
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         if let Some(fonts) = definitions.families.get_mut(&family) {
-            fonts.push("symbols".to_string());
+            fonts.extend(symbols.iter().cloned());
         }
     }
-    definitions.font_data.insert(
-        "symbols".to_string(),
-        Arc::new(FontData::from_static(SYMBOLS_FALLBACK)),
-    );
     definitions
 }
 
-fn add(
-    definitions: &mut FontDefinitions,
-    name: &str,
-    font: Arc<FontData>,
-    family: FontFamily,
-    first: bool,
-) {
+pub fn add_symbols(definitions: &mut FontDefinitions) -> Vec<String> {
+    SYMBOLS
+        .iter()
+        .map(|(name, font, scale)| {
+            let tweak = egui::FontTweak {
+                scale: *scale,
+                ..Default::default()
+            };
+            definitions.font_data.insert(
+                name.to_string(),
+                Arc::new(FontData::from_static(font).tweak(tweak)),
+            );
+            name.to_string()
+        })
+        .collect()
+}
+
+fn add(definitions: &mut FontDefinitions, name: &str, font: Arc<FontData>, family: FontFamily) {
     definitions.font_data.insert(name.to_string(), font);
-    if let Some(fonts) = definitions.families.get_mut(&family) {
-        let at = if first { 0 } else { fonts.len() };
-        fonts.insert(at, name.to_string());
-    }
+    definitions
+        .families
+        .entry(family)
+        .or_default()
+        .insert(0, name.to_string());
 }
 
 fn visuals(palette: &Palette) -> Visuals {
@@ -277,12 +288,16 @@ mod tests {
 
     #[test]
     fn ships_the_same_fonts_unless_the_system_fonts_are_chosen() {
-        let bundled = ctx(false).fonts(|fonts| fonts.definitions().families.clone());
-        assert_eq!(bundled[&FontFamily::Proportional][0], "bundled-ui");
-        assert_eq!(bundled[&FontFamily::Monospace][0], "bundled-code");
-        for family in [FontFamily::Proportional, FontFamily::Monospace] {
-            assert!(bundled[&family].contains(&"symbols".to_string()));
-        }
+        let bundled = ctx(false).fonts(|fonts| fonts.definitions().clone());
+        assert_eq!(
+            bundled.families[&FontFamily::Proportional],
+            ["bundled-ui", "symbols", "emoji"]
+        );
+        assert_eq!(
+            bundled.families[&FontFamily::Monospace],
+            ["bundled-code", "symbols", "emoji"]
+        );
+        assert_eq!(bundled.font_data.len(), 4);
 
         let system = ctx(true).fonts(|fonts| fonts.definitions().families.clone());
         assert_ne!(system[&FontFamily::Proportional][0], "bundled-ui");

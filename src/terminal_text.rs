@@ -7,13 +7,6 @@ use eframe::egui::{self, Color32, FontData, FontFamily, Painter, Pos2, Rect, Str
 
 #[cfg(target_os = "macos")]
 const MENLO: &str = "/System/Library/Fonts/Menlo.ttc";
-const DEJAVU: &[u8] = include_bytes!("../assets/fonts/DejaVuSans.ttf");
-
-#[cfg(target_os = "macos")]
-const FALLBACKS: [(&str, f32); 2] = [
-    ("/System/Library/Fonts/Supplemental/STIXTwoMath.otf", 0.25),
-    ("/System/Library/Fonts/Apple Symbols.ttf", 0.15),
-];
 
 fn bundled(bold: bool, italic: bool) -> &'static [u8] {
     match (bold, italic) {
@@ -52,32 +45,10 @@ pub fn fonts_ready(ctx: &egui::Context, system_fonts: bool) -> bool {
 
 fn install_fonts(ctx: &egui::Context, system_fonts: bool) {
     let mut definitions = ctx.fonts(|fonts| fonts.definitions().clone());
-    definitions.font_data.insert(
-        "symbols".to_string(),
-        Arc::new(FontData::from_static(DEJAVU)),
-    );
-    let mut fallbacks: Vec<String> = Vec::new();
-    #[cfg(target_os = "macos")]
-    if system_fonts {
-        fallbacks = FALLBACKS
-            .iter()
-            .filter_map(|(path, y_offset_factor)| {
-                let font = fs::read(path).ok()?;
-                let tweak = egui::FontTweak {
-                    y_offset_factor: *y_offset_factor,
-                    ..Default::default()
-                };
-                definitions.font_data.insert(
-                    path.to_string(),
-                    Arc::new(FontData::from_owned(font).tweak(tweak)),
-                );
-                Some(path.to_string())
-            })
-            .collect();
-    }
-    fallbacks.extend(definitions.families[&FontFamily::Monospace].clone());
-    fallbacks.retain(|name| name != "symbols");
-    fallbacks.push("symbols".to_string());
+    let symbols = crate::theme::add_symbols(&mut definitions);
+    let mut fallbacks = definitions.families[&FontFamily::Monospace].clone();
+    fallbacks.retain(|name| !symbols.contains(name));
+    fallbacks.extend(symbols);
     #[cfg(target_os = "macos")]
     let menlo: Option<egui::epaint::text::Blob> = system_fonts
         .then(|| fs::read(MENLO).ok().map(|font| Arc::new(font) as _))
@@ -379,12 +350,28 @@ mod tests {
         let bundled = ctx(false)
             .fonts(|fonts| fonts.definitions().families[&family(true, false, false)].clone());
         assert!(bundled[0].starts_with("lilex-"));
-        assert_eq!(bundled.last().unwrap(), "symbols");
+        assert!(bundled.ends_with(&["symbols".to_string(), "emoji".to_string()]));
 
         let system = ctx(true)
             .fonts(|fonts| fonts.definitions().families[&family(true, false, false)].clone());
         assert!(!system[0].starts_with("lilex-"));
-        assert_eq!(system.last().unwrap(), "symbols");
+        assert!(system.ends_with(&["symbols".to_string(), "emoji".to_string()]));
+    }
+
+    #[test]
+    fn has_the_symbols_agents_draw_with_either_fonts() {
+        for system_fonts in [false, true] {
+            let ctx = ctx(system_fonts);
+            let missing: String = ctx.fonts_mut(|fonts| {
+                "⏺⎿⏵⏸⏹⧉⎯⎋⤷✻✶✳✢✽❯✓✗✅❌🚀💡"
+                    .chars()
+                    .filter(|&c| {
+                        !fonts.has_glyph(&egui::FontId::new(14.0, family(true, false, false)), c)
+                    })
+                    .collect()
+            });
+            assert_eq!(missing, "", "system fonts: {system_fonts}");
+        }
     }
 
     fn ctx(system_fonts: bool) -> egui::Context {
@@ -409,7 +396,7 @@ mod tests {
         let system =
             ctx.fonts(|fonts| fonts.definitions().families[&family(true, false, false)].clone());
         assert!(!system[0].starts_with("lilex-"));
-        assert_eq!(system.last().unwrap(), "symbols");
+        assert!(system.ends_with(&["symbols".to_string(), "emoji".to_string()]));
     }
 
     #[test]
