@@ -252,6 +252,9 @@ the background; what it complains about is shown above the commit message.
   changes stay as they are, reviewed marks included. A pull that runs into conflicts is taken back, and when the commits to pull change a file with uncommitted
   changes, sync asks to commit those first. *Push ↑1* shows the commits there are to push
   and pushes them; a branch that isn't on a remote yet is pushed to `origin`.
+- **Progress of git.** Right below the branch, a spinner says what git is doing
+  (*Committing…*, *Pushing…*, *Syncing…*, *Switching…*), a ✓ line says what was done for a
+  few seconds afterwards, and an error from git stays there until the next action.
 - **Branches.** The button with the name of the current branch lists the others; a click
   switches to one. Type a name into *New branch* and press Enter to start a branch from
   where you are, with the changes.

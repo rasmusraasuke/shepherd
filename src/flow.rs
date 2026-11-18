@@ -14,6 +14,8 @@ use crate::theme;
 const DRAFT: &str = "Write a commit message for the staged changes, which `git diff --cached` \
 shows, and put it into the editor with `shepherd ctl commit-message \"<message>\"`. Don't commit.";
 
+const DONE_SHOWN: f64 = 4.0;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
     Commit { push: bool },
@@ -30,6 +32,15 @@ impl Op {
             Op::Push => "Pushing…",
             Op::Sync => "Syncing…",
             Op::Create(_) | Op::Switch { .. } => "Switching…",
+        }
+    }
+
+    fn done(&self) -> String {
+        match self {
+            Op::Commit { .. } => "Committed".to_string(),
+            Op::Push => "Pushed".to_string(),
+            Op::Sync => "Synced".to_string(),
+            Op::Create(branch) | Op::Switch { branch, .. } => format!("Switched to {branch}"),
         }
     }
 
@@ -61,6 +72,7 @@ pub struct Flow {
     leave: bool,
     drafting: bool,
     running: Option<(Op, Receiver<Result<(), String>>)>,
+    done: Option<(String, f64)>,
     error: Option<String>,
 }
 
@@ -76,6 +88,7 @@ impl Flow {
             leave: false,
             drafting: false,
             running: None,
+            done: None,
             error: None,
         }
     }
@@ -109,6 +122,7 @@ impl Flow {
             ctx.request_repaint();
         });
         self.error = None;
+        self.done = None;
         self.running = Some((op, result));
     }
 
@@ -122,12 +136,13 @@ impl Flow {
         let op = op.clone();
         self.running = None;
         self.error = result.err();
-        if self.error.is_none()
-            && let Op::Commit { push } = op
-        {
-            self.message.clear();
-            if push {
-                self.run(Op::Push, ctx);
+        if self.error.is_none() {
+            self.done = Some((op.done(), ctx.input(|i| i.time)));
+            if let Op::Commit { push } = op {
+                self.message.clear();
+                if push {
+                    self.run(Op::Push, ctx);
+                }
             }
         }
         true
@@ -143,6 +158,7 @@ impl Flow {
         choice: &mut Choice,
     ) -> Option<Outcome> {
         let op = self.branch_ui(ui);
+        self.progress_ui(ui);
         ui.add_space(4.0);
         let commit = egui::Panel::bottom("commit")
             .resizable(false)
@@ -207,11 +223,34 @@ impl Flow {
                         .ui(ui, |ui| self.branches_ui(ui));
                     theme::caret(ui, &response);
                     response.on_hover_text("Branches");
-                    op = menu.and_then(|menu| menu.inner);
+                    op = op.take().or(menu.and_then(|menu| menu.inner));
                 });
             });
         });
         op
+    }
+
+    fn progress_ui(&mut self, ui: &mut egui::Ui) {
+        if let Some(error) = &self.error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        if let Some((op, _)) = &self.running {
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                theme::spinner(ui, rect);
+                ui.weak(op.label());
+            });
+        }
+        if let Some((text, at)) = &self.done {
+            let left = DONE_SHOWN - (ui.input(|i| i.time) - at);
+            if left > 0.0 {
+                ui.request_repaint_after_secs(left as f32);
+                ui.weak(format!("✓ {text}"));
+            } else {
+                self.done = None;
+            }
+        }
     }
 
     fn branches_ui(&mut self, ui: &mut egui::Ui) -> Option<Op> {
@@ -279,17 +318,6 @@ impl Flow {
         let busy = self.running.is_some();
         let mut outcome = None;
         ui.add_space(6.0);
-        if let Some(error) = &self.error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-        if let Some((op, _)) = &self.running {
-            ui.horizontal(|ui| {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                theme::spinner(ui, rect);
-                ui.weak(op.label());
-            });
-        }
         ui.horizontal(|ui| {
             if total == 0 {
                 return;
@@ -519,6 +547,24 @@ mod tests {
         assert_eq!(repo.changes().unwrap().untracked, ["b.txt"]);
         assert!(repo.changes().unwrap().staged.is_empty());
         assert!(harness.state().flow.message.is_empty());
+    }
+
+    #[test]
+    fn pushes_the_commits_of_the_branch_from_the_top() {
+        let (mut harness, dir) = show("flow-push");
+        let repo = harness.state().flow.repo.clone();
+        let _remote = with_remote(&repo, "flow-push-remote");
+        harness.get_by_label("Push").click();
+        wait_for(&mut harness, "Pushing…", true);
+        wait_for(&mut harness, "✓ Pushed", true);
+        wait_for(&mut harness, "Push ↑0", true);
+        dir.write("a.txt", "changed\n");
+        commit_all(&repo);
+        refresh(&mut harness.state_mut().flow);
+        harness.run();
+        harness.get_by_label("Push ↑1").click();
+        wait_for(&mut harness, "Push ↑0", true);
+        assert_eq!(repo.status().ahead, 0);
     }
 
     #[test]
