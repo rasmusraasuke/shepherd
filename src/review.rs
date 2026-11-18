@@ -4,6 +4,7 @@ use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::ops::Range;
 use std::path::Path;
 
+use eframe::egui::containers::menu::MenuButton;
 use eframe::egui::{self, Align, Color32, Key, Modifiers, RichText, Sense, Stroke, Vec2};
 
 use crate::buffer::Buffer;
@@ -798,27 +799,32 @@ impl Review {
                 ui.weak(format!("{dir}/"));
             }
             ui.label(RichText::new(file_name).strong());
-            ui.spacing_mut().item_spacing.x = 12.0;
+            ui.spacing_mut().item_spacing.x = 8.0;
             ui.add_space(12.0);
             ui.weak(format!("{done}/{total} reviewed"));
-            if done < total && ui.small_button("Mark file reviewed").clicked() {
-                mark_file = Some(true);
-            }
-            if done > 0 && done == total && ui.small_button("Mark file not reviewed").clicked() {
-                mark_file = Some(false);
-            }
-            let label = if unsent == 1 {
-                "Send 1 comment".to_string()
-            } else {
-                format!("Send {unsent} comments")
-            };
-            if unsent > 0
-                && let Some(agent) = send_button(ui, &label, true, agents)
-            {
-                let text = comments::feedback(comments.iter().filter(|comment| !comment.sent));
-                comments.iter_mut().for_each(|comment| comment.sent = true);
-                outcome = Some(Outcome::Send { agent, text });
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let label = if unsent == 1 {
+                    "Send 1 comment".to_string()
+                } else {
+                    format!("Send {unsent} comments")
+                };
+                if unsent > 0
+                    && let Some(agent) = send_button(ui, &label, true, true, agents)
+                {
+                    let text = comments::feedback(comments.iter().filter(|comment| !comment.sent));
+                    comments.iter_mut().for_each(|comment| comment.sent = true);
+                    outcome = Some(Outcome::Send { agent, text });
+                }
+                if done < total && ui.add(theme::quiet("Mark file reviewed")).clicked() {
+                    mark_file = Some(true);
+                }
+                if done > 0
+                    && done == total
+                    && ui.add(theme::quiet("Mark file not reviewed")).clicked()
+                {
+                    mark_file = Some(false);
+                }
+            });
         });
         if let Some(error) = error {
             ui.colored_label(ui.visuals().error_fg_color, error.as_str());
@@ -970,28 +976,33 @@ fn draft_ui(ui: &mut egui::Ui, id: egui::Id, view: &mut View, agents: &Agents) -
     let mut draft = None;
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(ready, egui::Button::new("Comment"))
+            .add_enabled(ready, theme::primary(ui, "Comment"))
             .on_hover_text("Cmd+Enter")
             .clicked()
             || (ready && submit)
         {
             draft = Some(Draft::Comment);
         }
-        if let Some(agent) = send_button(ui, "Ask agent", ready, agents) {
+        if let Some(agent) = send_button(ui, "Ask agent", ready, false, agents) {
             draft = Some(Draft::Ask(agent));
         }
-        if ui
-            .button("Revert")
-            .on_hover_text("Take the selected changes back to how they were committed")
-            .clicked()
-        {
-            draft = Some(Draft::Revert);
-        }
-        if ui.button("Cancel").on_hover_text("Esc").clicked()
-            || ((focused || response.lost_focus()) && ui.input(|i| i.key_pressed(Key::Escape)))
-        {
-            draft = Some(Draft::Cancel);
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add(theme::quiet("Cancel"))
+                .on_hover_text("Esc")
+                .clicked()
+                || ((focused || response.lost_focus()) && ui.input(|i| i.key_pressed(Key::Escape)))
+            {
+                draft = Some(Draft::Cancel);
+            }
+            if ui
+                .add(theme::quiet("Revert"))
+                .on_hover_text("Take the selected changes back to how they were committed")
+                .clicked()
+            {
+                draft = Some(Draft::Revert);
+            }
+        });
     });
     ui.add_space(4.0);
     draft
@@ -1001,28 +1012,36 @@ fn send_button(
     ui: &mut egui::Ui,
     label: &str,
     enabled: bool,
+    primary: bool,
     agents: &Agents,
 ) -> Option<Option<u64>> {
+    let button = |ui: &egui::Ui| {
+        if primary {
+            theme::primary(ui, label)
+        } else {
+            egui::Button::new(label)
+        }
+    };
     match (agents.open.as_slice(), agents.new.as_deref()) {
         ([], None) => {
-            ui.add_enabled(false, egui::Button::new(label))
+            ui.add_enabled(false, button(ui))
                 .on_disabled_hover_text("No agent was found: install Claude Code or Opencode");
             None
         }
         ([], Some(name)) => ui
-            .add_enabled(enabled, egui::Button::new(label))
+            .add_enabled(enabled, button(ui))
             .on_hover_text(format!("Start {name} with it"))
             .clicked()
             .then_some(None),
         ([(agent, title)], _) => ui
-            .add_enabled(enabled, egui::Button::new(label))
+            .add_enabled(enabled, button(ui))
             .on_hover_text(format!("Send to {title}"))
             .clicked()
             .then_some(Some(*agent)),
         (open, _) => {
             let mut chosen = None;
             ui.add_enabled_ui(enabled, |ui| {
-                ui.menu_button(label, |ui| {
+                MenuButton::from_button(button(ui)).ui(ui, |ui| {
                     for (agent, title) in open {
                         if ui.button(title).clicked() {
                             chosen = Some(Some(*agent));

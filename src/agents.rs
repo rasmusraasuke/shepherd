@@ -3,8 +3,10 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher as _, Hasher as _};
 use std::path::Path;
 
-use eframe::egui;
+use eframe::egui::{self, containers::menu::MenuButton};
 use serde::{Deserialize, Serialize};
+
+use crate::theme;
 
 pub const GUIDE: &str = "You run in the Shepherd editor, in which the user reviews the changes \
 you make. `shepherd ctl help` lists what you can ask the editor: what the user has open and \
@@ -339,7 +341,7 @@ pub fn choice_ui(
 ) {
     let agent = choice.agent(found);
     let name = agent.map_or("No agent found", Agent::name);
-    ui.menu_button(name, |ui| {
+    let (response, _) = MenuButton::from_button(theme::dropdown(name)).ui(ui, |ui| {
         for found_agent in found {
             if ui
                 .selectable_label(agent == Some(*found_agent), found_agent.name())
@@ -353,11 +355,12 @@ pub fn choice_ui(
             }
         }
     });
+    theme::caret(ui, &response);
     let Some(agent) = agent else {
         return;
     };
     let selected = choice.model().unwrap_or("Default model").to_string();
-    ui.menu_button(selected, |ui| {
+    let (response, _) = MenuButton::from_button(theme::dropdown(selected)).ui(ui, |ui| {
         if ui
             .selectable_label(choice.model().is_none(), "Default")
             .clicked()
@@ -378,9 +381,9 @@ pub fn choice_ui(
                     }
                 });
         }
-    })
-    .response
-    .on_hover_text("Model for new agent sessions");
+    });
+    theme::caret(ui, &response);
+    response.on_hover_text("Model for new agent sessions");
 }
 
 #[cfg(test)]

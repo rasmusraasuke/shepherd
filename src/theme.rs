@@ -81,6 +81,47 @@ pub fn apply(ctx: &egui::Context, system_fonts: bool) {
     ctx.set_fonts(fonts(system_fonts));
 }
 
+pub fn primary(ui: &egui::Ui, label: &str) -> egui::Button<'static> {
+    let palette = palette(ui.visuals().dark_mode);
+    let text = if palette.dark {
+        palette.background
+    } else {
+        Color32::WHITE
+    };
+    egui::Button::new(egui::RichText::new(label).color(text))
+        .fill(palette.accent)
+        .stroke(Stroke::NONE)
+}
+
+pub fn quiet(label: impl Into<egui::WidgetText>) -> egui::Button<'static> {
+    egui::Button::new(label).frame_when_inactive(false)
+}
+
+pub fn dropdown(label: impl Into<egui::WidgetText>) -> egui::Button<'static> {
+    quiet(label).right_text(egui::Atom::custom(
+        egui::IdSalt::new("caret"),
+        egui::vec2(7.0, 7.0),
+    ))
+}
+
+pub fn caret(ui: &egui::Ui, response: &egui::Response) {
+    let rect = response.rect;
+    let center = egui::pos2(
+        rect.right() - ui.spacing().button_padding.x - 3.5,
+        rect.center().y,
+    );
+    let color = ui.style().interact(response).fg_stroke.color;
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            center + egui::vec2(-3.5, -1.5),
+            center + egui::vec2(3.5, -1.5),
+            center + egui::vec2(0.0, 2.5),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}
+
 fn fonts(system_fonts: bool) -> FontDefinitions {
     let mut definitions = FontDefinitions::default();
     if system_fonts {

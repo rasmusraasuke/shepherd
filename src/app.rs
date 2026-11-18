@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use eframe::egui::containers::menu::MenuButton;
 use eframe::egui::{self, Key, Modifiers, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 
@@ -404,24 +405,24 @@ impl App {
                             format!("Shepherd {} has been downloaded.", release.version())
                         });
                         if install {
-                            if ui.button("Restart and update").clicked() {
+                            if ui.add(theme::primary(ui, "Restart and update")).clicked() {
                                 match self.updates.install() {
                                     Ok(()) => self.restart_now(ui.ctx()),
                                     Err(e) => self.updates.fail(e),
                                 }
                             }
-                        } else if ui.button("Show the download").clicked()
+                        } else if ui.add(theme::primary(ui, "Show the download")).clicked()
                             && let Err(e) = self.updates.reveal()
                         {
                             self.updates.fail(e);
                         }
-                        if ui.small_button("Later").clicked() {
+                        if ui.add(theme::quiet("Later")).clicked() {
                             self.updates.dismiss();
                         }
                     }
                     update::Phase::Failed(error) => {
                         ui.colored_label(ui.visuals().error_fg_color, error);
-                        if ui.small_button("Dismiss").clicked() {
+                        if ui.add(theme::quiet("Dismiss")).clicked() {
                             self.updates.dismiss();
                         }
                     }
@@ -429,7 +430,7 @@ impl App {
                         if build {
                             ui.label("A new build of Shepherd is on disk.");
                             if ui
-                                .button("Restart")
+                                .add(theme::primary(ui, "Restart"))
                                 .on_hover_text(
                                     "Files and the layout are saved. Terminals and running agents close.",
                                 )
@@ -437,7 +438,7 @@ impl App {
                             {
                                 self.restart_now(ui.ctx());
                             }
-                            if ui.small_button("Later").clicked() {
+                            if ui.add(theme::quiet("Later")).clicked() {
                                 self.build.dismiss();
                             }
                         }
@@ -1240,7 +1241,7 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         _tabs: &egui_tiles::Tabs,
         _scroll_offset: &mut f32,
     ) {
-        ui.menu_button("+", |ui| {
+        MenuButton::from_button(theme::quiet("+")).ui(ui, |ui| {
             if ui.button("New terminal (Cmd+T)").clicked() {
                 *self.action = Some(Action::NewTerminal(self.window, Some(tile_id)));
             }

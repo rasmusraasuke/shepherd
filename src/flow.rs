@@ -4,11 +4,12 @@ use std::thread;
 use std::collections::HashMap;
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig};
-use eframe::egui::{self, Key, Modifiers, PopupCloseBehavior};
+use eframe::egui::{self, Key, Modifiers, PopupCloseBehavior, RichText};
 
 use crate::agents::{self, Agent, Choice, Model};
 use crate::git::{Changes, Repo, Status};
 use crate::review::{self, Agents};
+use crate::theme;
 
 const DRAFT: &str = "Write a commit message for the staged changes, which `git diff --cached` \
 shows, and put it into the editor with `shepherd ctl commit-message \"<message>\"`. Don't commit.";
@@ -145,8 +146,14 @@ impl Flow {
         ui.add_space(4.0);
         let commit = egui::Panel::bottom("commit")
             .resizable(false)
-            .show_separator_line(false)
-            .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
+            .frame(
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin {
+                        top: 6,
+                        ..Default::default()
+                    }),
+            )
             .show(ui, |ui| {
                 self.commit_ui(ui, progress, agents, found, models, choice)
             })
@@ -163,38 +170,46 @@ impl Flow {
             ..
         } = self.status;
         let mut op = None;
-        ui.horizontal_wrapped(|ui| {
-            let branch = egui::Button::new(self.status.branch.as_str()).truncate();
-            let config = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
-            let (response, menu) = MenuButton::from_button(branch)
-                .config(config)
-                .ui(ui, |ui| self.branches_ui(ui));
-            response.on_hover_text("Branches");
-            op = menu.and_then(|menu| menu.inner);
-            let (sync, push) = if upstream {
-                (format!("Sync ↓{behind}"), format!("Push ↑{ahead}"))
-            } else {
-                ("Sync".to_string(), "Push".to_string())
-            };
-            if ui
-                .add_enabled(!busy, egui::Button::new(sync))
-                .on_hover_text("Fetch, and pull the commits there are to pull")
-                .clicked()
-            {
-                op = Some(Op::Sync);
-            }
-            let pushing = if upstream {
-                "Push the commits of the branch"
-            } else {
-                "Push the branch, which isn't on a remote yet"
-            };
-            if ui
-                .add_enabled(!busy && (ahead > 0 || !upstream), egui::Button::new(push))
-                .on_hover_text(pushing)
-                .clicked()
-            {
-                op = Some(Op::Push);
-            }
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (sync, push) = if upstream {
+                    (format!("Sync ↓{behind}"), format!("Push ↑{ahead}"))
+                } else {
+                    ("Sync".to_string(), "Push".to_string())
+                };
+                let pushing = if upstream {
+                    "Push the commits of the branch"
+                } else {
+                    "Push the branch, which isn't on a remote yet"
+                };
+                if ui
+                    .add_enabled(!busy && (ahead > 0 || !upstream), theme::quiet(push))
+                    .on_hover_text(pushing)
+                    .clicked()
+                {
+                    op = Some(Op::Push);
+                }
+                if ui
+                    .add_enabled(!busy, theme::quiet(sync))
+                    .on_hover_text("Fetch, and pull the commits there are to pull")
+                    .clicked()
+                {
+                    op = Some(Op::Sync);
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let branch =
+                        theme::dropdown(RichText::new(self.status.branch.as_str()).strong())
+                            .truncate();
+                    let config =
+                        MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
+                    let (response, menu) = MenuButton::from_button(branch)
+                        .config(config)
+                        .ui(ui, |ui| self.branches_ui(ui));
+                    theme::caret(ui, &response);
+                    response.on_hover_text("Branches");
+                    op = menu.and_then(|menu| menu.inner);
+                });
+            });
         });
         op
     }
@@ -277,40 +292,46 @@ impl Flow {
         if self.drafting {
             ui.horizontal_wrapped(|ui| {
                 loading(ui, "An agent is writing the message…");
-                if ui.small_button("Cancel").clicked() {
+                if ui.add(theme::quiet("Cancel")).clicked() {
                     self.drafting = false;
                 }
             });
         }
-        if total > 0 {
-            ui.horizontal_wrapped(|ui| {
-                ui.weak(format!("{done}/{total} reviewed"));
-                if done < total
-                    && ui
-                        .small_button("All")
-                        .on_hover_text("Mark all changes as reviewed")
-                        .clicked()
-                {
-                    outcome = Some(Outcome::Mark(true));
-                }
+        ui.horizontal(|ui| {
+            if total == 0 {
+                return;
+            }
+            ui.weak(format!("{done}/{total} reviewed"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if done > 0
                     && ui
-                        .small_button("None")
+                        .add(theme::quiet("None").small())
                         .on_hover_text("Mark all changes as not reviewed")
                         .clicked()
                 {
                     outcome = Some(Outcome::Mark(false));
                 }
+                if done < total
+                    && ui
+                        .add(theme::quiet("All").small())
+                        .on_hover_text("Mark all changes as reviewed")
+                        .clicked()
+                {
+                    outcome = Some(Outcome::Mark(true));
+                }
             });
-        }
+        });
         let can_draft = self.staged && !self.drafting;
         ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
             if review::new_agent_button(ui, "Draft", can_draft, agents) {
                 self.drafting = true;
                 outcome = Some(Outcome::Draft {
                     text: DRAFT.to_string(),
                 });
             }
+            ui.add_space(4.0);
+            ui.weak("with");
             agents::choice_ui(ui, found, models, choice);
         });
         let id = egui::Id::unique("commit message");
@@ -337,19 +358,26 @@ impl Flow {
         } else {
             "Mark changes as reviewed to commit them"
         };
-        ui.horizontal_wrapped(|ui| {
-            for (label, keys, push, pressed) in [
-                ("Commit", "Cmd+Enter", false, commit_key),
-                ("Commit and push", "Cmd+Shift+Enter", true, push_key),
-            ] {
-                let button = ui
-                    .add_enabled(ready, egui::Button::new(label))
-                    .on_hover_text(keys)
-                    .on_disabled_hover_text(missing);
-                if button.clicked() || (ready && pressed) {
-                    outcome = Some(Outcome::Run(Op::Commit { push }));
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                for (label, keys, push, pressed) in [
+                    ("Commit and push", "Cmd+Shift+Enter", true, push_key),
+                    ("Commit", "Cmd+Enter", false, commit_key),
+                ] {
+                    let (button, width) = if push {
+                        (egui::Button::new(label), 0.0)
+                    } else {
+                        (theme::primary(ui, label), ui.available_width())
+                    };
+                    let button = ui
+                        .add_enabled(ready, button.min_size(egui::vec2(width, 26.0)))
+                        .on_hover_text(keys)
+                        .on_disabled_hover_text(missing);
+                    if button.clicked() || (ready && pressed) {
+                        outcome = Some(Outcome::Run(Op::Commit { push }));
+                    }
                 }
-            }
+            });
         });
         ui.add_space(10.0);
         outcome
