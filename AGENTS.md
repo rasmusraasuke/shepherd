@@ -8,4 +8,4 @@
 * Never commit code yourself, give developer an opportunity to review changes first
 * Don't write comments in the code: no `//`, `///`, `//!` or block comments
 * Run `cargo fmt` when you are done writing code
-* Always update run the bundle script so local Shepherd is up to date
+* Always run `./scripts/bundle.sh --install` so local Shepherd is up to date
