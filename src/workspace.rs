@@ -476,6 +476,8 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     fn file(name: &str) -> Tab {
@@ -708,19 +710,23 @@ mod tests {
         workspace.windows[1].size = Some(egui::vec2(300.0, 400.0));
         workspace.toggle_sidebar(Sidebar::Changes);
         workspace.expanded_dirs.insert("src".to_string());
+        let tuning = |model: &str, effort: Option<&str>| Tuning {
+            model: Some(model.to_string()),
+            effort: effort.map(str::to_string),
+        };
         workspace.agent = Choice {
             agent: Some(Agent::Opencode),
-            tuning: Tuning {
-                model: Some("deepseek/deepseek-flash".to_string()),
-                effort: Some("max".to_string()),
-            },
+            tunings: HashMap::from([
+                (
+                    Agent::Opencode,
+                    tuning("deepseek/deepseek-flash", Some("max")),
+                ),
+                (Agent::Claude, tuning("opus", Some("xhigh"))),
+            ]),
         };
         workspace.draft_agent = Choice {
             agent: Some(Agent::Claude),
-            tuning: Tuning {
-                model: Some("haiku".to_string()),
-                effort: None,
-            },
+            tunings: HashMap::from([(Agent::Claude, tuning("haiku", None))]),
         };
 
         let restored = Workspace::from_json(&workspace.to_json()).unwrap();

@@ -67,8 +67,8 @@ impl Tuning {
 pub struct Choice {
     #[serde(default)]
     pub agent: Option<Agent>,
-    #[serde(flatten)]
-    pub tuning: Tuning,
+    #[serde(default)]
+    pub tunings: HashMap<Agent, Tuning>,
 }
 
 impl Choice {
@@ -76,12 +76,8 @@ impl Choice {
         chosen(found, self.agent)
     }
 
-    pub fn model(&self) -> Option<&str> {
-        self.tuning.model()
-    }
-
-    pub fn effort(&self) -> Option<&str> {
-        self.tuning.effort()
+    pub fn tuning(&self, agent: Agent) -> Tuning {
+        self.tunings.get(&agent).cloned().unwrap_or_default()
     }
 }
 
@@ -524,8 +520,8 @@ pub fn load_models(
     receiver
 }
 
-fn efforts<'a>(models: Option<&'a Vec<Model>>, choice: &Choice) -> &'a [String] {
-    let value = choice.model().unwrap_or(DEFAULT_MODEL);
+fn efforts<'a>(models: Option<&'a Vec<Model>>, tuning: &Tuning) -> &'a [String] {
+    let value = tuning.model().unwrap_or(DEFAULT_MODEL);
     models
         .into_iter()
         .flatten()
@@ -533,8 +529,8 @@ fn efforts<'a>(models: Option<&'a Vec<Model>>, choice: &Choice) -> &'a [String] 
         .map_or(&[], |model| &model.efforts)
 }
 
-fn model_name(models: Option<&Vec<Model>>, choice: &Choice) -> Option<String> {
-    let value = choice.model()?;
+fn model_name(models: Option<&Vec<Model>>, tuning: &Tuning) -> Option<String> {
+    let value = tuning.model()?;
     let name = models
         .into_iter()
         .flatten()
@@ -558,16 +554,17 @@ pub fn choice_ui(
         return;
     };
     let models = models.get(&agent);
-    let selected = model_name(models, choice).unwrap_or("Default model".to_string());
+    let tuning = choice.tunings.entry(agent).or_default();
+    let selected = model_name(models, tuning).unwrap_or("Default model".to_string());
     let (response, _) = MenuButton::from_button(theme::dropdown(selected))
-        .ui(ui, |ui| model_options(ui, models, choice));
+        .ui(ui, |ui| model_options(ui, models, tuning));
     theme::caret(ui, &response);
     response.on_hover_text("Model for new agent sessions");
-    let efforts = efforts(models, choice);
+    let efforts = efforts(models, tuning);
     if !efforts.is_empty() {
-        let selected = choice.effort().unwrap_or("Default effort").to_string();
+        let selected = tuning.effort().unwrap_or("Default effort").to_string();
         let (response, _) = MenuButton::from_button(theme::dropdown(selected))
-            .ui(ui, |ui| effort_options(ui, efforts, choice));
+            .ui(ui, |ui| effort_options(ui, efforts, tuning));
         theme::caret(ui, &response);
         response.on_hover_text("Reasoning effort for new agent sessions");
     }
@@ -588,15 +585,16 @@ pub fn choice_menu(
         });
         if let Some(agent) = agent {
             let models = models.get(&agent);
-            let model = model_name(models, choice).unwrap_or("Default".to_string());
+            let tuning = choice.tunings.entry(agent).or_default();
+            let model = model_name(models, tuning).unwrap_or("Default".to_string());
             ui.menu_button(format!("Model: {model}"), |ui| {
-                model_options(ui, models, choice)
+                model_options(ui, models, tuning)
             });
-            let efforts = efforts(models, choice);
+            let efforts = efforts(models, tuning);
             if !efforts.is_empty() {
-                let effort = choice.effort().unwrap_or("Default").to_string();
+                let effort = tuning.effort().unwrap_or("Default").to_string();
                 ui.menu_button(format!("Effort: {effort}"), |ui| {
-                    effort_options(ui, efforts, choice)
+                    effort_options(ui, efforts, tuning)
                 });
             }
         }
@@ -619,21 +617,18 @@ fn agent_options(ui: &mut egui::Ui, found: &[Agent], choice: &mut Choice) {
             .selectable_label(agent == Some(*found_agent), found_agent.name())
             .clicked()
         {
-            if choice.agent != Some(*found_agent) {
-                choice.tuning = Tuning::default();
-            }
             choice.agent = Some(*found_agent);
             ui.close();
         }
     }
 }
 
-fn model_options(ui: &mut egui::Ui, models: Option<&Vec<Model>>, choice: &mut Choice) {
+fn model_options(ui: &mut egui::Ui, models: Option<&Vec<Model>>, tuning: &mut Tuning) {
     if ui
-        .selectable_label(choice.model().is_none(), "Default")
+        .selectable_label(tuning.model().is_none(), "Default")
         .clicked()
     {
-        choose_model(models, choice, None);
+        choose_model(models, tuning, None);
         ui.close();
     }
     let Some(options) = models else {
@@ -643,37 +638,37 @@ fn model_options(ui: &mut egui::Ui, models: Option<&Vec<Model>>, choice: &mut Ch
         .max_height(300.0)
         .show(ui, |ui| {
             for model in options.iter().filter(|model| model.value != DEFAULT_MODEL) {
-                let chosen = choice.model() == Some(model.value.as_str());
+                let chosen = tuning.model() == Some(model.value.as_str());
                 if ui.selectable_label(chosen, &model.name).clicked() {
-                    choose_model(models, choice, Some(model.value.clone()));
+                    choose_model(models, tuning, Some(model.value.clone()));
                     ui.close();
                 }
             }
         });
 }
 
-fn choose_model(models: Option<&Vec<Model>>, choice: &mut Choice, model: Option<String>) {
-    choice.tuning.model = model;
-    if !efforts(models, choice)
+fn choose_model(models: Option<&Vec<Model>>, tuning: &mut Tuning, model: Option<String>) {
+    tuning.model = model;
+    if !efforts(models, tuning)
         .iter()
-        .any(|effort| Some(effort.as_str()) == choice.effort())
+        .any(|effort| Some(effort.as_str()) == tuning.effort())
     {
-        choice.tuning.effort = None;
+        tuning.effort = None;
     }
 }
 
-fn effort_options(ui: &mut egui::Ui, efforts: &[String], choice: &mut Choice) {
+fn effort_options(ui: &mut egui::Ui, efforts: &[String], tuning: &mut Tuning) {
     if ui
-        .selectable_label(choice.effort().is_none(), "Default")
+        .selectable_label(tuning.effort().is_none(), "Default")
         .clicked()
     {
-        choice.tuning.effort = None;
+        tuning.effort = None;
         ui.close();
     }
     for effort in efforts {
-        let chosen = choice.effort() == Some(effort.as_str());
+        let chosen = tuning.effort() == Some(effort.as_str());
         if ui.selectable_label(chosen, effort).clicked() {
-            choice.tuning.effort = Some(effort.clone());
+            tuning.effort = Some(effort.clone());
             ui.close();
         }
     }
@@ -942,44 +937,53 @@ pub mod tests {
     #[test]
     fn offers_the_efforts_of_the_chosen_model() {
         let models = claude_sample();
-        let mut choice = Choice {
-            agent: Some(Agent::Claude),
-            tuning: tuning("opus", Some("xhigh")),
-        };
-        assert_eq!(efforts(Some(&models), &choice).len(), 5);
+        let mut tuning = tuning("opus", Some("xhigh"));
+        assert_eq!(efforts(Some(&models), &tuning).len(), 5);
         assert_eq!(
-            model_name(Some(&models), &choice).as_deref(),
+            model_name(Some(&models), &tuning).as_deref(),
             Some("Opus 5.5")
         );
-        choose_model(Some(&models), &mut choice, Some("haiku".to_string()));
-        assert_eq!(choice.effort(), None);
-        choice.tuning.effort = Some("high".to_string());
-        choose_model(Some(&models), &mut choice, None);
-        assert_eq!(choice.effort(), Some("high"));
-        assert_eq!(efforts(Some(&models), &choice), ["low", "high"]);
+        choose_model(Some(&models), &mut tuning, Some("haiku".to_string()));
+        assert_eq!(tuning.effort(), None);
+        tuning.effort = Some("high".to_string());
+        choose_model(Some(&models), &mut tuning, None);
+        assert_eq!(tuning.effort(), Some("high"));
+        assert_eq!(efforts(Some(&models), &tuning), ["low", "high"]);
         choose_model(
             Some(&models),
-            &mut choice,
+            &mut tuning,
             Some("claude-haiku-4-5-20251001".to_string()),
         );
-        assert_eq!(choice.effort(), None);
-        assert!(efforts(Some(&models), &choice).is_empty());
-        assert!(efforts(None, &Choice::default()).is_empty());
+        assert_eq!(tuning.effort(), None);
+        assert!(efforts(Some(&models), &tuning).is_empty());
+        assert!(efforts(None, &Tuning::default()).is_empty());
     }
 
     #[test]
-    fn remembers_the_choice_of_model_and_effort() {
-        let choice = Choice {
-            agent: Some(Agent::Claude),
-            tuning: tuning("haiku", Some("low")),
+    fn remembers_the_model_and_effort_of_every_harness() {
+        let mut choice = Choice {
+            agent: Some(Agent::Opencode),
+            tunings: HashMap::from([(
+                Agent::Opencode,
+                tuning("deepseek/deepseek-flash", Some("max")),
+            )]),
         };
+        choice.agent = Some(Agent::Claude);
+        choice
+            .tunings
+            .insert(Agent::Claude, tuning("haiku", Some("low")));
+        choice.agent = Some(Agent::Opencode);
+        assert_eq!(
+            choice.tuning(Agent::Opencode),
+            tuning("deepseek/deepseek-flash", Some("max"))
+        );
+        assert_eq!(choice.tuning(Agent::Claude), tuning("haiku", Some("low")));
+
         let json = serde_json::to_string(&choice).unwrap();
-        assert_eq!(json, r#"{"agent":"Claude","model":"haiku","effort":"low"}"#);
         assert_eq!(serde_json::from_str::<Choice>(&json).unwrap(), choice);
         let older: Choice = serde_json::from_str(r#"{"agent":"Claude","model":"haiku"}"#).unwrap();
-        assert_eq!(older.model(), Some("haiku"));
-        assert_eq!(older.effort(), None);
-        assert_eq!(Choice::default().model(), None);
+        assert_eq!(older.agent, Some(Agent::Claude));
+        assert_eq!(older.tuning(Agent::Claude), Tuning::default());
     }
 
     #[test]

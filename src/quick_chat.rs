@@ -112,6 +112,7 @@ mod tests {
     use std::sync::Arc;
 
     use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable as _;
 
     use super::*;
     use crate::testing::{Dropped, TempDir};
@@ -185,6 +186,33 @@ mod tests {
         assert_eq!(text, message.trim());
         assert_eq!(images.len(), 1);
         assert!(images[0].exists());
+    }
+
+    #[test]
+    fn remembers_the_model_and_effort_of_each_harness_when_switching() {
+        let (mut harness, _dir) = harness("quick-chat-harness");
+        harness.state_mut().found = vec![Agent::Claude, Agent::Opencode];
+        harness.run();
+        let click = |harness: &mut Harness<'_, State>, label: &str| {
+            harness.get_by_label(label).click();
+            harness.run();
+        };
+        click(&mut harness, "Default model");
+        click(&mut harness, "Haiku");
+        click(&mut harness, "Default effort");
+        click(&mut harness, "high");
+        click(&mut harness, "Claude Code");
+        click(&mut harness, "Opencode");
+        assert!(harness.query_by_label("Haiku").is_none());
+        harness.get_by_label("Default model");
+        click(&mut harness, "Opencode");
+        click(&mut harness, "Claude Code");
+        harness.get_by_label("Haiku");
+        harness.get_by_label("high");
+        let choice = &harness.state().choice;
+        assert_eq!(choice.agent, Some(Agent::Claude));
+        assert_eq!(choice.tuning(Agent::Claude).effort(), Some("high"));
+        assert_eq!(choice.tuning(Agent::Opencode).model(), None);
     }
 
     #[test]

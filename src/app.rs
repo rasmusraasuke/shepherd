@@ -7,7 +7,7 @@ use eframe::egui::containers::menu::MenuButton;
 use eframe::egui::{self, Key, Modifiers, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 
-use crate::agents::{self, Agent, Choice, Model, Tuning};
+use crate::agents::{self, Agent, Model, Tuning};
 use crate::buffer::Pos;
 use crate::comments;
 use crate::control::{self, Control};
@@ -317,14 +317,6 @@ impl App {
 
     fn chosen_agent(&self) -> Option<Agent> {
         self.workspace.agent.agent(&self.agents)
-    }
-
-    fn tuning(&self, choice: &Choice, agent: Agent) -> Tuning {
-        if choice.agent(&self.agents) == Some(agent) {
-            choice.tuning.clone()
-        } else {
-            Tuning::default()
-        }
     }
 
     fn draft_chosen_agent(&self) -> Option<Agent> {
@@ -802,7 +794,7 @@ impl App {
                 self.focus(window, ctx);
             }
             Action::NewAgent(window, tabs, agent) => {
-                let tuning = self.tuning(&self.workspace.agent, agent);
+                let tuning = self.workspace.agent.tuning(agent);
                 self.open_agent(window, tabs, agent, tuning, Prompt::default(), ctx);
             }
             Action::NewReview(window, tabs) => {
@@ -833,7 +825,7 @@ impl App {
                 Some(id) => self.content.terminals.send(id, &text),
                 None => {
                     if let Some(agent) = self.chosen_agent() {
-                        let tuning = self.tuning(&self.workspace.agent, agent);
+                        let tuning = self.workspace.agent.tuning(agent);
                         self.open_agent(
                             window,
                             None,
@@ -851,7 +843,7 @@ impl App {
             Action::Draft { text } => {
                 let result = match self.draft_chosen_agent() {
                     Some(agent) => {
-                        let tuning = self.tuning(&self.workspace.draft_agent, agent);
+                        let tuning = self.workspace.draft_agent.tuning(agent);
                         self.content.terminals.run_background(agent, &tuning, &text)
                     }
                     None => Err("No agent was found: install Claude Code or Opencode".to_string()),
@@ -2484,10 +2476,13 @@ mod tests {
         harness.state_mut().agents = vec![Agent::Claude];
         harness.state_mut().workspace.draft_agent = crate::agents::Choice {
             agent: Some(Agent::Claude),
-            tuning: Tuning {
-                model: Some("haiku".to_string()),
-                effort: Some("max".to_string()),
-            },
+            tunings: HashMap::from([(
+                Agent::Claude,
+                Tuning {
+                    model: Some("haiku".to_string()),
+                    effort: Some("max".to_string()),
+                },
+            )]),
         };
         harness.state_mut().action = Some(Action::Draft {
             text: "write it".to_string(),

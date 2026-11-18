@@ -129,13 +129,14 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   and as the `#variant` of the model to Opencode; a model without levels hides it.
 - **Quick chat.** Ctrl pressed twice opens a small window over the one it was pressed in. Pick
   the agent, the model and the effort to use, type the message and press Enter; Shift+Enter
-  makes a new line and Esc closes. The choice is remembered. Sending starts a new
+  makes a new line and Esc closes. The model and effort are remembered for every agent on
+  its own, so switching to another agent and back brings them back. Sending starts a new
   session of that agent in a new Agent tab with the message as its first words.
 - **Only agents get the editor's text.** Review comments, *Ask agent* and *Draft* are offered
   only to the known agents, never plain terminals, so nothing the editor sends can land at a
   shell prompt. With Agent tabs open, the one used last comes first; with none open, a new one
   is started with the text as its first message. *Draft* runs in the background instead, with
-  an agent and model chosen for it alone.
+  an agent, model and effort chosen for it alone, remembered apart from the coding agent's.
 - **Back on restart.** An Agent tab that is open when the editor quits comes back on the next
   start and continues its conversation where the agent can. The agent tells the editor each
   session it moves to, so after `/clear`, `/new`, `/resume` or `/sessions` the tab comes back in
