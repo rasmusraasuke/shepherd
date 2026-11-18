@@ -282,19 +282,12 @@ impl Flow {
         if let Some(error) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
-        let loading = |ui: &mut egui::Ui, label: &str| {
-            ui.add(egui::Spinner::new().size(12.0));
-            ui.weak(label);
-        };
         if let Some((op, _)) = &self.running {
-            ui.horizontal(|ui| loading(ui, op.label()));
-        }
-        if self.drafting {
-            ui.horizontal_wrapped(|ui| {
-                loading(ui, "An agent is writing the message…");
-                if ui.add(theme::quiet("Cancel")).clicked() {
-                    self.drafting = false;
-                }
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                theme::spinner(ui, rect);
+                ui.weak(op.label());
             });
         }
         ui.horizontal(|ui| {
@@ -321,12 +314,12 @@ impl Flow {
                 }
             });
         });
-        let can_draft = self.staged && !self.drafting;
+        let drafting = self.drafting.then_some("An agent is writing the message…");
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 agents::choice_menu(ui, found, models, choice);
-                if review::new_agent_button(ui, "Draft", can_draft, agents) {
+                if review::new_agent_button(ui, "Draft", self.staged, drafting, agents) {
                     self.drafting = true;
                     outcome = Some(Outcome::Draft {
                         text: DRAFT.to_string(),
@@ -516,24 +509,11 @@ mod tests {
             &harness.state().asked,
             Some(Outcome::Draft { text }) if text.contains("shepherd ctl commit-message")
         ));
-        harness.get_by_label("An agent is writing the message…");
         assert!(harness.get_by_label("Draft").accesskit_node().is_disabled());
-        harness.get_by_label("Cancel").click();
-        harness.run();
-        assert!(
-            harness
-                .query_by_label("An agent is writing the message…")
-                .is_none()
-        );
-        harness.get_by_label("Draft").click();
-        harness.run_steps(4);
+        assert!(harness.query_by_label("Cancel").is_none());
         harness.state_mut().flow.set_message("Change a".to_string());
         harness.run();
-        assert!(
-            harness
-                .query_by_label("An agent is writing the message…")
-                .is_none()
-        );
+        assert!(!harness.get_by_label("Draft").accesskit_node().is_disabled());
         harness.get_by_label("Commit and push").click();
         wait_for(&mut harness, "Push ↑0", true);
         assert_eq!(repo.changes().unwrap().untracked, ["b.txt"]);

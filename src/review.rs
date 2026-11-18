@@ -1054,18 +1054,34 @@ fn send_button(
     }
 }
 
-pub fn new_agent_button(ui: &mut egui::Ui, label: &str, enabled: bool, agents: &Agents) -> bool {
-    match agents.new.as_deref() {
-        None => {
-            ui.add_enabled(false, egui::Button::new(label))
-                .on_disabled_hover_text("No agent was found: install Claude Code or Opencode");
-            false
-        }
-        Some(name) => ui
-            .add_enabled(enabled, egui::Button::new(label))
-            .on_hover_text(format!("Start {name} with it"))
-            .clicked(),
+pub fn new_agent_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    enabled: bool,
+    busy: Option<&str>,
+    agents: &Agents,
+) -> bool {
+    let Some(name) = agents.new.as_deref() else {
+        ui.add_enabled(false, egui::Button::new(label))
+            .on_disabled_hover_text("No agent was found: install Claude Code or Opencode");
+        return false;
+    };
+    let spinner = egui::IdSalt::new("spinner");
+    let mut button = egui::Button::new(label);
+    if busy.is_some() {
+        button = button.left_text(egui::Atom::custom(spinner, egui::vec2(12.0, 12.0)));
     }
+    let shown = ui
+        .add_enabled_ui(enabled && busy.is_none(), |ui| button.atom_ui(ui))
+        .inner;
+    if let Some(rect) = shown.rect(spinner) {
+        theme::spinner(ui, rect);
+    }
+    shown
+        .response
+        .on_hover_text(format!("Start {name} with it"))
+        .on_disabled_hover_text(busy.unwrap_or(""))
+        .clicked()
 }
 
 pub fn status_color(status: FileStatus, dark_mode: bool) -> Color32 {

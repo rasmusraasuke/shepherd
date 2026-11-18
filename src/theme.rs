@@ -114,6 +114,22 @@ pub fn dropdown(label: impl egui::IntoAtoms<'static>) -> egui::Button<'static> {
     ))
 }
 
+pub fn spinner(ui: &egui::Ui, rect: egui::Rect) {
+    ui.request_repaint();
+    let radius = rect.width().min(rect.height()) * 0.5 - 1.0;
+    let start = ui.input(|i| i.time) as f32 * std::f32::consts::TAU;
+    let points = (0..=24)
+        .map(|i| {
+            let angle = start + i as f32 / 24.0 * std::f32::consts::TAU * 0.75;
+            rect.center() + radius * egui::vec2(angle.cos(), angle.sin())
+        })
+        .collect();
+    ui.painter().add(egui::Shape::line(
+        points,
+        Stroke::new(1.5, ui.visuals().weak_text_color()),
+    ));
+}
+
 pub fn caret(ui: &egui::Ui, response: &egui::Response) {
     let rect = response.rect;
     let center = egui::pos2(
