@@ -8,7 +8,7 @@ use eframe::egui::{Color32, FontId};
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
 use tree_sitter_language::LanguageFn;
 
-use crate::buffer::Buffer;
+use crate::editor::buffer::Buffer;
 
 const MAX_SIZE: usize = 2 * 1024 * 1024;
 
@@ -34,7 +34,7 @@ static DEFINITIONS: [Definition; 14] = [
     define!(
         &["kt", "kts"],
         tree_sitter_kotlin_ng::LANGUAGE,
-        include_str!("../queries/kotlin.scm")
+        include_str!("../../queries/kotlin.scm")
     ),
     define!(
         &["java"],
@@ -332,7 +332,7 @@ pub fn layout_job(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buffer::Pos;
+    use crate::editor::buffer::Pos;
 
     #[test]
     fn every_query_fits_its_grammar() {

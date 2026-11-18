@@ -8,8 +8,8 @@ use std::thread;
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Align2, EventFilter, Key, Modifiers, Sense, TextStyle, Vec2};
 
-use crate::buffer::{Pos, find_in_line};
-use crate::file_view;
+use crate::editor::buffer::{Pos, find_in_line};
+use crate::editor::file_view;
 
 const MAX_FOUND: usize = 2000;
 

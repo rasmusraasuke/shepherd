@@ -10,10 +10,10 @@ const MENLO: &str = "/System/Library/Fonts/Menlo.ttc";
 
 fn bundled(bold: bool, italic: bool) -> &'static [u8] {
     match (bold, italic) {
-        (false, false) => include_bytes!("../assets/fonts/lilex/Lilex-Regular.ttf"),
-        (true, false) => include_bytes!("../assets/fonts/lilex/Lilex-Bold.ttf"),
-        (false, true) => include_bytes!("../assets/fonts/lilex/Lilex-Italic.ttf"),
-        (true, true) => include_bytes!("../assets/fonts/lilex/Lilex-BoldItalic.ttf"),
+        (false, false) => include_bytes!("../../assets/fonts/lilex/Lilex-Regular.ttf"),
+        (true, false) => include_bytes!("../../assets/fonts/lilex/Lilex-Bold.ttf"),
+        (false, true) => include_bytes!("../../assets/fonts/lilex/Lilex-Italic.ttf"),
+        (true, true) => include_bytes!("../../assets/fonts/lilex/Lilex-BoldItalic.ttf"),
     }
 }
 
@@ -45,7 +45,7 @@ pub fn fonts_ready(ctx: &egui::Context, system_fonts: bool) -> bool {
 
 fn install_fonts(ctx: &egui::Context, system_fonts: bool) {
     let mut definitions = ctx.fonts(|fonts| fonts.definitions().clone());
-    let symbols = crate::theme::add_symbols(&mut definitions);
+    let symbols = crate::ui::theme::add_symbols(&mut definitions);
     let mut fallbacks = definitions.families[&FontFamily::Monospace].clone();
     fallbacks.retain(|name| !symbols.contains(name));
     fallbacks.extend(symbols);
@@ -70,7 +70,7 @@ fn install_fonts(ctx: &egui::Context, system_fonts: bool) {
             }
             #[cfg(target_os = "linux")]
             if let Some(font) =
-                crate::system_fonts::font(&[fontique::GenericFamily::Monospace], bold, italic)
+                crate::ui::system_fonts::font(&[fontique::GenericFamily::Monospace], bold, italic)
             {
                 let name = format!("system-{index}");
                 definitions.font_data.insert(name.clone(), Arc::new(font));
@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn installs_the_fonts_again_after_the_theme_changes_them() {
         let ctx = ctx(false);
-        crate::theme::apply(&ctx, true);
+        crate::ui::theme::apply(&ctx, true);
         assert!(!fonts_ready(&ctx, true));
         let mut output = ctx.run_ui(Default::default(), |_| {});
         output.textures_delta.clear();

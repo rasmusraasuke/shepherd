@@ -1,3 +1,8 @@
+pub mod buffer;
+pub mod code;
+pub mod file_view;
+pub mod highlight;
+
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
@@ -7,9 +12,9 @@ use eframe::egui::{
     self, Color32, Event, EventFilter, Galley, ImeEvent, Key, Modifiers, Sense, Vec2,
 };
 
-use crate::buffer::{Buffer, Move, Pos};
-use crate::code::CodeStyle;
-use crate::highlight::{self, Highlighter};
+use buffer::{Buffer, Move, Pos};
+use code::CodeStyle;
+use highlight::Highlighter;
 
 #[derive(Default)]
 pub struct Editor {

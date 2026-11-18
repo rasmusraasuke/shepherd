@@ -9,7 +9,7 @@ use eframe::egui::{self, Key, Modifiers, PopupCloseBehavior, RichText};
 use crate::agents::{self, Agent, Choice, Model};
 use crate::git::{Changes, Repo, Status};
 use crate::review::{self, Agents};
-use crate::theme;
+use crate::ui::theme;
 
 const DRAFT: &str = "Write a commit message for the staged changes, which `git diff --cached` \
 shows, and put it into the editor with `shepherd ctl commit-message \"<message>\"`. Don't commit.";
@@ -452,7 +452,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(260.0, 500.0))
             .build_ui_state(ui, shown);
-        crate::theme::apply(&harness.ctx, false);
+        crate::ui::theme::apply(&harness.ctx, false);
         refresh(&mut harness.state_mut().flow);
         harness.run();
         (harness, dir)

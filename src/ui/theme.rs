@@ -8,17 +8,18 @@ use eframe::egui::{
 
 const UI_FONT: &str = "/System/Library/Fonts/SFNS.ttf";
 const CODE_FONT: &str = "/System/Library/Fonts/SFNSMono.ttf";
-const UI_BUNDLED: &[u8] = include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
-const CODE_BUNDLED: &[u8] = include_bytes!("../assets/fonts/lilex/Lilex-Regular.ttf");
+const UI_BUNDLED: &[u8] =
+    include_bytes!("../../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
+const CODE_BUNDLED: &[u8] = include_bytes!("../../assets/fonts/lilex/Lilex-Regular.ttf");
 const SYMBOLS: [(&str, &[u8], f32); 2] = [
     (
         "symbols",
-        include_bytes!("../assets/fonts/juliamono/JuliaMono-Regular.ttf"),
+        include_bytes!("../../assets/fonts/juliamono/JuliaMono-Regular.ttf"),
         1.0,
     ),
     (
         "emoji",
-        include_bytes!("../assets/fonts/noto-emoji/NotoEmoji-Regular.ttf"),
+        include_bytes!("../../assets/fonts/noto-emoji/NotoEmoji-Regular.ttf"),
         0.81,
     ),
 ];
@@ -179,7 +180,7 @@ fn fonts(system_fonts: bool) -> FontDefinitions {
         #[cfg(target_os = "linux")]
         {
             use fontique::GenericFamily;
-            if let Some(font) = crate::system_fonts::font(
+            if let Some(font) = crate::ui::system_fonts::font(
                 &[GenericFamily::SystemUi, GenericFamily::SansSerif],
                 false,
                 false,
@@ -191,7 +192,8 @@ fn fonts(system_fonts: bool) -> FontDefinitions {
                     FontFamily::Proportional,
                 );
             }
-            if let Some(font) = crate::system_fonts::font(&[GenericFamily::Monospace], false, false)
+            if let Some(font) =
+                crate::ui::system_fonts::font(&[GenericFamily::Monospace], false, false)
             {
                 add(
                     &mut definitions,

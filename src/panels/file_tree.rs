@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 
 use eframe::egui::{self, Align2, Color32, Sense, TextStyle, Vec2};
 
-use crate::icons::{self, FileType, Icon};
+use crate::ui::icons::{self, FileType, Icon};
 
 const ICON_SIZE: f32 = 15.0;
 

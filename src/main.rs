@@ -1,40 +1,21 @@
 mod agents;
 mod app;
-mod buffer;
-mod code;
-mod comments;
 mod control;
 mod dirs;
 mod editor;
-mod file_tree;
-mod file_view;
-mod flow;
 mod git;
-mod highlight;
-mod icons;
-mod images;
-mod keys;
-mod line_diff;
-mod quick_chat;
-mod quick_open;
+mod panels;
 mod review;
-mod search;
 mod settings;
-#[cfg(target_os = "linux")]
-mod system_fonts;
 mod terminal;
-mod terminal_text;
 #[cfg(test)]
 mod testing;
-mod theme;
+mod ui;
 mod update;
-mod watcher;
-mod word_diff;
-mod workspace;
 
 use std::path::{Path, PathBuf};
 
-use workspace::Workspace;
+use app::workspace::{self, Workspace};
 
 const HELP: &str = "\
 shepherd [<path>]              Open the repository at the path, the current directory or the last one

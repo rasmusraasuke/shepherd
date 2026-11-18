@@ -5,9 +5,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{self, Key, Modifiers};
 
-use crate::buffer::{Buffer, Pos};
 use crate::editor::Editor;
-use crate::highlight::Highlighter;
+use crate::editor::buffer::{Buffer, Pos};
+use crate::editor::highlight::Highlighter;
 
 const MAX_SIZE: u64 = 20 * 1024 * 1024;
 

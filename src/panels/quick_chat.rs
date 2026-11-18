@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Align2, Key, Modifiers};
 
+use crate::agents::images;
 use crate::agents::{self, Agent, Choice, Model};
-use crate::images;
 
 pub struct QuickChat {
     message: String,
