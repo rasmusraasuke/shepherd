@@ -88,6 +88,10 @@ fn main() -> eframe::Result {
 
 fn main_window(root: &Path, window: &workspace::Window) -> eframe::egui::ViewportBuilder {
     app::viewport(root, window)
+        .with_title("Shepherd")
+        .with_title_shown(false)
+        .with_titlebar_shown(false)
+        .with_fullsize_content_view(true)
         .with_transparent(true)
         .with_icon(app_icon())
 }
@@ -156,6 +160,15 @@ mod tests {
         let icon = viewport.icon.expect("the window has an icon");
         assert_eq!(*icon, app_icon());
         assert_ne!(*icon, eframe::egui::IconData::default());
+    }
+
+    #[test]
+    fn the_menu_bar_shows_only_the_name_of_the_editor() {
+        let window = &Workspace::default().windows[0];
+        let viewport = main_window(Path::new("/work/shop"), window);
+        assert_eq!(viewport.title.as_deref(), Some("Shepherd"));
+        assert_eq!(viewport.title_shown, Some(false));
+        assert_eq!(viewport.fullsize_content_view, Some(true));
     }
 
     #[test]

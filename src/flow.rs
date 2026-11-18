@@ -157,7 +157,7 @@ impl Flow {
         models: &HashMap<Agent, Vec<Model>>,
         choice: &mut Choice,
     ) -> Option<Outcome> {
-        let op = self.branch_ui(ui);
+        let op = self.sync_ui(ui);
         self.progress_ui(ui);
         ui.add_space(4.0);
         let commit = egui::Panel::bottom("commit")
@@ -177,7 +177,7 @@ impl Flow {
         op.map(Outcome::Run).or(commit)
     }
 
-    fn branch_ui(&mut self, ui: &mut egui::Ui) -> Option<Op> {
+    fn sync_ui(&mut self, ui: &mut egui::Ui) -> Option<Op> {
         let busy = self.running.is_some();
         let Status {
             upstream,
@@ -212,22 +212,21 @@ impl Flow {
                 {
                     op = Some(Op::Sync);
                 }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let branch =
-                        theme::dropdown(RichText::new(self.status.branch.as_str()).strong())
-                            .truncate();
-                    let config =
-                        MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
-                    let (response, menu) = MenuButton::from_button(branch)
-                        .config(config)
-                        .ui(ui, |ui| self.branches_ui(ui));
-                    theme::caret(ui, &response);
-                    response.on_hover_text("Branches");
-                    op = op.take().or(menu.and_then(|menu| menu.inner));
-                });
             });
         });
         op
+    }
+
+    pub fn branch_ui(&mut self, ui: &mut egui::Ui) -> Option<Op> {
+        let branch =
+            theme::dropdown(RichText::new(self.status.branch.as_str()).strong()).truncate();
+        let config = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
+        let (response, menu) = MenuButton::from_button(branch)
+            .config(config)
+            .ui(ui, |ui| self.branches_ui(ui));
+        theme::caret(ui, &response);
+        response.on_hover_text("Branches");
+        menu.and_then(|menu| menu.inner)
     }
 
     fn progress_ui(&mut self, ui: &mut egui::Ui) {
@@ -437,9 +436,10 @@ mod tests {
             };
             let found = [Agent::Claude];
             let models = HashMap::new();
-            match shown
+            let branch = shown.flow.branch_ui(ui).map(Outcome::Run);
+            match branch.or(shown
                 .flow
-                .ui(ui, (1, 2), &agents, &found, &models, &mut shown.choice)
+                .ui(ui, (1, 2), &agents, &found, &models, &mut shown.choice))
             {
                 Some(Outcome::Run(op)) => shown.flow.run(op, ui.ctx()),
                 Some(asked) => shown.asked = Some(asked),

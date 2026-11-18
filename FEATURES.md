@@ -37,7 +37,10 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   emoji, so the arrows, bullets and stars agents draw show on any system.
   Under `⌘/` the system's own fonts can be chosen instead. The tab shown in each group is the
   one in bright text. With no tab open, the main space shows the few keys to start with.
-- **The branch in the title.** The title of every window ends with the current branch.
+- **The branch in the title bar.** The main window draws its own title bar beside the traffic
+  lights with the branch dropdown, and can be dragged and zoomed from it. Popped-out windows
+  end their title with the current branch behind a
+  ⎇ branch symbol, while the macOS menu bar shows just "Shepherd".
 - **Restored on restart.** Windows with their position and size, splits, open tabs, the
   sidebar, open or closed, and the expanded directories are saved per repository in `.git/shepherd-layout.json`.
 - **Closing the editor.** Closing the window or quitting saves the open files and the layout,

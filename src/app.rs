@@ -38,6 +38,10 @@ const DRAG_TITLE_SHADOW: i8 = 16;
 
 const ACTIVITY_WIDTH: f32 = 44.0;
 
+const TITLE_HEIGHT: f32 = 31.0;
+
+const TITLE_INSET: i8 = if cfg!(target_os = "macos") { 76 } else { 8 };
+
 const ACTIVITY_ROW: f32 = 40.0;
 
 const WAITING_COLOR: egui::Color32 = egui::Color32::from_rgb(214, 160, 92);
@@ -64,7 +68,7 @@ pub struct App {
     settings_path: Option<PathBuf>,
     drag: Option<Drag>,
     action: Option<Action>,
-    titled_branch: String,
+    titled_branch: Option<String>,
     updates: update::Updates,
     build: update::Build,
     restarting: bool,
@@ -115,6 +119,13 @@ enum Action {
     CloseWindow(usize),
 }
 
+impl Content {
+    fn run(&mut self, op: flow::Op, ctx: &egui::Context) {
+        self.open_files.save_all();
+        self.flow.run(op, ctx);
+    }
+}
+
 struct Drag {
     from: usize,
     tile: TileId,
@@ -152,7 +163,7 @@ fn window_title(root: &Path, branch: &str) -> String {
     if branch.is_empty() {
         title
     } else {
-        format!("{title} — {branch}")
+        format!("{title} — ⎇ {branch}")
     }
 }
 
@@ -294,7 +305,7 @@ impl App {
             settings_path,
             drag: None,
             action: None,
-            titled_branch: String::new(),
+            titled_branch: None,
             watcher: Watcher::spawn(repo.clone(), ctx),
             restarting: false,
             repo,
@@ -372,6 +383,40 @@ impl App {
             }
             Err(error) => content.error = Some(error),
         }
+    }
+
+    fn title_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("title")
+            .resizable(false)
+            .exact_size(TITLE_HEIGHT)
+            .frame(
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin {
+                        left: TITLE_INSET,
+                        ..Default::default()
+                    }),
+            )
+            .show(ui, |ui| {
+                let drag = ui.interact(
+                    ui.max_rect(),
+                    egui::Id::unique("title drag"),
+                    egui::Sense::click_and_drag(),
+                );
+                if drag.drag_started_by(egui::PointerButton::Primary) {
+                    ui.send_viewport_cmd(ViewportCommand::StartDrag);
+                }
+                if drag.double_clicked() {
+                    let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                    ui.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                }
+                let op = ui
+                    .horizontal_centered(|ui| self.content.flow.branch_ui(ui))
+                    .inner;
+                if let Some(op) = op {
+                    self.content.run(op, ui.ctx());
+                }
+            });
     }
 
     fn update_bar(&mut self, ui: &mut egui::Ui) {
@@ -539,10 +584,7 @@ impl App {
                     &self.models,
                     choice,
                 ) {
-                    Some(flow::Outcome::Run(op)) => {
-                        content.open_files.save_all();
-                        content.flow.run(op, ui.ctx());
-                    }
+                    Some(flow::Outcome::Run(op)) => content.run(op, ui.ctx()),
                     Some(flow::Outcome::Draft { text }) => {
                         self.action = Some(Action::Draft { text })
                     }
@@ -1430,8 +1472,8 @@ impl App {
             self.watcher.refresh_now();
         }
         let branch = &self.content.flow.status().branch;
-        if *branch != self.titled_branch {
-            self.titled_branch = branch.clone();
+        if self.titled_branch.as_ref() != Some(branch) {
+            self.titled_branch = Some(branch.clone());
             let title = window_title(&self.content.root, branch);
             for builder in self.viewports.values_mut() {
                 builder.title = Some(title.clone());
@@ -1451,6 +1493,7 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Slash)) {
             self.show_keys = !self.show_keys;
         }
+        self.title_bar(ui);
         egui::Panel::left("activity")
             .resizable(false)
             .exact_size(ACTIVITY_WIDTH)
@@ -1475,7 +1518,10 @@ impl App {
                 .viewports
                 .entry(window.id)
                 .or_insert_with(|| {
-                    let title = window_title(&self.content.root, &self.titled_branch);
+                    let title = window_title(
+                        &self.content.root,
+                        self.titled_branch.as_deref().unwrap_or_default(),
+                    );
                     viewport(&self.content.root, window).with_title(title)
                 })
                 .clone();
@@ -1619,6 +1665,24 @@ mod tests {
         let workspace = Workspace::default();
         let builder = viewport(Path::new("/work/shop"), &workspace.windows[0]);
         assert_eq!(builder.title.as_deref(), Some("Shepherd — /work/shop"));
+    }
+
+    #[test]
+    fn shows_the_branch_in_the_title_bar_on_every_sidebar() {
+        let (mut harness, dir) = harness("title-branch");
+        crate::git::tests::commit_all(&Repo::open(dir.path()).unwrap());
+        harness.state().watcher.refresh_now();
+        let branch = Repo::open(dir.path()).unwrap().branch();
+        for (sidebar, first) in [(Sidebar::Files, "README.md"), (Sidebar::Changes, "Push")] {
+            harness.state_mut().workspace.sidebar = sidebar;
+            harness.run();
+            let button = harness.get_by_label(branch.as_str());
+            assert!(button.rect().bottom() < harness.get_by_label(first).rect().top());
+            assert!(button.rect().left() >= TITLE_INSET as f32);
+        }
+        harness.get_by_label(branch.as_str()).click();
+        harness.run();
+        harness.get_by_label("Create branch");
     }
 
     #[test]
@@ -2596,10 +2660,10 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&log.stdout), "Add the project\n");
 
         let branch = Repo::open(dir.path()).unwrap().branch();
-        assert_eq!(harness.state().titled_branch, branch);
+        assert_eq!(harness.state().titled_branch, Some(branch));
         assert_eq!(
             window_title(Path::new("/work/shop"), "main"),
-            "Shepherd — /work/shop — main"
+            "Shepherd — /work/shop — ⎇ main"
         );
     }
 
