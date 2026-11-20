@@ -1,5 +1,5 @@
 * Read PLAN.md to unerstand what you have to do and what decisions are made
-* After completing a milestone in the PLAN.md mark it as completed and describe the features in FEATURES.md
+* After completing a milestone in the PLAN.md describe the features in FEATURES.md and remove the milestone from PLAN.md
 * Prefer simple code
 * Follow existing formatting
 * Avoid duplication - extract similar code and reuse
