@@ -1,12 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use super::{Changes, DIFF, EMPTY_TREE, Repo, git};
 
-const LOG: usize = 300;
-const FORMAT: &str = "--format=%H\u{1f}%h\u{1f}%an\u{1f}%ar\u{1f}%s\u{1f}%P\u{1f}%D";
+pub const PAGE: usize = 300;
+const FORMAT: &str =
+    "--format=%H\u{1f}%h\u{1f}%an\u{1f}%ar\u{1f}%s\u{1f}%P\u{1f}%D\u{1f}%ad\u{1f}%b\u{1e}";
+const DATE: &str = "--date=format-local:%d.%m.%y %H:%M";
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct CommitRange {
@@ -24,6 +26,9 @@ pub struct Commit {
     pub timestamp: u64,
     pub parents: Vec<String>,
     pub refs: Vec<String>,
+    pub date: String,
+    pub body: String,
+    pub local: bool,
 }
 
 impl Commit {
@@ -55,9 +60,9 @@ fn words(text: Option<&str>) -> Vec<String> {
 }
 
 fn commits(out: &str) -> Vec<Commit> {
-    out.lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\u{1f}');
+    out.split('\u{1e}')
+        .filter_map(|record| {
+            let mut fields = record.trim_start_matches('\n').split('\u{1f}');
             Some(Commit {
                 hash: fields.next()?.to_string(),
                 short: fields.next()?.to_string(),
@@ -72,6 +77,8 @@ fn commits(out: &str) -> Vec<Commit> {
                     .filter(|name| !name.is_empty())
                     .map(|name| name.replace("HEAD -> ", "").replace("tag: ", ""))
                     .collect(),
+                date: fields.next().unwrap_or_default().to_string(),
+                body: fields.next().unwrap_or_default().trim().to_string(),
                 ..Commit::default()
             })
         })
@@ -79,38 +86,45 @@ fn commits(out: &str) -> Vec<Commit> {
 }
 
 impl Repo {
-    pub fn log(&self) -> Result<Vec<Commit>, String> {
-        if self.base() == EMPTY_TREE {
-            return Ok(Vec::new());
+    pub fn log(&self, skip: usize, count: usize) -> Result<Vec<Commit>, String> {
+        let args = ["--date-order", "HEAD", "--branches", "--remotes", "--tags"];
+        let mut commits = self.log_of(&args, skip, count)?;
+        let local = self.local_commits()?;
+        for commit in &mut commits {
+            commit.local = local.contains(&commit.hash);
         }
-        let limit = LOG.to_string();
-        git(
-            &self.root,
-            &[
-                "log",
-                "--date-order",
-                "--max-count",
-                &limit,
-                FORMAT,
-                "HEAD",
-                "--branches",
-                "--remotes",
-                "--tags",
-            ],
-        )
-        .map(|out| commits(&out))
+        Ok(commits)
     }
 
-    pub fn file_log(&self, path: &str) -> Result<Vec<Commit>, String> {
+    fn local_commits(&self) -> Result<HashSet<String>, String> {
+        if git(&self.root, &["remote"])?.trim().is_empty() {
+            return Ok(HashSet::new());
+        }
+        let out = git(
+            &self.root,
+            &["rev-list", "HEAD", "--branches", "--not", "--remotes"],
+        )?;
+        Ok(out.lines().map(str::to_string).collect())
+    }
+
+    pub fn file_log(&self, path: &str, skip: usize, count: usize) -> Result<Vec<Commit>, String> {
+        self.log_of(&["--follow", "--", path], skip, count)
+    }
+
+    pub fn commit_info(&self, hash: &str) -> Result<Commit, String> {
+        self.log_of(&["--no-walk", hash], 0, 1)?
+            .pop()
+            .ok_or_else(|| format!("no commit {hash}"))
+    }
+
+    fn log_of(&self, args: &[&str], skip: usize, count: usize) -> Result<Vec<Commit>, String> {
         if self.base() == EMPTY_TREE {
             return Ok(Vec::new());
         }
-        let limit = LOG.to_string();
-        git(
-            &self.root,
-            &["log", "--follow", "--max-count", &limit, FORMAT, "--", path],
-        )
-        .map(|out| commits(&out))
+        let skip = skip.to_string();
+        let count = count.to_string();
+        let options = ["log", "--skip", &skip, "--max-count", &count, FORMAT, DATE];
+        git(&self.root, &[&options[..], args].concat()).map(|out| commits(&out))
     }
 
     pub fn commit_range(&self, head: &str) -> Result<CommitRange, String> {
@@ -229,7 +243,7 @@ fn relative_time(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::tests::{commit_all, temp_repo};
+    use crate::git::tests::{commit_all, temp_repo, with_remote};
 
     fn commit(repo: &Repo, dir: &crate::testing::TempDir, path: &str, text: &str, message: &str) {
         dir.write(path, text);
@@ -242,7 +256,7 @@ mod tests {
         let (repo, dir) = temp_repo("history-log", &[("a.txt", "a\n")]);
         commit(&repo, &dir, "a.txt", "one\n", "first");
         commit(&repo, &dir, "a.txt", "two\n", "second");
-        let log = repo.log().unwrap();
+        let log = repo.log(0, PAGE).unwrap();
         assert_eq!(
             log.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(),
             ["second", "first"]
@@ -268,7 +282,7 @@ mod tests {
         )
         .unwrap();
 
-        let log = repo.log().unwrap();
+        let log = repo.log(0, PAGE).unwrap();
         let find = |subject: &str| log.iter().find(|c| c.subject == subject).unwrap();
         let merge = find("merge");
         assert_eq!(
@@ -282,6 +296,59 @@ mod tests {
         assert_eq!(find("unmerged").refs, ["side"]);
         assert!(find("first").parents.is_empty());
         assert_eq!(log.len(), 5);
+        assert!(log.iter().all(|c| !c.local));
+    }
+
+    #[test]
+    fn knows_which_commits_are_not_pushed() {
+        let (repo, dir) = temp_repo("history-local", &[("a.txt", "a\n")]);
+        commit(&repo, &dir, "a.txt", "one\n", "pushed");
+        let _remote = with_remote(&repo, "history-local-remote");
+        git(&repo.root, &["push", "--quiet", "origin", "HEAD"]).unwrap();
+        commit(&repo, &dir, "a.txt", "two\n", "local");
+
+        let log = repo.log(0, PAGE).unwrap();
+        let find = |subject: &str| log.iter().find(|c| c.subject == subject).unwrap();
+        assert!(find("local").local);
+        assert!(!find("pushed").local);
+    }
+
+    #[test]
+    fn pages_through_the_log_and_keeps_whole_messages() {
+        let (repo, dir) = temp_repo("history-pages", &[("a.txt", "a\n")]);
+        commit(&repo, &dir, "a.txt", "one\n", "first");
+        commit(
+            &repo,
+            &dir,
+            "a.txt",
+            "two\n",
+            "second\n\nwhy it changed\n\nand more",
+        );
+        commit(&repo, &dir, "a.txt", "three\n", "third");
+
+        let first = repo.log(0, 2).unwrap();
+        let rest = repo.log(2, 2).unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .chain(&rest)
+                .map(|c| c.subject.as_str())
+                .collect::<Vec<_>>(),
+            ["third", "second", "first"]
+        );
+        assert_eq!(first[1].body, "why it changed\n\nand more");
+        assert_eq!(first[0].body, "");
+        let date = first[0].date.as_bytes();
+        assert_eq!(first[0].date.len(), 14);
+        assert_eq!(
+            (date[2], date[5], date[8], date[11]),
+            (b'.', b'.', b' ', b':')
+        );
+        assert_eq!(repo.file_log("a.txt", 1, 5).unwrap().len(), 2);
+
+        let info = repo.commit_info(&rest[0].hash).unwrap();
+        assert_eq!(info.subject, "first");
+        assert!(repo.commit_info("nothing").is_err());
     }
 
     #[test]
@@ -290,7 +357,7 @@ mod tests {
         commit(&repo, &dir, "a.txt", "one\n", "first");
         commit(&repo, &dir, "a.txt", "two\n", "second");
         commit(&repo, &dir, "b.txt", "b\n", "third");
-        let log = repo.log().unwrap();
+        let log = repo.log(0, PAGE).unwrap();
 
         let single = repo.commit_range(&log[0].hash).unwrap();
         let changes = repo.range_changes(&single).unwrap();
@@ -325,7 +392,7 @@ mod tests {
         commit(&repo, &dir, "a.txt", "one\n", "first a");
         commit(&repo, &dir, "b.txt", "one\n", "first b");
         commit(&repo, &dir, "a.txt", "two\n", "second a");
-        let log = repo.file_log("a.txt").unwrap();
+        let log = repo.file_log("a.txt", 0, PAGE).unwrap();
         assert_eq!(
             log.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(),
             ["second a", "first a"]

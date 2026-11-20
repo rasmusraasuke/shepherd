@@ -315,11 +315,17 @@ the background; what it complains about is shown above the commit message.
 Work that is already committed is reviewed in the same view as work in the working tree.
 
 - **History.** *History* in the bar of icons shows the commits of every local and remote
-  branch and tag, newest first, as a git tree: each line of work runs in a lane of its own
+  branch and tag, newest first, as a git tree: each branch runs in a lane of its own
   color, branching off and merging back where it did, with merge commits drawn hollow.
-  Branch and tag names sit beside the commits they point at, next to the subject, the
+  Commits that are not pushed to any remote are drawn in amber. Branch and tag names sit
+  beside the commits they point at, a remote branch only when no local branch of the same
+  name points there too, next to the subject, the
   short hash, the author and when each was made. The tree follows new commits and switches
-  of branch as they happen. The history of a single file stays a plain list.
+  of branch as they happen. There is no limit: older commits load as the list is scrolled
+  towards its end. The history of a single file stays a plain list.
+- **The whole message.** Hovering a commit shows its whole message, with its branches, hash,
+  author, and date and time, like 21.11.26 19:35 (5 minutes ago). The commit that is open
+  shows the same below the list, above its files.
 - **A commit.** A click opens a commit's changes in the review tab used last, one file at a
   time. Cmd+click opens another review tab, as a file does. The files of the commit are
   listed under the commits, with the same tree and colors as *Changes*.

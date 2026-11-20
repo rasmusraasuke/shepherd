@@ -276,6 +276,10 @@ impl App {
         else {
             return;
         };
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(4.0);
+        self.content.history.details_ui(ui);
         let Some(review) = self.content.commits.get_mut(&range) else {
             return;
         };

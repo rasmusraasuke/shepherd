@@ -25,7 +25,7 @@ impl Snapshot {
             changes: repo.changes()?,
             files: repo.list_files()?,
             status: repo.status(),
-            commits: repo.log()?,
+            commits: repo.log(0, crate::git::PAGE)?,
             head: repo.head(),
         })
     }

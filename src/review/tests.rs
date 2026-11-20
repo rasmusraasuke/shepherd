@@ -195,7 +195,7 @@ fn a_commit_is_reviewed_read_only_with_its_committed_content() {
     dir.write("a.txt", "two\n");
     dir.write("b.txt", "b\n");
     commit_all(&repo);
-    let hash = repo.log().unwrap()[0].hash.clone();
+    let hash = repo.log(0, crate::git::PAGE).unwrap()[0].hash.clone();
     let range = repo.commit_range(&hash).unwrap();
     let review = Review::for_commits(repo, range, hash[..7].to_string());
     let harness = show(review, Some("a.txt"), 600.0);
@@ -217,7 +217,7 @@ fn comments_on_a_committed_line_are_sent_about_the_commit() {
     commit_all(&repo);
     dir.write("a.txt", TEN.replace("2\n", "two\n"));
     commit_all(&repo);
-    let hash = repo.log().unwrap()[0].hash.clone();
+    let hash = repo.log(0, crate::git::PAGE).unwrap()[0].hash.clone();
     let range = repo.commit_range(&hash).unwrap();
     let review = Review::for_commits(repo, range, hash[..7].to_string());
     let mut harness = show(review, Some("a.txt"), 600.0);
@@ -239,7 +239,7 @@ fn a_hunk_cannot_be_marked_in_a_commit() {
     commit_all(&repo);
     dir.write("a.txt", "two\n");
     commit_all(&repo);
-    let hash = repo.log().unwrap()[0].hash.clone();
+    let hash = repo.log(0, crate::git::PAGE).unwrap()[0].hash.clone();
     let range = repo.commit_range(&hash).unwrap();
     let mut review = Review::for_commits(repo, range, hash[..7].to_string());
     assert_eq!(review.toggle_reviewed(0, 0), None);

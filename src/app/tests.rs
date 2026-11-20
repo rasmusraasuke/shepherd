@@ -195,7 +195,7 @@ fn shows_a_file_history_and_turns_git_blame_on_and_off() {
     harness.run();
     assert!(harness.state().content.open_files.blame_on("README.md"));
 
-    let hash = repo.log().unwrap()[0].hash.clone();
+    let hash = repo.log(0, crate::git::PAGE).unwrap()[0].hash.clone();
     let editor = harness.get_by_label("Editor").rect();
     harness.event(egui::Event::PointerMoved(egui::pos2(
         editor.left() + 20.0,
