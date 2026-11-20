@@ -18,7 +18,7 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
 - **Sidebar.** A narrow bar of icons on the left edge chooses what the sidebar shows:
   *Files* (a page), the tree of project files (everything git doesn't ignore), or *Changes*
   (two sides of a diff), the tree of changed files with their review progress, or *History*
-  (a clock), the commits of the branch. Clicking the icon of
+  (a git branch), the tree of commits. Clicking the icon of
   what is already shown closes the sidebar, leaving the icons; any icon opens it again.
 - **Keyboard shortcuts.** The keyboard icon at the bottom of the bar, or Cmd+/, shows all the
   keys in one place. Esc or a click outside closes it.
@@ -314,9 +314,12 @@ the background; what it complains about is shown above the commit message.
 
 Work that is already committed is reviewed in the same view as work in the working tree.
 
-- **History.** *History* in the bar of icons lists the commits of the branch, newest first,
-  with the subject, the short hash, the author and when each was made. The list follows new
-  commits and switches of branch as they happen.
+- **History.** *History* in the bar of icons shows the commits of every local and remote
+  branch and tag, newest first, as a git tree: each line of work runs in a lane of its own
+  color, branching off and merging back where it did, with merge commits drawn hollow.
+  Branch and tag names sit beside the commits they point at, next to the subject, the
+  short hash, the author and when each was made. The tree follows new commits and switches
+  of branch as they happen. The history of a single file stays a plain list.
 - **A commit.** A click opens a commit's changes in the review tab used last, one file at a
   time. Cmd+click opens another review tab, as a file does. The files of the commit are
   listed under the commits, with the same tree and colors as *Changes*.

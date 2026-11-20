@@ -151,8 +151,16 @@ pub fn paint(painter: &Painter, center: Pos2, size: f32, icon: Icon, color: Colo
             }
         }
         Icon::History => {
-            painter.circle_stroke(at(9.0, 9.0), 6.8 * scale, stroke);
-            line(&[(9.0, 4.8), (9.0, 9.0), (12.0, 10.8)]);
+            for (x, y) in [(5.0, 3.5), (5.0, 14.5), (13.0, 4.5)] {
+                painter.circle_stroke(at(x, y), 1.9 * scale, stroke);
+            }
+            line(&[(5.0, 5.4), (5.0, 12.6)]);
+            painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                [at(13.0, 6.4), at(13.0, 10.5), at(5.0, 9.0), at(5.0, 12.6)],
+                false,
+                Color32::TRANSPARENT,
+                stroke,
+            ));
         }
         Icon::Keys => {
             frame((1.5, 4.0), (16.5, 14.0));

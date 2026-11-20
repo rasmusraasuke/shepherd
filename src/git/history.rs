@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::{Changes, DIFF, EMPTY_TREE, Repo, git};
 
 const LOG: usize = 300;
+const FORMAT: &str = "--format=%H\u{1f}%h\u{1f}%an\u{1f}%ar\u{1f}%s\u{1f}%P\u{1f}%D";
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct CommitRange {
@@ -13,7 +14,7 @@ pub struct CommitRange {
     pub head: String,
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Default)]
 pub struct Commit {
     pub hash: String,
     pub short: String,
@@ -21,6 +22,8 @@ pub struct Commit {
     pub time: String,
     pub subject: String,
     pub timestamp: u64,
+    pub parents: Vec<String>,
+    pub refs: Vec<String>,
 }
 
 impl Commit {
@@ -44,6 +47,13 @@ pub fn commit_times(lines: &[Commit]) -> Vec<u64> {
     times
 }
 
+fn words(text: Option<&str>) -> Vec<String> {
+    text.unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
 fn commits(out: &str) -> Vec<Commit> {
     out.lines()
         .filter_map(|line| {
@@ -54,7 +64,15 @@ fn commits(out: &str) -> Vec<Commit> {
                 author: fields.next()?.to_string(),
                 time: fields.next()?.to_string(),
                 subject: fields.next()?.to_string(),
-                timestamp: 0,
+                parents: words(fields.next()),
+                refs: fields
+                    .next()
+                    .unwrap_or_default()
+                    .split(", ")
+                    .filter(|name| !name.is_empty())
+                    .map(|name| name.replace("HEAD -> ", "").replace("tag: ", ""))
+                    .collect(),
+                ..Commit::default()
             })
         })
         .collect()
@@ -70,9 +88,14 @@ impl Repo {
             &self.root,
             &[
                 "log",
+                "--date-order",
                 "--max-count",
                 &limit,
-                "--format=%H\u{1f}%h\u{1f}%an\u{1f}%ar\u{1f}%s",
+                FORMAT,
+                "HEAD",
+                "--branches",
+                "--remotes",
+                "--tags",
             ],
         )
         .map(|out| commits(&out))
@@ -85,15 +108,7 @@ impl Repo {
         let limit = LOG.to_string();
         git(
             &self.root,
-            &[
-                "log",
-                "--follow",
-                "--max-count",
-                &limit,
-                "--format=%H\u{1f}%h\u{1f}%an\u{1f}%ar\u{1f}%s",
-                "--",
-                path,
-            ],
+            &["log", "--follow", "--max-count", &limit, FORMAT, "--", path],
         )
         .map(|out| commits(&out))
     }
@@ -162,15 +177,12 @@ impl Repo {
                     known.insert(
                         first.to_string(),
                         if first.bytes().all(|byte| byte == b'0') {
-                            uncommitted()
+                            Commit::default()
                         } else {
                             Commit {
                                 hash: first.to_string(),
                                 short: first[..first.len().min(7)].to_string(),
-                                author: String::new(),
-                                time: String::new(),
-                                subject: String::new(),
-                                timestamp: 0,
+                                ..Commit::default()
                             }
                         },
                     );
@@ -192,19 +204,8 @@ impl Repo {
         }
         Ok(lines
             .into_iter()
-            .map(|line| line.unwrap_or_else(uncommitted))
+            .map(|line| line.unwrap_or_default())
             .collect())
-    }
-}
-
-fn uncommitted() -> Commit {
-    Commit {
-        hash: String::new(),
-        short: String::new(),
-        author: String::new(),
-        time: String::new(),
-        subject: String::new(),
-        timestamp: 0,
     }
 }
 
@@ -251,6 +252,39 @@ mod tests {
     }
 
     #[test]
+    fn lists_the_commits_of_every_branch_with_their_parents_and_names() {
+        let (repo, dir) = temp_repo("history-branches", &[("a.txt", "a\n")]);
+        commit(&repo, &dir, "a.txt", "one\n", "first");
+        git(&repo.root, &["checkout", "--quiet", "-b", "feature"]).unwrap();
+        commit(&repo, &dir, "b.txt", "b\n", "on feature");
+        git(&repo.root, &["checkout", "--quiet", "-"]).unwrap();
+        commit(&repo, &dir, "c.txt", "c\n", "on main");
+        git(&repo.root, &["checkout", "--quiet", "-b", "side"]).unwrap();
+        commit(&repo, &dir, "d.txt", "d\n", "unmerged");
+        git(&repo.root, &["checkout", "--quiet", "-"]).unwrap();
+        git(
+            &repo.root,
+            &["merge", "--quiet", "--no-ff", "-m", "merge", "feature"],
+        )
+        .unwrap();
+
+        let log = repo.log().unwrap();
+        let find = |subject: &str| log.iter().find(|c| c.subject == subject).unwrap();
+        let merge = find("merge");
+        assert_eq!(
+            merge.parents,
+            [
+                find("on main").hash.clone(),
+                find("on feature").hash.clone()
+            ]
+        );
+        assert_eq!(find("on feature").refs, ["feature"]);
+        assert_eq!(find("unmerged").refs, ["side"]);
+        assert!(find("first").parents.is_empty());
+        assert_eq!(log.len(), 5);
+    }
+
+    #[test]
     fn shows_the_changes_of_a_commit() {
         let (repo, dir) = temp_repo("history-commit", &[("a.txt", "a\n")]);
         commit(&repo, &dir, "a.txt", "one\n", "first");
@@ -273,9 +307,8 @@ mod tests {
             hash: "a".repeat(40),
             short: "aaaaaaa".to_string(),
             author: "Test".to_string(),
-            time: String::new(),
-            subject: String::new(),
             timestamp,
+            ..Commit::default()
         };
         let lines = [commit(300), commit(100), commit(100_000), commit(300)];
         let times = commit_times(&lines);

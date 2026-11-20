@@ -1,5 +1,6 @@
 use eframe::egui::{self, Align2, RichText, Sense, TextStyle, Vec2};
 
+use super::graph::{self, Row};
 use crate::git::{Commit, CommitRange, Repo};
 use crate::ui::theme;
 
@@ -24,6 +25,7 @@ struct Selected {
 pub struct History {
     repo: Repo,
     commits: Vec<Commit>,
+    graph: Vec<Row>,
     file: Option<String>,
     file_commits: Vec<Commit>,
     selected: Option<Selected>,
@@ -35,6 +37,7 @@ impl History {
         Self {
             repo,
             commits: Vec::new(),
+            graph: Vec::new(),
             file: None,
             file_commits: Vec::new(),
             selected: None,
@@ -46,6 +49,7 @@ impl History {
         if commits == self.commits {
             return;
         }
+        self.graph = graph::layout(&commits);
         self.commits = commits;
         if self.file.is_some() {
             self.load_file();
@@ -142,6 +146,11 @@ impl History {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
         let commits = self.list();
+        let graph: &[Row] = if self.file.is_some() {
+            &[]
+        } else {
+            &self.graph
+        };
         if commits.is_empty() {
             ui.weak(if self.file.is_some() {
                 "No commits changed this file"
@@ -173,17 +182,25 @@ impl History {
                     .selected
                     .as_ref()
                     .is_some_and(|selected| selected.range.head == commit.hash);
-                if chosen {
-                    ui.painter()
-                        .rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
+                let background = if chosen {
+                    ui.visuals().selection.bg_fill
                 } else if response.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                    ui.visuals().widgets.hovered.weak_bg_fill
+                } else {
+                    ui.visuals().panel_fill
+                };
+                if chosen || response.hovered() {
+                    ui.painter().rect_filled(rect, 2.0, background);
                 }
                 let painter = ui.painter().with_clip_rect(rect);
-                let left = rect.left() + 4.0;
+                let mut left = rect.left() + 4.0;
+                if let Some(row) = graph.get(index) {
+                    row.paint(&painter, rect.with_min_x(left), background);
+                    left += row.width() + 6.0;
+                }
+                let refs = graph::paint_refs(ui, &painter, left, rect.top() + 4.0, &commit.refs);
                 painter.text(
-                    egui::pos2(left, rect.top() + 5.0),
+                    egui::pos2(refs, rect.top() + 5.0),
                     Align2::LEFT_TOP,
                     &commit.subject,
                     font.clone(),
