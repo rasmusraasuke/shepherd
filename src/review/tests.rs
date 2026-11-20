@@ -457,6 +457,96 @@ fn marks_files_without_lines_reviewed_as_a_whole() {
 }
 
 #[test]
+fn a_renamed_file_is_one_review_and_stages_as_a_rename() {
+    let (repo, dir) = temp_repo("rename", &[("old.txt", "one\ntwo\n")]);
+    commit_all(&repo);
+    Command::new("git")
+        .args(["mv", "old.txt", "new.txt"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+    dir.write("new.txt", "one\nTWO\n");
+    let mut review = Review::new(repo);
+    refresh(&mut review);
+    assert_eq!(
+        (
+            review.files[0].diff.display_name(),
+            review.files[0].hunk_progress(0)
+        ),
+        ("old.txt -> new.txt".to_string(), (0, 2))
+    );
+
+    let mut harness = show(review, Some("new.txt"), 600.0);
+    harness.get_by_label("Reviewed").click();
+    harness.run();
+    harness.state_mut().review.wait_for_staging();
+    refresh(&mut harness.state_mut().review);
+    assert_eq!(harness.state().review.progress_of("new.txt"), (2, 2));
+
+    let output = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    let status = output(&["status", "--short"]);
+    assert_eq!(
+        String::from_utf8(status.stdout).unwrap(),
+        "R  old.txt -> new.txt\n"
+    );
+    let staged = output(&["show", ":new.txt"]);
+    assert_eq!(String::from_utf8(staged.stdout).unwrap(), "one\nTWO\n");
+    assert!(!output(&["show", ":old.txt"]).status.success());
+
+    harness.state_mut().review.roll_back("new.txt");
+    refresh(&mut harness.state_mut().review);
+    assert_eq!(
+        (
+            dir.path().join("old.txt").exists(),
+            dir.path().join("new.txt").exists(),
+            harness.state().review.files.len()
+        ),
+        (true, false, 0)
+    );
+}
+
+#[test]
+fn marking_a_renamed_file_reviewed_from_the_tree_keeps_the_rename() {
+    let (repo, dir) = temp_repo("rename-tree", &[("old.txt", "one\ntwo\n")]);
+    commit_all(&repo);
+    Command::new("git")
+        .args(["mv", "old.txt", "new.txt"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+    dir.write("new.txt", "one\nTWO\n");
+    let mut review = Review::new(repo);
+    refresh(&mut review);
+    let status = |dir: &TempDir| {
+        String::from_utf8(
+            Command::new("git")
+                .args(["status", "--short"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+    };
+
+    set_reviewed(&mut review, "new.txt", true);
+    refresh(&mut review);
+    assert_eq!(review.progress_of("new.txt"), (2, 2));
+    assert_eq!(status(&dir), "R  old.txt -> new.txt\n");
+
+    set_reviewed(&mut review, "new.txt", false);
+    refresh(&mut review);
+    assert_eq!(status(&dir), " D old.txt\n?? new.txt\n");
+    assert_eq!(review.files.len(), 2);
+}
+
+#[test]
 fn tells_new_changed_and_deleted_files_apart_by_color() {
     let (review, dir) = review(
         "status",

@@ -225,7 +225,7 @@ fn diffs_new_files_as_git_does() {
 }
 
 fn diff_of(repo: &Repo, path: &str) -> FileDiff {
-    repo.file_diff(path).unwrap().unwrap()
+    repo.file_diff(path, None).unwrap().unwrap()
 }
 
 fn staged(repo: &Repo, path: &str) -> String {
@@ -297,6 +297,37 @@ fn stages_the_chosen_lines_of_a_file() {
         repo.stage_lines(&diff, |_, _| false)
             .unwrap_err()
             .contains("changed in the meantime")
+    );
+}
+
+#[test]
+fn keeps_a_rename_as_a_rename_when_its_changes_are_staged() {
+    let (repo, dir) = temp_repo("stage-rename", &[("old.txt", "one\ntwo\n")]);
+    commit_all(&repo);
+    git(&repo.root, &["mv", "old.txt", "new.txt"]).unwrap();
+    dir.write("new.txt", "one\nTWO\n");
+    let changes = repo.changes().unwrap();
+    let diff = &parse_diff(&changes.diff)[0];
+    assert_eq!(
+        (diff.path.as_str(), diff.old_path.as_deref(), diff.status),
+        ("new.txt", Some("old.txt"), FileStatus::Renamed)
+    );
+    assert_eq!(diff.display_name(), "old.txt -> new.txt");
+
+    repo.stage_lines(diff, |_, _| true).unwrap();
+    assert_eq!(staged(&repo, "new.txt"), "one\nTWO\n");
+    assert!(repo.staged("old.txt").is_none());
+    assert_eq!(short_status(&repo), "R  old.txt -> new.txt\n");
+
+    let changes = repo.changes().unwrap();
+    let cached = &parse_diff(&changes.staged)[0];
+    assert_eq!(
+        (
+            cached.path.as_str(),
+            cached.old_path.as_deref(),
+            cached.status
+        ),
+        ("new.txt", Some("old.txt"), FileStatus::Renamed)
     );
 }
 

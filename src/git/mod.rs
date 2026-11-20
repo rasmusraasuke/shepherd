@@ -19,7 +19,7 @@ const DIFF: &[&str] = &[
     "diff",
     "--no-color",
     "--no-ext-diff",
-    "--no-renames",
+    "--find-renames",
     "--src-prefix=a/",
     "--dst-prefix=b/",
     "--unified=0",
@@ -285,8 +285,10 @@ impl Repo {
         })
     }
 
-    fn file_diff(&self, path: &str) -> Result<Option<FileDiff>, String> {
-        let mut raw = git(&self.root, &[DIFF, &[self.base(), "--", path]].concat())?;
+    fn file_diff(&self, path: &str, old_path: Option<&str>) -> Result<Option<FileDiff>, String> {
+        let mut files = vec![self.base(), "--", path];
+        files.extend(old_path);
+        let mut raw = git(&self.root, &[DIFF, files.as_slice()].concat())?;
         if raw.is_empty() && !self.untracked(&[path])?.is_empty() {
             raw = added_file_diff(path, &self.root.join(path));
         }
@@ -296,7 +298,7 @@ impl Repo {
     fn check_unchanged(&self, diff: &FileDiff) -> Result<(), String> {
         let path = diff.path.as_str();
         if self
-            .file_diff(path)?
+            .file_diff(path, diff.old_path.as_deref())?
             .is_none_or(|now| now.hunks != diff.hunks)
         {
             return Err(format!("{path} changed in the meantime, try again"));
@@ -311,12 +313,13 @@ impl Repo {
     ) -> Result<(), String> {
         self.check_unchanged(diff)?;
         let path = diff.path.as_str();
+        let base_path = diff.old_path.as_deref().unwrap_or(path);
         let head = if diff.status == FileStatus::Added {
             Vec::new()
         } else {
             run(
                 &self.root,
-                &["show", &format!("{}:{path}", self.base())],
+                &["show", &format!("{}:{base_path}", self.base())],
                 None,
             )?
         };
@@ -330,7 +333,27 @@ impl Repo {
                 chosen,
             )
             .as_deref(),
+        )?;
+        if let Some(old) = &diff.old_path {
+            self.remove_from_index(old)?;
+        }
+        Ok(())
+    }
+
+    pub fn remove_from_index(&self, path: &str) -> Result<(), String> {
+        git(
+            &self.root,
+            &[
+                "rm",
+                "--cached",
+                "--force",
+                "--ignore-unmatch",
+                "--quiet",
+                "--",
+                path,
+            ],
         )
+        .map(drop)
     }
 
     pub fn stage_version(&self, path: &str, content: Option<&[u8]>) -> Result<(), String> {

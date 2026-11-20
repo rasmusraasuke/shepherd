@@ -169,7 +169,9 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   the project tree but with only the files that changed. Next to each file and directory is
   the number of its changed lines that are reviewed; new files are green, changed ones blue
   and deleted ones red, faded once they are fully reviewed. Directories are open until closed. A
-  renamed file shows as a deleted and an added one.
+  renamed file is one file, its old name before the new one in the review, so git can follow
+  the file and merge its changes; a rename git does not know about yet shows as a deleted and
+  an added file until both are marked reviewed.
 - **Review tabs.** Click a file under *Changes* to see its changes in the review tab used
   last, so review tabs don't pile up. A file already shown in a review tab is brought to
   the front there. Cmd+click a file, or choose *New review* from the + of a tab bar, to open
@@ -182,8 +184,8 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   makes it the current one.
 - **Easy to read.** Both sides of a diff are highlighted like the file itself, and where a
   line was changed rather than replaced, the words that changed stand out. Long lines scroll
-  sideways under the line numbers; lines over 500 characters are cut. Files with many hunks
-  scroll smoothly, as only the hunks in sight are drawn.
+  sideways under the line numbers. Files with many hunks scroll smoothly, as only the hunks
+  in sight are drawn.
 - **Reviewed means staged.** Marking a change as reviewed stages it in git, and taking the
   mark away unstages it; what is staged counts as reviewed, also when it was staged
   elsewhere. The editor keeps no review state of its own, and committing what is staged

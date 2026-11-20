@@ -100,7 +100,7 @@ pub struct FileDiff {
 impl FileDiff {
     pub fn display_name(&self) -> String {
         match &self.old_path {
-            Some(old) => format!("{old} → {}", self.path),
+            Some(old) => format!("{old} -> {}", self.path),
             None => self.path.clone(),
         }
     }

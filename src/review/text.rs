@@ -86,7 +86,8 @@ pub(super) fn file_lines(content: &[String], diff: &FileDiff) -> Vec<DiffLine> {
 
 impl FileText {
     pub(super) fn load(repo: &Repo, diff: &FileDiff) -> Self {
-        let head = repo.committed(&diff.path);
+        let base_path = diff.old_path.as_deref().unwrap_or(&diff.path);
+        let head = repo.committed(base_path);
         let old: Vec<String> = head
             .as_deref()
             .unwrap_or_default()
@@ -97,7 +98,7 @@ impl FileText {
         let mut text = Self {
             head,
             old: Side {
-                spans: Highlighter::spans_of(&path, &old),
+                spans: Highlighter::spans_of(&repo.root.join(base_path), &old),
                 lines: old,
             },
             index: Vec::new(),
@@ -109,15 +110,35 @@ impl FileText {
             changed: Vec::new(),
             longest: 0,
         };
-        text.set_index(&repo.staged(&diff.path).unwrap_or_default());
+        let index = repo
+            .staged(&diff.path)
+            .or_else(|| repo.staged(base_path))
+            .unwrap_or_default();
+        text.set_index(&index);
         text
     }
 
-    pub(super) fn from_work(&self, path: &Path) -> bool {
+    pub(super) fn matches_work(&self, path: &Path) -> bool {
         match file_view::read(path) {
             Ok(work) => work == self.work,
             Err(_) => self.missing,
         }
+    }
+
+    pub(super) fn version(
+        &self,
+        hunks: &[Hunk],
+        chosen: impl Fn(usize, usize) -> bool,
+    ) -> Option<Vec<u8>> {
+        let status = if self.head.is_none() {
+            FileStatus::Added
+        } else if self.missing && self.work.is_empty() {
+            FileStatus::Deleted
+        } else {
+            FileStatus::Modified
+        };
+        let head = self.head.as_deref().unwrap_or_default().as_bytes();
+        crate::git::version(status, head, self.work.as_bytes(), hunks, chosen)
     }
 
     pub(super) fn set_index(&mut self, staged: &str) {

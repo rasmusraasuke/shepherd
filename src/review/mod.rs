@@ -53,6 +53,7 @@ struct StageJob {
     repo: Repo,
     paths: Vec<String>,
     versions: Vec<(String, Option<Vec<u8>>)>,
+    renamed: Vec<String>,
     reviewed: bool,
     ctx: egui::Context,
 }
@@ -69,10 +70,15 @@ impl StageJob {
     }
 
     fn run(&self) -> Result<(), String> {
-        let paths: Vec<&str> = self.paths.iter().map(String::as_str).collect();
-        self.repo.stage_files(&paths, self.reviewed)?;
+        if !self.paths.is_empty() {
+            let paths: Vec<&str> = self.paths.iter().map(String::as_str).collect();
+            self.repo.stage_files(&paths, self.reviewed)?;
+        }
         for (path, content) in &self.versions {
             self.repo.stage_version(path, content.as_deref())?;
+        }
+        for old in &self.renamed {
+            self.repo.remove_from_index(old)?;
         }
         Ok(())
     }
@@ -341,9 +347,17 @@ impl Review {
     }
 
     pub fn roll_back(&mut self, path: &str) {
-        match self.repo.roll_back(path) {
-            Ok(files) => self.rolled_back.extend(files),
-            Err(error) => self.error = Some(error),
+        let old = self
+            .by_path
+            .get(path)
+            .and_then(|&file| self.files[file].diff.old_path.clone());
+        let mut paths = vec![path.to_string()];
+        paths.extend(old);
+        for path in paths {
+            match self.repo.roll_back(&path) {
+                Ok(files) => self.rolled_back.extend(files),
+                Err(error) => self.error = Some(error),
+            }
         }
         self.changed = true;
     }
@@ -472,19 +486,17 @@ impl Review {
 
     fn stage(&mut self, file: usize, chosen: impl Fn(usize, usize) -> bool) {
         let FileReview { diff, staged, .. } = &mut self.files[file];
+        let old = diff.old_path.clone();
         let result = match self.texts.get_mut(&diff.path) {
             Some(text) => {
-                let status = if text.head.is_none() {
-                    FileStatus::Added
-                } else if text.missing && text.work.is_empty() {
-                    FileStatus::Deleted
-                } else {
-                    FileStatus::Modified
-                };
-                let head = text.head.as_deref().unwrap_or_default().as_bytes();
-                let version =
-                    git::version(status, head, text.work.as_bytes(), &diff.hunks, &chosen);
-                let result = self.repo.stage_version(&diff.path, version.as_deref());
+                let version = text.version(&diff.hunks, &chosen);
+                let result = self
+                    .repo
+                    .stage_version(&diff.path, version.as_deref())
+                    .and_then(|()| match &old {
+                        Some(old) => self.repo.remove_from_index(old),
+                        None => Ok(()),
+                    });
                 if result.is_ok() {
                     text.set_index(&String::from_utf8_lossy(&version.unwrap_or_default()));
                 }
@@ -503,7 +515,14 @@ impl Review {
     }
 
     fn stage_file(&mut self, file: usize, staged: bool) {
-        let result = self.repo.stage_file(&self.files[file].diff.path, staged);
+        let diff = &self.files[file].diff;
+        let result = self
+            .repo
+            .stage_file(&diff.path, staged)
+            .and_then(|()| match &diff.old_path {
+                Some(old) => self.repo.stage_file(old, staged),
+                None => Ok(()),
+            });
         if result.is_ok() {
             self.files[file].file_staged = staged;
         }
@@ -665,18 +684,27 @@ impl Review {
             .collect();
         let mut paths = Vec::new();
         let mut versions = Vec::new();
+        let mut renamed = Vec::new();
         for file in files {
             (0..self.files[file].diff.hunks.len()).for_each(|hunk| self.see(file, hunk));
             let (done, total) = self.files[file].progress();
             if done == if reviewed { total } else { 0 } {
                 continue;
             }
-            let path = self.files[file].diff.path.clone();
+            let diff = &self.files[file].diff;
+            let path = diff.path.clone();
+            if let Some(old) = &diff.old_path {
+                if reviewed {
+                    renamed.push(old.clone());
+                } else {
+                    paths.push(old.clone());
+                }
+            }
             let from_buffer = reviewed
                 && self
                     .texts
                     .get(&path)
-                    .is_some_and(|text| !text.from_work(&self.repo.root.join(&path)));
+                    .is_some_and(|text| !text.matches_work(&self.repo.root.join(&path)));
             if from_buffer {
                 versions.push((path, self.all_version(file)));
             } else {
@@ -684,7 +712,7 @@ impl Review {
             }
             self.files[file].mark(reviewed);
         }
-        if paths.is_empty() && versions.is_empty() {
+        if paths.is_empty() && versions.is_empty() && renamed.is_empty() {
             return;
         }
         self.update_progress();
@@ -693,6 +721,7 @@ impl Review {
             repo: self.repo.clone(),
             paths,
             versions,
+            renamed,
             reviewed,
             ctx: ctx.clone(),
         };
@@ -704,18 +733,7 @@ impl Review {
 
     fn all_version(&self, file: usize) -> Option<Vec<u8>> {
         let diff = &self.files[file].diff;
-        let text = &self.texts[&diff.path];
-        let status = if text.head.is_none() {
-            FileStatus::Added
-        } else if text.missing && text.work.is_empty() {
-            FileStatus::Deleted
-        } else {
-            FileStatus::Modified
-        };
-        let head = text.head.as_deref().unwrap_or_default().as_bytes();
-        git::version(status, head, text.work.as_bytes(), &diff.hunks, &|_, _| {
-            true
-        })
+        self.texts[&diff.path].version(&diff.hunks, |_, _| true)
     }
 
     fn handle_keys(
