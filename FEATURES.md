@@ -17,7 +17,8 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   it; closing a popped out window brings its tabs back to the main window.
 - **Sidebar.** A narrow bar of icons on the left edge chooses what the sidebar shows:
   *Files* (a page), the tree of project files (everything git doesn't ignore), or *Changes*
-  (two sides of a diff), the tree of changed files with their review progress. Clicking the icon of
+  (two sides of a diff), the tree of changed files with their review progress, or *History*
+  (a clock), the commits of the branch. Clicking the icon of
   what is already shown closes the sidebar, leaving the icons; any icon opens it again.
 - **Keyboard shortcuts.** The keyboard icon at the bottom of the bar, or Cmd+/, shows all the
   keys in one place. Esc or a click outside closes it.
@@ -81,6 +82,7 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
 | Alt+Backspace / Cmd+Backspace | Delete the word / the line before the cursor |
 | Cmd+Z / Cmd+Shift+Z           | Undo / redo                             |
 | Cmd+F                         | Find and replace                        |
+| Cmd+Shift+B                   | Annotate with Git Blame                 |
 | Shift Shift / Cmd+Shift+F     | Search in files                         |
 | Ctrl Ctrl                     | Quick chat with an agent                |
 | Cmd+S                         | Save now                                |
@@ -298,6 +300,31 @@ the background; what it complains about is shown above the commit message.
   the merge, rebase, cherry-pick or revert, and *Abort* takes the operation back; both are
   beside the sync buttons. Changes set aside for the pull come back as before, and a stash
   that didn't apply shows its conflicts the same way.
+
+## Reviewing commits
+
+Work that is already committed is reviewed in the same view as work in the working tree.
+
+- **History.** *History* in the bar of icons lists the commits of the branch, newest first,
+  with the subject, the short hash, the author and when each was made. The list follows new
+  commits and switches of branch as they happen.
+- **A commit.** A click opens a commit's changes in the review tab used last, one file at a
+  time. Cmd+click opens another review tab, as a file does. The files of the commit are
+  listed under the commits, with the same tree and colors as *Changes*.
+- **Reading committed work.** A commit's review is the same review: the same hunks,
+  highlighting, comments and keys, one file at a time, and *Open in file* to jump to the
+  place in the working file. It is read-only, and its marks are shown as reviewed because
+  what is committed is reviewed; there is nothing to stage. A comment on a committed line is
+  sent to an agent about that commit, not about the uncommitted changes.
+- **A file's history.** *File history* in the menu behind a right-click on a file in *Files*,
+  or in the menu of a file tab, lists the commits that changed that file. A click shows what
+  the commit changed in it, as above. *All commits* goes back to the history of the branch.
+- **Blame.** *Annotate with Git Blame* behind a right-click in a file, or Cmd+Shift+B while
+  the file has the keyboard, shows the author of each line's last commit before the line
+  numbers. The background of the name is stronger for recent changes and fades with age;
+  hovering it shows the commit's hash, message and when it was made, and a click opens that
+  commit in *History*, as a click on it there does. Lines that are not committed yet have no
+  blame. *Hide Git Blame* turns it off again.
 
 ## Agents in the loop
 

@@ -7,7 +7,7 @@ use eframe::egui::Color32;
 use super::word_diff::Ranges;
 use crate::editor::file_view;
 use crate::editor::highlight::{Highlighter, Spans};
-use crate::git::{Conflict, DiffLine, FileDiff, FileStatus, Hunk, LineKind, Repo};
+use crate::git::{CommitRange, Conflict, DiffLine, FileDiff, FileStatus, Hunk, LineKind, Repo};
 
 use super::{line_diff, word_diff};
 
@@ -251,6 +251,49 @@ impl FileText {
             .staged(&diff.path)
             .or_else(|| repo.staged(base_path))
             .unwrap_or_default();
+        text.set_index(&index);
+        text
+    }
+
+    pub(super) fn load_commits(repo: &Repo, diff: &FileDiff, range: &CommitRange) -> Self {
+        let base_path = diff.old_path.as_deref().unwrap_or(&diff.path);
+        let head = repo.content_at(&range.base, base_path);
+        let old: Vec<String> = head
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let work = repo.content_at(&range.head, &diff.path).unwrap_or_default();
+        let work_lines: Vec<String> = work.lines().map(str::to_string).collect();
+        let changed = diff
+            .hunks
+            .iter()
+            .map(|hunk| changed_in_lines(hunk, &old, &work_lines))
+            .collect();
+        let longest = old
+            .iter()
+            .chain(&work_lines)
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
+        let mut text = Self {
+            head,
+            old: Side {
+                spans: Highlighter::spans_of(&repo.root.join(base_path), &old),
+                lines: old,
+            },
+            index: work_lines.clone(),
+            staged_removals: HashSet::new(),
+            missing: false,
+            work,
+            work_lines,
+            revision: None,
+            changed,
+            conflicts: Vec::new(),
+            longest,
+        };
+        let index = text.index.join("\n");
         text.set_index(&index);
         text
     }

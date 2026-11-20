@@ -47,10 +47,13 @@ becomes a file the agent reads, and the same fonts everywhere: IBM Plex Sans and
 the system's fonts a switch away in the window under Cmd+/, kept in the editor's settings,
 and merge conflicts in the same view: conflicts from a merge, rebase, pull or stash apply
 shown as special hunks that take either side or both, are edited in place, can be handed to
-an agent, and can be continued or aborted from the same view.
+an agent, and can be continued or aborted from the same view, and reviewing commits: the
+history of the branch in a sidebar, a commit opened in the same review, one file at a time,
+read-only with the same marks and comments, a file's own history, and blame on every line
+of a file.
 FEATURES.md describes the features.
 
-Next is milestone 12: reviewing commits.
+Next is milestone 13: comfortable Kotlin editing.
 
 ## Milestones
 
@@ -253,12 +256,12 @@ as an image without saving it by hand.
 
 Done when: a conflicting pull is resolved without leaving the review.
 
-### 12. Reviewing commits
+### 12. Reviewing commits (completed)
 
 - History list of commits for the branch
-- Open one commit, or a range, in the same review, one file at a time, with the same
-  reviewed marks and comments
-- See what a commit changed in a file's history; blame for a line
+- Open a commit in the same review, one file at a time, with the same reviewed marks and
+  comments
+- See what a commit changed in a file's history; blame on every line of a file
 
 Done when: work an agent has already committed can be reviewed the same way as uncommitted work.
 

@@ -16,6 +16,8 @@ use buffer::{Buffer, Move, Pos};
 use code::CodeStyle;
 use highlight::Highlighter;
 
+use crate::git::Commit;
+
 #[derive(Default)]
 pub struct Editor {
     focus: bool,
@@ -24,6 +26,7 @@ pub struct Editor {
     longest_line: Option<(u64, usize)>,
     cursor_moved: Option<((Pos, u64), f64)>,
     active: bool,
+    read_only: bool,
     find: Option<Find>,
 }
 
@@ -76,13 +79,20 @@ impl Find {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, buffer: &mut Buffer, editor_active: bool) -> bool {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        buffer: &mut Buffer,
+        editor_active: bool,
+        read_only: bool,
+    ) -> bool {
         self.update(buffer);
         let before = buffer.selection();
         let enter = ui.input(|i| i.key_pressed(Key::Enter));
         let entered = |response: &egui::Response| response.lost_focus() && enter;
         let mut open =
             !((self.has_focus || editor_active) && ui.input(|i| i.key_pressed(Key::Escape)));
+        let mut has_focus = false;
         ui.horizontal_wrapped(|ui| {
             let query = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
@@ -92,6 +102,7 @@ impl Find {
             if std::mem::take(&mut self.focus) {
                 query.request_focus();
             }
+            has_focus = query.has_focus();
             if query.changed() {
                 let start = before.map_or(buffer.cursor(), |(start, _)| start);
                 buffer.set_cursor(start, false);
@@ -119,32 +130,35 @@ impl Find {
             if clicked(ui, "Next", "Enter") {
                 self.go(buffer, true);
             }
-            let replacement = ui.add(
-                egui::TextEdit::singleline(&mut self.replacement)
-                    .hint_text("Replace")
-                    .desired_width(180.0),
-            );
-            let replace = entered(&replacement);
-            if replace {
-                replacement.request_focus();
-            }
-            if clicked(ui, "Replace", "Enter") || replace {
-                if self
-                    .found
-                    .iter()
-                    .any(|found| Some(*found) == buffer.selection())
-                {
-                    buffer.insert(&self.replacement);
+            if !read_only {
+                let replacement = ui.add(
+                    egui::TextEdit::singleline(&mut self.replacement)
+                        .hint_text("Replace")
+                        .desired_width(180.0),
+                );
+                has_focus |= replacement.has_focus();
+                let replace = entered(&replacement);
+                if replace {
+                    replacement.request_focus();
                 }
-                self.go(buffer, true);
-            }
-            if clicked(ui, "All", "Replace all") {
-                buffer.replace_all(&self.query, &self.replacement);
+                if clicked(ui, "Replace", "Enter") || replace {
+                    if self
+                        .found
+                        .iter()
+                        .any(|found| Some(*found) == buffer.selection())
+                    {
+                        buffer.insert(&self.replacement);
+                    }
+                    self.go(buffer, true);
+                }
+                if clicked(ui, "All", "Replace all") {
+                    buffer.replace_all(&self.query, &self.replacement);
+                }
             }
             self.focus |= refocus;
             open &= !ui.button("×").on_hover_text("Close (Esc)").clicked();
-            self.has_focus = query.has_focus() || replacement.has_focus();
         });
+        self.has_focus = has_focus;
         self.update(buffer);
         open
     }
@@ -194,7 +208,7 @@ impl Editor {
         }
         if let Some(find) = &mut self.find {
             let selection = buffer.selection();
-            if !find.ui(ui, buffer, self.active) {
+            if !find.ui(ui, buffer, self.active, self.read_only) {
                 self.find = None;
                 self.focus = true;
             }
@@ -202,18 +216,37 @@ impl Editor {
         }
     }
 
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         id_salt: &str,
         buffer: &mut Buffer,
         highlighter: Option<&mut Highlighter>,
+        blame: Option<&[Commit]>,
+        blame_on: bool,
+        toggle_blame: &mut bool,
+        open_commit: &mut Option<String>,
     ) {
         self.find_ui(ui, buffer);
         let style = CodeStyle::new(ui);
         let number_width =
             style.digit_width * (buffer.lines().len().to_string().len().max(3) + 1) as f32;
-        let code_x = number_width + style.digit_width * 2.0;
+        let blame_chars = blame.map_or(0, |lines| {
+            lines
+                .iter()
+                .filter(|commit| !commit.short.is_empty())
+                .map(|commit| commit.author.chars().count())
+                .max()
+                .unwrap_or(0)
+                .clamp(8, 24)
+        });
+        let blame_width = style.digit_width * (blame_chars + 2) as f32;
+        let code_x = blame_width + number_width + style.digit_width * 2.0;
         let width = code_x + style.digit_width * (self.longest_line(buffer) + 2) as f32;
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::both()
@@ -224,7 +257,7 @@ impl Editor {
                     .max(ui.available_size());
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                 let visible = viewport.translate(rect.min.to_vec2());
-                self.text_ui(
+                let response = self.text_ui(
                     ui,
                     id_salt,
                     buffer,
@@ -234,6 +267,17 @@ impl Editor {
                     code_x,
                     None,
                 );
+                response.context_menu(|ui| {
+                    let label = if blame_on {
+                        "Hide Git Blame"
+                    } else {
+                        "Annotate with Git Blame"
+                    };
+                    if ui.button(label).clicked() {
+                        *toggle_blame = true;
+                        ui.close();
+                    }
+                });
 
                 let painter = ui.painter();
                 let gutter = egui::Rect::from_min_max(
@@ -244,14 +288,66 @@ impl Editor {
                     ),
                 );
                 painter.rect_filled(gutter, 0.0, ui.visuals().panel_fill);
+                if blame.is_some() {
+                    let x = visible.left() + blame_width - style.digit_width * 0.5;
+                    painter.line_segment(
+                        [
+                            egui::pos2(x, visible.top()),
+                            egui::pos2(x, visible.bottom()),
+                        ],
+                        egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.2)),
+                    );
+                }
                 let first = (viewport.top() / style.row_height) as usize;
                 let last =
                     ((viewport.bottom() / style.row_height) as usize + 1).min(buffer.lines().len());
+                let blame_font =
+                    egui::FontId::new((style.font.size * 0.82).max(9.0), style.font.family.clone());
+                let accent = ui.visuals().selection.bg_fill;
                 for line in first.min(last)..last {
+                    let y = rect.top() + style.row_height * line as f32;
+                    if let Some(commit) = blame
+                        .and_then(|lines| lines.get(line))
+                        .filter(|commit| !commit.short.is_empty())
+                    {
+                        let cell = egui::Rect::from_min_size(
+                            egui::pos2(visible.left(), y),
+                            Vec2::new(blame_width, style.row_height),
+                        );
+                        let alpha = (20.0 + 120.0 * commit.recency()).round() as u8;
+                        painter.rect_filled(
+                            cell,
+                            0.0,
+                            Color32::from_rgba_unmultiplied(
+                                accent.r(),
+                                accent.g(),
+                                accent.b(),
+                                alpha,
+                            ),
+                        );
+                        let name: String = commit.author.chars().take(blame_chars).collect();
+                        painter.text(
+                            egui::pos2(visible.left() + style.digit_width, y + 2.0),
+                            egui::Align2::LEFT_TOP,
+                            name,
+                            blame_font.clone(),
+                            ui.visuals().text_color(),
+                        );
+                        let response =
+                            ui.interact(cell, response.id.with(("blame", line)), Sense::click());
+                        if response.clicked() {
+                            *open_commit = Some(commit.hash.clone());
+                        }
+                        response.on_hover_ui(|ui| {
+                            ui.label(egui::RichText::new(&commit.subject).strong());
+                            ui.weak(format!("{} · {}", commit.author, commit.time));
+                            ui.monospace(&commit.hash);
+                        });
+                    }
                     style.number(
                         painter,
-                        visible.left() + number_width,
-                        rect.top() + style.row_height * line as f32 + 1.0,
+                        visible.left() + blame_width + number_width,
+                        y + 1.0,
                         Some(line as u32 + 1),
                     );
                 }
@@ -337,7 +433,7 @@ impl Editor {
             response.surrender_focus();
         }
         self.active = response.has_focus() || find_has_focus;
-        if response.has_focus() && !took_focus {
+        if response.has_focus() && !took_focus && !self.read_only {
             let filter = EventFilter {
                 tab: true,
                 horizontal_arrows: true,

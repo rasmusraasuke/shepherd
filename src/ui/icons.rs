@@ -4,6 +4,7 @@ use eframe::egui::{self, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Ve
 pub enum Icon {
     Files,
     Review,
+    History,
     Keys,
     More,
     Folder { open: bool },
@@ -148,6 +149,10 @@ pub fn paint(painter: &Painter, center: Pos2, size: f32, icon: Icon, color: Colo
             for y in [6.0, 9.0, 12.0] {
                 line(&[(10.8, y), (13.5, y)]);
             }
+        }
+        Icon::History => {
+            painter.circle_stroke(at(9.0, 9.0), 6.8 * scale, stroke);
+            line(&[(9.0, 4.8), (9.0, 9.0), (12.0, 10.8)]);
         }
         Icon::Keys => {
             frame((1.5, 4.0), (16.5, 14.0));

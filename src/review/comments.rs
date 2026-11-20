@@ -111,12 +111,16 @@ pub fn conflicts(quotes: impl IntoIterator<Item = String>) -> String {
 }
 
 pub fn feedback<'a>(comments: impl IntoIterator<Item = &'a Comment>) -> String {
+    feedback_on(comments, "the uncommitted changes")
+}
+
+pub fn feedback_on<'a>(comments: impl IntoIterator<Item = &'a Comment>, target: &str) -> String {
     let quotes: Vec<String> = comments
         .into_iter()
         .map(|comment| quote(&comment.path, &comment.lines, &comment.text))
         .collect();
     format!(
-        "Please address these review comments on the uncommitted changes:\n\n{}",
+        "Please address these review comments on {target}:\n\n{}",
         quotes.join("\n\n")
     )
 }

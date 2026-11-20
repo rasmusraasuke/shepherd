@@ -17,6 +17,7 @@ pub(super) fn draft_ui(
     id: egui::Id,
     view: &mut View,
     agents: &Agents,
+    can_revert: bool,
 ) -> Option<Draft> {
     let focused = ui.memory(|m| m.has_focus(id));
     let submit = focused && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
@@ -53,10 +54,11 @@ pub(super) fn draft_ui(
             {
                 draft = Some(Draft::Cancel);
             }
-            if ui
-                .add(theme::quiet("Revert"))
-                .on_hover_text("Take the selected changes back to how they were committed")
-                .clicked()
+            if can_revert
+                && ui
+                    .add(theme::quiet("Revert"))
+                    .on_hover_text("Take the selected changes back to how they were committed")
+                    .clicked()
             {
                 draft = Some(Draft::Revert);
             }

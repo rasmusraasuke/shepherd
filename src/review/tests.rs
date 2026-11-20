@@ -189,6 +189,65 @@ fn comment_on_row(harness: &mut Harness<'_, Shown>, below_hunk: f32, text: &str)
 }
 
 #[test]
+fn a_commit_is_reviewed_read_only_with_its_committed_content() {
+    let (repo, dir) = temp_repo("commit-review", &[("a.txt", "one\n")]);
+    commit_all(&repo);
+    dir.write("a.txt", "two\n");
+    dir.write("b.txt", "b\n");
+    commit_all(&repo);
+    let hash = repo.log().unwrap()[0].hash.clone();
+    let range = repo.commit_range(&hash).unwrap();
+    let review = Review::for_commits(repo, range, hash[..7].to_string());
+    let harness = show(review, Some("a.txt"), 600.0);
+
+    assert_eq!(
+        harness.state().review.texts["a.txt"].work_lines,
+        ["two"].map(str::to_string)
+    );
+    assert_eq!(harness.state().review.progress_of("a.txt"), (2, 2));
+    assert!(harness.query_by_label("Mark file reviewed").is_none());
+    assert!(harness.query_by_label("Mark file not reviewed").is_none());
+    assert_eq!(harness.query_all_by_label("Reviewed").count(), 1);
+    assert!(harness.state().review.first_file().is_some());
+}
+
+#[test]
+fn comments_on_a_committed_line_are_sent_about_the_commit() {
+    let (repo, dir) = temp_repo("commit-comment", &[("a.txt", TEN)]);
+    commit_all(&repo);
+    dir.write("a.txt", TEN.replace("2\n", "two\n"));
+    commit_all(&repo);
+    let hash = repo.log().unwrap()[0].hash.clone();
+    let range = repo.commit_range(&hash).unwrap();
+    let review = Review::for_commits(repo, range, hash[..7].to_string());
+    let mut harness = show(review, Some("a.txt"), 600.0);
+    comment_on_row(&mut harness, 1.0, "Use two");
+    harness.get_by_label("Comment").click();
+    harness.run();
+    harness.get_by_label("Send 1 comment").click();
+    harness.run();
+    assert!(matches!(
+        &harness.state().asked,
+        Some(Outcome::Send { text, .. })
+            if text.starts_with("Please address these review comments on commit ")
+    ));
+}
+
+#[test]
+fn a_hunk_cannot_be_marked_in_a_commit() {
+    let (repo, dir) = temp_repo("commit-marks", &[("a.txt", "one\n")]);
+    commit_all(&repo);
+    dir.write("a.txt", "two\n");
+    commit_all(&repo);
+    let hash = repo.log().unwrap()[0].hash.clone();
+    let range = repo.commit_range(&hash).unwrap();
+    let mut review = Review::for_commits(repo, range, hash[..7].to_string());
+    assert_eq!(review.toggle_reviewed(0, 0), None);
+    review.toggle_line(0, 0, 0);
+    assert_eq!(review.progress(), (2, 2));
+}
+
+#[test]
 fn comments_on_a_line_until_it_changes() {
     let (mut harness, dir) = comment_harness("comment");
     comment_on_row(&mut harness, 1.0, "Use 2");
@@ -645,7 +704,7 @@ fn marks_a_directory_reviewed_from_its_menu_in_the_tree() {
     let (review, _dir) = review("tree-menu", TREE);
     let mut harness = Harness::new_ui_state(
         |ui, review: &mut Review| {
-            review.tree_ui(ui, &mut BTreeSet::new(), None);
+            review.tree_ui(ui, &mut BTreeSet::new(), None, true);
         },
         review,
     );
@@ -663,7 +722,7 @@ fn rolls_back_a_file_or_a_directory_from_its_menu_in_the_tree() {
     let (review, dir) = review("tree-roll-back", TREE);
     let mut harness = Harness::new_ui_state(
         |ui, review: &mut Review| {
-            review.tree_ui(ui, &mut BTreeSet::new(), None);
+            review.tree_ui(ui, &mut BTreeSet::new(), None, true);
         },
         review,
     );
@@ -717,7 +776,7 @@ fn marks_a_file_reviewed_with_its_checkbox_in_the_tree_and_everything_at_once() 
     let (review, _dir) = review("tree-marks", TREE);
     let mut harness = Harness::new_ui_state(
         |ui, review: &mut Review| {
-            review.tree_ui(ui, &mut BTreeSet::new(), None);
+            review.tree_ui(ui, &mut BTreeSet::new(), None, true);
         },
         review,
     );

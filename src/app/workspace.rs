@@ -7,10 +7,16 @@ use egui_tiles::{Container, Tile, TileId, Tree};
 use serde::{Deserialize, Serialize};
 
 use crate::agents::{Agent, Choice, Tuning};
+use crate::git::CommitRange;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Tab {
     Review(Option<String>),
+    CommitReview {
+        path: Option<String>,
+        range: CommitRange,
+        label: String,
+    },
     File(String),
     Terminal(u64),
     Agent {
@@ -28,6 +34,14 @@ impl Tab {
         match self {
             Tab::Review(None) => "Review".to_string(),
             Tab::Review(Some(path)) => format!("Review: {}", name(path)),
+            Tab::CommitReview {
+                path: Some(path),
+                label,
+                ..
+            } => format!("Review: {} · {label}", name(path)),
+            Tab::CommitReview {
+                path: None, label, ..
+            } => format!("Review: {label}"),
             Tab::File(path) => name(path),
             Tab::Terminal(_) => "Terminal".to_string(),
             Tab::Agent { agent, .. } => agent.name().to_string(),
@@ -37,9 +51,21 @@ impl Tab {
     pub fn path(&self) -> Option<&str> {
         match self {
             Tab::Review(path) => path.as_deref(),
+            Tab::CommitReview { path, .. } => path.as_deref(),
             Tab::File(path) => Some(path),
             Tab::Terminal(_) | Tab::Agent { .. } => None,
         }
+    }
+
+    pub fn working_path(&self) -> Option<&str> {
+        match self {
+            Tab::Review(path) => path.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn is_review(&self) -> bool {
+        matches!(self, Tab::Review(_) | Tab::CommitReview { .. })
     }
 }
 
@@ -49,6 +75,7 @@ pub enum Sidebar {
     #[serde(alias = "Search")]
     Files,
     Changes,
+    History,
 }
 
 const NEW_WINDOW_GRIP: egui::Vec2 = egui::vec2(60.0, 40.0);
@@ -376,7 +403,7 @@ impl Workspace {
                     .tree
                     .tiles
                     .iter()
-                    .filter(|(_, tile)| matches!(tile, Tile::Pane(Tab::Review(_))));
+                    .filter(|(_, tile)| matches!(tile, Tile::Pane(tab) if tab.is_review()));
                 Some((index, *tiles.map(|(id, _)| id).min_by_key(|id| id.0)?))
             })
         };
@@ -386,8 +413,7 @@ impl Workspace {
             .or_else(first)
     }
 
-    pub fn show_review(&mut self, path: &str, new_tab: bool) -> usize {
-        let tab = Tab::Review(Some(path.to_string()));
+    fn show_in_review_tab(&mut self, tab: Tab, new_tab: bool) -> usize {
         let window = match self.find(&tab) {
             Some((window, _)) => self.open(tab.clone(), window),
             None => match self.review_tab() {
@@ -405,6 +431,21 @@ impl Workspace {
         };
         self.last_review = Some(tab);
         window
+    }
+
+    pub fn show_review(&mut self, path: &str, new_tab: bool) -> usize {
+        self.show_in_review_tab(Tab::Review(Some(path.to_string())), new_tab)
+    }
+
+    pub fn show_commit_review(
+        &mut self,
+        range: CommitRange,
+        path: Option<String>,
+        label: String,
+        new_tab: bool,
+    ) -> usize {
+        let tab = Tab::CommitReview { path, range, label };
+        self.show_in_review_tab(tab, new_tab)
     }
 
     pub fn move_tab(&mut self, from: usize, tile: TileId, to: Option<usize>) {
@@ -823,5 +864,70 @@ mod tests {
         workspace.last_review = Some(review("gone.rs"));
         workspace.show_review("b.rs", false);
         assert_eq!(tabs(&workspace.windows[0]), ["Review: b.rs", "a.rs"]);
+    }
+
+    fn range(head: &str) -> CommitRange {
+        CommitRange {
+            base: "0".repeat(40),
+            head: head.to_string(),
+        }
+    }
+
+    #[test]
+    fn shows_a_commit_in_the_review_tab_used_last_one_file_at_a_time() {
+        let mut workspace = Workspace::default();
+        let window = workspace.show_commit_review(
+            range("abcdef"),
+            Some("src/a.rs".to_string()),
+            "abcdef1".to_string(),
+            false,
+        );
+        assert_eq!(window, 0);
+        assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs · abcdef1"]);
+        assert_eq!(
+            workspace.last_review,
+            Some(Tab::CommitReview {
+                path: Some("src/a.rs".to_string()),
+                range: range("abcdef"),
+                label: "abcdef1".to_string(),
+            })
+        );
+
+        workspace.show_commit_review(
+            range("abcdef"),
+            Some("src/b.rs".to_string()),
+            "abcdef1".to_string(),
+            false,
+        );
+        assert_eq!(tabs(&workspace.windows[0]), ["Review: b.rs · abcdef1"]);
+
+        workspace.show_commit_review(
+            range("123456"),
+            Some("src/a.rs".to_string()),
+            "1234567".to_string(),
+            false,
+        );
+        assert_eq!(tabs(&workspace.windows[0]), ["Review: a.rs · 1234567"]);
+    }
+
+    #[test]
+    fn opens_a_second_commit_review_beside_the_last_one_when_asked() {
+        let mut workspace = Workspace::default();
+        workspace.show_commit_review(
+            range("abcdef"),
+            Some("src/a.rs".to_string()),
+            "abcdef1".to_string(),
+            false,
+        );
+        workspace.show_commit_review(
+            range("123456"),
+            Some("src/a.rs".to_string()),
+            "1234567".to_string(),
+            true,
+        );
+        assert_eq!(
+            tabs(&workspace.windows[0]),
+            ["Review: a.rs · 1234567", "Review: a.rs · abcdef1"]
+        );
     }
 }

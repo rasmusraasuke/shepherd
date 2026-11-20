@@ -162,6 +162,7 @@ impl App {
         for (sidebar, icon, label) in [
             (Sidebar::Files, Icon::Files, "Files"),
             (Sidebar::Changes, Icon::Review, "Changes"),
+            (Sidebar::History, Icon::History, "History"),
         ] {
             let chosen = self.workspace.sidebar_open && self.workspace.sidebar == sidebar;
             if button(ui, icon, label, chosen) {
@@ -192,15 +193,25 @@ impl App {
                         .map(|status| review::status_color(status, dark_mode)),
                     ..Default::default()
                 };
+                let mut history = None;
+                let mut menu = |ui: &mut egui::Ui, path: &str| {
+                    if ui.button("History").clicked() {
+                        history = Some(path.to_string());
+                        ui.close();
+                    }
+                };
                 if let Some(path) = self.content.file_tree.ui(
                     ui,
                     &mut self.workspace.expanded_dirs,
                     None,
                     look,
-                    None,
+                    Some(&mut menu),
                     None,
                 ) {
                     self.action = Some(Action::Open(Tab::File(path), 0));
+                }
+                if let Some(path) = history {
+                    self.action = Some(Action::FileHistory(path));
                 }
             }
             Sidebar::Changes => {
@@ -224,16 +235,69 @@ impl App {
                     }
                     None => {}
                 }
-                let selected = self.workspace.last_review.as_ref().and_then(Tab::path);
-                if let Some(path) =
-                    self.content
-                        .review
-                        .tree_ui(ui, &mut self.workspace.collapsed_changes, selected)
-                {
+                let selected = self
+                    .workspace
+                    .last_review
+                    .as_ref()
+                    .and_then(Tab::working_path);
+                if let Some(path) = self.content.review.tree_ui(
+                    ui,
+                    &mut self.workspace.collapsed_changes,
+                    selected,
+                    true,
+                ) {
                     let new_tab = ui.input(|i| i.modifiers.command);
                     self.action = Some(Action::Review { path, new_tab });
                 }
             }
+            Sidebar::History => self.history_sidebar(ui),
+        }
+    }
+
+    fn history_sidebar(&mut self, ui: &mut egui::Ui) {
+        use crate::panels::history::Outcome;
+        if let Some(outcome) = self.content.history.ui(ui) {
+            let Outcome::Open {
+                range,
+                label,
+                file,
+                new_tab,
+            } = outcome;
+            self.action = Some(Action::OpenCommit {
+                range,
+                label,
+                file,
+                new_tab,
+            });
+        }
+        let selected = self.content.history.selected();
+        let Some((range, label)) =
+            selected.map(|(range, label)| (range.clone(), label.to_string()))
+        else {
+            return;
+        };
+        let Some(review) = self.content.commits.get_mut(&range) else {
+            return;
+        };
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(4.0);
+        let current = match &self.workspace.last_review {
+            Some(Tab::CommitReview {
+                path, range: shown, ..
+            }) if *shown == range => path.as_deref(),
+            _ => None,
+        };
+        if let Some(path) =
+            review.tree_ui(ui, &mut self.workspace.collapsed_changes, current, false)
+        {
+            let new_tab = ui.input(|i| i.modifiers.command);
+            self.action = Some(Action::OpenCommit {
+                range,
+                label,
+                file: Some(path),
+                new_tab,
+            });
         }
     }
 }

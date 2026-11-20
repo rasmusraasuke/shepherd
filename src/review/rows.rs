@@ -130,6 +130,7 @@ pub(super) fn rows_ui(
     buffer: &mut Buffer,
     highlighter: Option<&mut Highlighter>,
     can_ask: bool,
+    editable: bool,
 ) -> (Option<Clicked>, Vec<DiffLine>) {
     let hunks = &file.diff.hunks;
     let gaps = gaps(hunks, text.work_lines.len());
@@ -197,7 +198,7 @@ pub(super) fn rows_ui(
                 let line = hunks[hunk].lines[at].new_no.unwrap_or_default() as usize - 1;
                 let mark = row_colors(LineKind::Added, dark)
                     .map_or(Color32::TRANSPARENT, |(_, mark)| {
-                        fade(mark, file.staged[hunk][at])
+                        fade(mark, editable && file.staged[hunk][at])
                     });
                 editor_rows
                     .marks
@@ -239,8 +240,13 @@ pub(super) fn rows_ui(
             Row::Hunk(hunk, at) => {
                 let line = &hunks[hunk].lines[at];
                 let conflict = hunks[hunk].conflict.is_some();
-                let mark =
-                    line_background(ui, row_rect, line.kind, file.staged[hunk][at], conflict);
+                let mark = line_background(
+                    ui,
+                    row_rect,
+                    line.kind,
+                    editable && file.staged[hunk][at],
+                    conflict,
+                );
                 if line.kind == LineKind::Removed {
                     let (code, spans) = text.old.line(line.old_no);
                     let galley = ui.fonts_mut(|fonts| {
@@ -356,7 +362,7 @@ pub(super) fn rows_ui(
                     gutter_left,
                     line.kind,
                     (line.old_no, line.new_no),
-                    staged,
+                    editable && staged,
                     conflict,
                 );
                 if hunk == view.current {
@@ -390,6 +396,7 @@ pub(super) fn rows_ui(
                         state,
                         "Reviewed",
                         response.id.with(("hunk", hunk)),
+                        editable,
                     ) {
                         clicked = Some(Clicked::Hunk(hunk));
                     }
@@ -410,7 +417,8 @@ pub(super) fn rows_ui(
                     );
                 }
                 let partly = done > 0 && done < total;
-                let shown = !conflict
+                let shown = editable
+                    && !conflict
                     && (hovered == Some(index) || partly)
                     && line.kind != LineKind::Context;
                 if shown
@@ -421,6 +429,7 @@ pub(super) fn rows_ui(
                         Some(staged),
                         "Reviewed line",
                         response.id.with(("line", hunk, at)),
+                        true,
                     )
                 {
                     clicked = Some(Clicked::Line(hunk, at));
@@ -490,7 +499,9 @@ pub(super) fn rows_ui(
                 );
             }
             Some(&Row::Hunk(hunk, at)) => {
-                item("Revert", Clicked::Revert(hunk));
+                if editable {
+                    item("Revert", Clicked::Revert(hunk));
+                }
                 item(
                     "Open in file (o)",
                     Clicked::Open(place_in_file(&hunks[hunk], Some(&hunks[hunk].lines[at]))),
@@ -797,6 +808,7 @@ pub(super) fn reviewed_mark_ui(
     reviewed: Option<bool>,
     label: &str,
     id: egui::Id,
+    interactive: bool,
 ) -> bool {
     let response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| {
@@ -825,9 +837,9 @@ pub(super) fn reviewed_mark_ui(
     };
     let sign = match reviewed {
         Some(true) => vec![at(0.2, 0.5), at(0.45, 0.75), at(0.8, 0.25)],
-        Some(false) => return response.clicked(),
+        Some(false) => return interactive && response.clicked(),
         None => vec![at(0.25, 0.5), at(0.75, 0.5)],
     };
     ui.painter().add(egui::Shape::line(sign, visuals.fg_stroke));
-    response.clicked()
+    interactive && response.clicked()
 }

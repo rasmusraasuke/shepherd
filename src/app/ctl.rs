@@ -139,6 +139,10 @@ impl App {
                 Tab::Review(path) => {
                     format!("- review of {}", path.as_deref().unwrap_or("no file yet"))
                 }
+                Tab::CommitReview { path, label, .. } => format!(
+                    "- review of {} in commit {label}",
+                    path.as_deref().unwrap_or("no file yet")
+                ),
                 Tab::File(path) => format!("- file {path}"),
                 Tab::Terminal(id) => format!("- terminal {id}"),
                 Tab::Agent { id, agent, .. } => format!("- agent {id}: {}", agent.name()),

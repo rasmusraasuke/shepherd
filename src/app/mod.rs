@@ -4,7 +4,7 @@ mod tabs;
 mod window;
 pub mod workspace;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -13,13 +13,14 @@ use eframe::egui::{self, Key, Modifiers, ViewportBuilder, ViewportCommand, Viewp
 use egui_tiles::TileId;
 
 use crate::agents::{self, Agent, Model, Tuning};
-use crate::app::workspace::{Tab, Workspace};
+use crate::app::workspace::{Sidebar, Tab, Workspace};
 use crate::control::{self, Control};
 use crate::editor::file_view::OpenFiles;
-use crate::git::Repo;
 use crate::git::watcher::{Snapshot, Watcher};
+use crate::git::{CommitRange, Repo};
 use crate::panels::file_tree::FileTree;
 use crate::panels::flow::{self, Flow};
+use crate::panels::history::{History, Outcome as HistoryOutcome};
 use crate::panels::keys::{self, DoubleTap};
 use crate::panels::quick_chat::QuickChat;
 use crate::panels::quick_open::QuickOpen;
@@ -69,7 +70,10 @@ pub struct App {
 
 struct Content {
     root: PathBuf,
+    repo: Repo,
     review: Review,
+    commits: HashMap<CommitRange, Review>,
+    history: History,
     open_files: OpenFiles,
     file_tree: FileTree,
     files: Vec<String>,
@@ -88,6 +92,14 @@ enum Action {
         path: String,
         new_tab: bool,
     },
+    OpenCommit {
+        range: CommitRange,
+        label: String,
+        file: Option<String>,
+        new_tab: bool,
+    },
+    FileHistory(String),
+    ShowCommit(String),
     ReviewLine {
         path: String,
         line: usize,
@@ -116,6 +128,12 @@ impl Content {
     fn run(&mut self, op: flow::Op, ctx: &egui::Context) {
         self.open_files.save_all();
         self.flow.run(op, ctx);
+    }
+
+    fn commit_review(&mut self, range: &CommitRange, label: &str) -> &mut Review {
+        self.commits.entry(range.clone()).or_insert_with(|| {
+            Review::for_commits(self.repo.clone(), range.clone(), label.to_string())
+        })
     }
 }
 
@@ -153,6 +171,9 @@ impl App {
             cfg!(not(test)).then(|| agents::load_models(agents.clone(), agent_env, ctx.clone()));
         let mut content = Content {
             review: Review::new(repo.clone()),
+            repo: repo.clone(),
+            commits: HashMap::new(),
+            history: History::new(repo.clone()),
             open_files: OpenFiles::new(repo.root.clone()),
             file_tree: FileTree::default(),
             files: Vec::new(),
@@ -270,6 +291,7 @@ impl App {
                     .set_files(snapshot.files.clone(), &self.workspace.expanded_dirs);
                 content.files = snapshot.files;
                 content.flow.update(snapshot.status, &snapshot.changes);
+                content.history.set_commits(snapshot.commits);
                 content.open_files.reload_changed();
                 content.search.files_changed();
             }
@@ -314,6 +336,48 @@ impl App {
             Action::Review { path, new_tab } => {
                 let window = self.workspace.show_review(&path, new_tab);
                 self.focus(window, ctx);
+            }
+            Action::OpenCommit {
+                range,
+                label,
+                file,
+                new_tab,
+            } => {
+                let path = {
+                    let review = self.content.commit_review(&range, &label);
+                    file.filter(|path| review.has_file(path))
+                        .or_else(|| review.first_file())
+                };
+                let window = self
+                    .workspace
+                    .show_commit_review(range, path, label, new_tab);
+                self.focus(window, ctx);
+            }
+            Action::FileHistory(path) => {
+                self.content.history.show_file(Some(path));
+                self.workspace.sidebar = Sidebar::History;
+                self.workspace.sidebar_open = true;
+            }
+            Action::ShowCommit(hash) => {
+                self.workspace.sidebar = Sidebar::History;
+                self.workspace.sidebar_open = true;
+                if let Some(HistoryOutcome::Open {
+                    range,
+                    label,
+                    file,
+                    new_tab,
+                }) = self.content.history.show_commit(&hash)
+                {
+                    self.perform(
+                        Action::OpenCommit {
+                            range,
+                            label,
+                            file,
+                            new_tab,
+                        },
+                        ctx,
+                    );
+                }
             }
             Action::ReviewLine { path, line } => {
                 self.content.review.show_line(&path, line);
@@ -507,12 +571,28 @@ impl App {
             self.content.open_files.reload(&path);
         }
         self.content.open_files.save_edited(&ctx);
+        if let Some(hash) = self.content.open_files.take_commit_to_open() {
+            self.action = Some(Action::ShowCommit(hash));
+        }
 
         if let Some(action) = self.action.take() {
             self.perform(action, &ctx);
             ctx.request_repaint();
         }
         self.workspace.prune();
+        let ranges: HashSet<CommitRange> = self
+            .workspace
+            .windows
+            .iter()
+            .flat_map(|window| window.tabs())
+            .filter_map(|tab| match tab {
+                Tab::CommitReview { range, .. } => Some(range.clone()),
+                _ => None,
+            })
+            .collect();
+        self.content
+            .commits
+            .retain(|range, _| ranges.contains(range));
         if self.last_save.elapsed() >= SAVE_INTERVAL {
             self.save_layout();
         }

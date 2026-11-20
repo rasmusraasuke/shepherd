@@ -1,5 +1,6 @@
 pub mod file_tree;
 pub mod flow;
+pub mod history;
 pub mod keys;
 pub mod quick_chat;
 pub mod quick_open;

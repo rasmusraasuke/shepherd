@@ -26,6 +26,7 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
             ("Delete the word / the line before", "⌥⌫  ⌘⌫"),
             ("Indent / outdent", "Tab  ⇧Tab"),
             ("Show the changes of the line", "⌘⇧R"),
+            ("Annotate with Git Blame", "⌘⇧B"),
         ],
     ),
     (

@@ -8,6 +8,7 @@ use eframe::egui::{self, Key, Modifiers};
 use crate::editor::Editor;
 use crate::editor::buffer::{Buffer, Pos};
 use crate::editor::highlight::Highlighter;
+use crate::git::{Commit, Repo};
 
 const MAX_SIZE: u64 = 20 * 1024 * 1024;
 
@@ -15,8 +16,10 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 
 pub struct OpenFiles {
     root: PathBuf,
+    repo: Option<Repo>,
     files: HashMap<String, OpenFile>,
     last_active: Option<String>,
+    commit_to_open: Option<String>,
 }
 
 pub struct Selection {
@@ -34,14 +37,18 @@ struct OpenFile {
     editor: Editor,
     edited: (u64, Instant),
     save_error: Option<String>,
+    blame: Option<Result<Vec<Commit>, String>>,
 }
 
 impl OpenFiles {
     pub fn new(root: PathBuf) -> Self {
+        let repo = Repo::open(&root).ok();
         Self {
             root,
+            repo,
             files: HashMap::new(),
             last_active: None,
+            commit_to_open: None,
         }
     }
 
@@ -102,8 +109,9 @@ impl OpenFiles {
     }
 
     pub fn reload_changed(&mut self) {
+        let repo = self.repo.as_ref();
         for file in self.files.values_mut() {
-            file.reload_if_changed();
+            file.reload_if_changed(repo);
         }
     }
 
@@ -114,9 +122,34 @@ impl OpenFiles {
         file.buffer = read(&file.path).map(|text| Buffer::new(&text));
         file.modified = modified(&file.path);
         file.save_error = None;
+        file.refresh_blame(self.repo.as_ref());
+    }
+
+    pub fn take_commit_to_open(&mut self) -> Option<String> {
+        self.commit_to_open.take()
+    }
+
+    pub fn blame_on(&self, path: &str) -> bool {
+        self.files
+            .get(path)
+            .is_some_and(|file| file.blame.is_some())
+    }
+
+    pub fn toggle_blame(&mut self, path: &str) {
+        let on = self.blame_on(path);
+        let blame = if on {
+            None
+        } else {
+            Some(match &self.repo {
+                Some(repo) => repo.blame_lines(path),
+                None => Err("No git repository".to_string()),
+            })
+        };
+        self.file(path).blame = blame;
     }
 
     pub fn save_edited(&mut self, ctx: &egui::Context) {
+        let repo = self.repo.as_ref();
         for file in self.files.values_mut() {
             let Ok(buffer) = &file.buffer else { continue };
             if !buffer.is_dirty() {
@@ -127,35 +160,64 @@ impl OpenFiles {
             }
             match SAVE_DELAY.checked_sub(file.edited.1.elapsed()) {
                 Some(left) => ctx.request_repaint_after(left),
-                None => file.save(),
+                None => file.save(repo),
             }
         }
     }
 
     pub fn save_all(&mut self) {
+        let repo = self.repo.as_ref();
         for file in self.files.values_mut() {
-            file.save();
+            file.save(repo);
         }
     }
 
     pub fn close(&mut self, path: &str) {
         if let Some(mut file) = self.files.remove(path) {
-            file.save();
+            file.save(self.repo.as_ref());
         }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, path: &str) -> Option<usize> {
+        let active = self
+            .files
+            .get(path)
+            .is_some_and(|file| file.editor.is_active());
+        if active && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::B))
+        {
+            self.toggle_blame(path);
+        }
         let file = self.file(path);
         if let Some(error) = &file.save_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
-        match &mut file.buffer {
+        if let Some(Err(error)) = &file.blame {
+            ui.colored_label(ui.visuals().error_fg_color, error.as_str());
+        }
+        let annotations = file
+            .blame
+            .as_ref()
+            .and_then(|blame| blame.as_ref().ok())
+            .map(Vec::as_slice);
+        let blame_on = file.blame.is_some();
+        let mut toggle = false;
+        let mut open_commit = None;
+        let line = match &mut file.buffer {
             Ok(buffer) => {
                 let review = file.editor.is_active()
                     && ui.input_mut(|i| {
                         i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R)
                     });
-                file.editor.ui(ui, path, buffer, file.highlighter.as_mut());
+                file.editor.ui(
+                    ui,
+                    path,
+                    buffer,
+                    file.highlighter.as_mut(),
+                    annotations,
+                    blame_on,
+                    &mut toggle,
+                    &mut open_commit,
+                );
                 let line = review.then(|| buffer.cursor().line);
                 if review {
                     ui.memory_mut(|m| m.focused().map(|id| m.surrender_focus(id)));
@@ -169,7 +231,12 @@ impl OpenFiles {
                 ui.centered_and_justified(|ui| ui.weak(message.as_str()));
                 None
             }
+        };
+        self.commit_to_open = open_commit;
+        if toggle {
+            self.toggle_blame(path);
         }
+        line
     }
 }
 
@@ -184,11 +251,12 @@ impl OpenFile {
             editor: Editor::default(),
             edited: (0, Instant::now()),
             save_error: None,
+            blame: None,
             path,
         }
     }
 
-    fn save(&mut self) {
+    fn save(&mut self, repo: Option<&Repo>) {
         let Ok(buffer) = &mut self.buffer else { return };
         if !buffer.is_dirty() {
             return;
@@ -199,26 +267,53 @@ impl OpenFile {
                 buffer.mark_saved();
                 self.save_error = None;
                 self.modified = modified(&self.path);
+                self.refresh_blame(repo);
             }
             Err(e) => self.save_error = Some(format!("Cannot save file: {e}")),
         }
     }
 
-    fn reload_if_changed(&mut self) {
+    fn reload_if_changed(&mut self, repo: Option<&Repo>) {
         let on_disk = modified(&self.path);
         if on_disk == self.modified {
             return;
         }
         self.modified = on_disk;
+        let mut reloaded = false;
         match (&mut self.buffer, read(&self.path)) {
             (Ok(buffer), Ok(text)) if buffer.text() == text => {}
             (Ok(buffer), _) if buffer.is_dirty() => {}
             (Ok(buffer), Ok(text)) => {
                 buffer.set_text(&text);
                 buffer.mark_saved();
+                reloaded = true;
             }
-            (_, read) => self.buffer = read.map(|text| Buffer::new(&text)),
+            (_, read) => {
+                self.buffer = read.map(|text| Buffer::new(&text));
+                reloaded = true;
+            }
         }
+        if reloaded {
+            self.refresh_blame(repo);
+        }
+    }
+
+    fn refresh_blame(&mut self, repo: Option<&Repo>) {
+        if self.blame.is_none() {
+            return;
+        }
+        self.blame = Some(match repo {
+            Some(repo) => {
+                let path = self
+                    .path
+                    .strip_prefix(&repo.root)
+                    .unwrap_or(&self.path)
+                    .to_string_lossy()
+                    .into_owned();
+                repo.blame_lines(&path)
+            }
+            None => Err("No git repository".to_string()),
+        });
     }
 }
 
@@ -265,6 +360,18 @@ mod tests {
             .unwrap()
             .set_modified(later)
             .unwrap();
+    }
+
+    #[test]
+    fn turns_git_blame_on_and_off_for_a_file() {
+        let (repo, dir) = crate::git::tests::temp_repo("blame-toggle", &[("a.txt", "one\n")]);
+        crate::git::tests::commit_all(&repo);
+        let mut files = OpenFiles::new(dir.path().to_path_buf());
+        assert!(!files.blame_on("a.txt"));
+        files.toggle_blame("a.txt");
+        assert!(files.blame_on("a.txt"));
+        files.toggle_blame("a.txt");
+        assert!(!files.blame_on("a.txt"));
     }
 
     #[test]

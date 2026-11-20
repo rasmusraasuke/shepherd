@@ -17,8 +17,11 @@ use eframe::egui::{self, Color32, Key, Modifiers, RichText};
 use crate::editor::Editor;
 use crate::editor::buffer::Buffer;
 use crate::editor::file_view::OpenFiles;
-use crate::git::{self, Changes, DiffLine, FileDiff, FileStatus, Hunk, LineKind, Repo, Staged};
-use crate::panels::file_tree::{FileLook, FileTree};
+use crate::editor::highlight::Highlighter;
+use crate::git::{
+    self, Changes, CommitRange, DiffLine, FileDiff, FileStatus, Hunk, LineKind, Repo, Staged,
+};
+use crate::panels::file_tree::{FileLook, FileTree, Mark, Menu};
 use crate::ui::theme;
 use comments::Comment;
 
@@ -33,6 +36,7 @@ const CONTEXT: usize = 3;
 
 pub struct Review {
     repo: Repo,
+    source: Source,
     files: Vec<FileReview>,
     by_path: HashMap<String, usize>,
     tree: FileTree,
@@ -49,6 +53,12 @@ pub struct Review {
     pending: Vec<StageJob>,
     conflicts: Vec<String>,
     operation: Option<git::Operation>,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+enum Source {
+    Working,
+    Commits { range: CommitRange, label: String },
 }
 
 struct StageJob {
@@ -167,12 +177,34 @@ struct View {
     focus_draft: bool,
     menu_row: Option<usize>,
     editor: Editor,
+    buffer: Option<Buffer>,
+    highlighter: Option<Highlighter>,
 }
 
 impl Review {
     pub fn new(repo: Repo) -> Self {
+        Self::with_source(repo, Source::Working)
+    }
+
+    pub fn for_commits(repo: Repo, range: CommitRange, label: String) -> Self {
+        let mut review = Self::with_source(
+            repo,
+            Source::Commits {
+                range: range.clone(),
+                label,
+            },
+        );
+        match review.repo.range_changes(&range) {
+            Ok(changes) => review.set_changes(&changes, &BTreeSet::new()),
+            Err(error) => review.error = Some(error),
+        }
+        review
+    }
+
+    fn with_source(repo: Repo, source: Source) -> Self {
         Self {
             repo,
+            source,
             files: Vec::new(),
             by_path: HashMap::new(),
             tree: FileTree::open_by_default(),
@@ -190,6 +222,32 @@ impl Review {
             conflicts: Vec::new(),
             operation: None,
         }
+    }
+
+    fn committed(&self) -> bool {
+        matches!(self.source, Source::Commits { .. })
+    }
+
+    fn commit_label(&self) -> Option<&str> {
+        match &self.source {
+            Source::Commits { label, .. } => Some(label),
+            Source::Working => None,
+        }
+    }
+
+    fn commit_range(&self) -> Option<&CommitRange> {
+        match &self.source {
+            Source::Commits { range, .. } => Some(range),
+            Source::Working => None,
+        }
+    }
+
+    pub fn first_file(&self) -> Option<String> {
+        self.tree.files().first().cloned()
+    }
+
+    pub fn has_file(&self, path: &str) -> bool {
+        self.by_path.contains_key(path)
     }
 
     pub fn set_changes(&mut self, changes: &Changes, collapsed: &BTreeSet<String>) {
@@ -371,6 +429,9 @@ impl Review {
     }
 
     pub fn roll_back(&mut self, path: &str) {
+        if self.committed() {
+            return;
+        }
         let old = self
             .by_path
             .get(path)
@@ -484,6 +545,20 @@ impl Review {
     }
 
     fn next(&mut self, file: usize) -> Option<String> {
+        if self.committed() {
+            let files = self.tree.files();
+            if files.len() < 2 {
+                return None;
+            }
+            let at = files
+                .iter()
+                .position(|path| *path == self.files[file].diff.path)
+                .unwrap_or(0);
+            let next = files[(at + 1) % files.len()].clone();
+            let index = self.by_path[&next];
+            self.select(index, 0);
+            return Some(next);
+        }
         let current = self.view(file).current;
         if let Some(hunk) = self.next_unreviewed(file, current) {
             self.select(file, hunk);
@@ -520,6 +595,9 @@ impl Review {
     }
 
     fn stage(&mut self, file: usize, chosen: impl Fn(usize, usize) -> bool) {
+        if self.committed() {
+            return;
+        }
         if self.has_conflicts(file) {
             self.error = Some("Resolve the conflicts of this file first".to_string());
             self.changed = true;
@@ -555,6 +633,9 @@ impl Review {
     }
 
     fn stage_file(&mut self, file: usize, staged: bool) {
+        if self.committed() {
+            return;
+        }
         let diff = &self.files[file].diff;
         let result = self
             .repo
@@ -701,7 +782,7 @@ impl Review {
     }
 
     fn toggle_reviewed(&mut self, file: usize, hunk: usize) -> Option<String> {
-        if self.files[file].diff.hunks[hunk].conflict.is_some() {
+        if self.committed() || self.files[file].diff.hunks[hunk].conflict.is_some() {
             return None;
         }
         let reviewed = !self.files[file].is_reviewed(hunk);
@@ -716,7 +797,7 @@ impl Review {
     }
 
     fn toggle_line(&mut self, file: usize, hunk: usize, line: usize) {
-        if self.files[file].diff.hunks[hunk].conflict.is_some() {
+        if self.committed() || self.files[file].diff.hunks[hunk].conflict.is_some() {
             return;
         }
         let staged = self.files[file].staged.clone();
@@ -725,6 +806,9 @@ impl Review {
     }
 
     pub fn set_reviewed(&mut self, path: &str, reviewed: bool, ctx: &egui::Context) {
+        if self.committed() {
+            return;
+        }
         let inside = |file: &str| {
             path.is_empty()
                 || file
@@ -933,11 +1017,13 @@ impl Review {
         ui: &mut egui::Ui,
         collapsed: &mut BTreeSet<String>,
         selected: Option<&str>,
+        interactive: bool,
     ) -> Option<String> {
         if self.files.is_empty() {
             ui.weak("No changes");
             return None;
         }
+        let committed = self.committed();
         let dark_mode = ui.visuals().dark_mode;
         let mark = Cell::new(None);
         let rolled_back = Cell::new(None);
@@ -996,6 +1082,7 @@ impl Review {
                 state,
                 &label,
                 egui::Id::unique(("reviewed", path)),
+                true,
             ) {
                 mark.set(Some((path.to_string(), done < total)));
             }
@@ -1012,21 +1099,16 @@ impl Review {
             let color = by_path
                 .get(path)
                 .map(|&index| status_color(files[index].diff.status, dark_mode))
-                .map(|color| fade(color, done == total));
+                .map(|color| fade(color, !committed && done == total));
             FileLook {
                 color,
-                detail: (total > 0).then(|| format!("{done}/{total}")),
-                dot: unseen.contains(path).then_some(NEW_COLOR),
+                detail: (!committed && total > 0).then(|| format!("{done}/{total}")),
+                dot: (!committed && unseen.contains(path)).then_some(NEW_COLOR),
             }
         };
-        let clicked = tree.ui(
-            ui,
-            collapsed,
-            selected,
-            look,
-            Some(&mut menu),
-            Some(&mut reviewed_mark),
-        );
+        let menu = interactive.then_some(&mut menu as Menu);
+        let mark_ui = interactive.then_some(&mut reviewed_mark as Mark);
+        let clicked = tree.ui(ui, collapsed, selected, look, menu, mark_ui);
         if let Some(path) = rolled_back.into_inner() {
             self.roll_back(&path);
         }
@@ -1045,30 +1127,61 @@ impl Review {
         open_files: &mut OpenFiles,
     ) -> Option<Outcome> {
         let Some(path) = path else {
-            ui.centered_and_justified(|ui| ui.weak("Choose a file under Changes to review it"));
+            let message = if self.committed() {
+                "Choose a file of the commit to review it"
+            } else {
+                "Choose a file under Changes to review it"
+            };
+            ui.centered_and_justified(|ui| ui.weak(message));
             return None;
         };
         let Some(&index) = self.by_path.get(path) else {
             ui.centered_and_justified(|ui| ui.weak(format!("No changes in {path}")));
             return None;
         };
-        let diff = &self.files[index].diff;
-        let mut file_text = if diff.binary {
-            Err("Binary file")
+        let committed = self.committed();
+        let commit_label = self.commit_label().map(str::to_string);
+        let binary = self.files[index].diff.binary;
+        let deleted = self.files[index].diff.status == FileStatus::Deleted;
+        let mut file_text = if committed {
+            None
+        } else if binary {
+            Some(Err("Binary file"))
         } else {
-            open_files.text(path, diff.status == FileStatus::Deleted)
+            Some(open_files.text(path, deleted))
         };
         let mut next = None;
         let mut outcome = if active {
             self.handle_keys(
                 ui.ctx(),
                 index,
-                file_text.as_mut().ok().map(|(buffer, _)| &mut **buffer),
+                file_text
+                    .as_mut()
+                    .and_then(|text| text.as_mut().ok())
+                    .map(|(buffer, _)| &mut **buffer),
             )
         } else {
             None
         };
-        if let Ok((buffer, _)) = &file_text {
+        if committed && !binary {
+            let range = self.commit_range().cloned();
+            if let Some(range) = range
+                && !self.texts.contains_key(path)
+            {
+                let text = FileText::load_commits(&self.repo, &self.files[index].diff, &range);
+                self.texts.insert(path.to_string(), text);
+            }
+            let work = self.texts.get(path).map(|text| text.work.clone());
+            let path_buf = self.repo.root.join(path);
+            let view = self.view(index);
+            if let Some(work) = work {
+                view.buffer.get_or_insert_with(|| Buffer::new(&work));
+            }
+            if view.highlighter.is_none() {
+                view.highlighter = Highlighter::for_path(&path_buf);
+            }
+        }
+        if let Some(Ok((buffer, _))) = &file_text {
             if !self.texts.contains_key(path) {
                 let text = FileText::load(&self.repo, &self.files[index].diff);
                 self.texts.insert(path.to_string(), text);
@@ -1085,6 +1198,20 @@ impl Review {
         let blocks = self.texts.get(path).map_or(0, |text| text.conflicts.len());
         let operation = self.operation;
         let file_conflict = self.has_conflicts(index);
+        let target = match &self.source {
+            Source::Commits { label, .. } => format!("commit {label}"),
+            Source::Working => "the uncommitted changes".to_string(),
+        };
+        let mut commit_buffer = if committed {
+            self.view(index).buffer.take()
+        } else {
+            None
+        };
+        let mut commit_highlighter = if committed {
+            self.view(index).highlighter.take()
+        } else {
+            None
+        };
         let Self {
             files,
             views,
@@ -1118,6 +1245,8 @@ impl Review {
                 } else {
                     format!("{blocks} conflicts")
                 });
+            } else if let Some(label) = &commit_label {
+                ui.weak(format!("Committed in {label}"));
             } else {
                 ui.weak(format!("{done}/{total} reviewed"));
             }
@@ -1130,11 +1259,14 @@ impl Review {
                 if unsent > 0
                     && let Some(agent) = send_button(ui, &label, true, true, agents)
                 {
-                    let text = comments::feedback(comments.iter().filter(|comment| !comment.sent));
+                    let text = comments::feedback_on(
+                        comments.iter().filter(|comment| !comment.sent),
+                        &target,
+                    );
                     comments.iter_mut().for_each(|comment| comment.sent = true);
                     outcome = Some(Outcome::Send { agent, text });
                 }
-                if !file_conflict {
+                if !file_conflict && !committed {
                     if done < total && ui.add(theme::quiet("Mark file reviewed")).clicked() {
                         mark_file = Some(true);
                     }
@@ -1171,97 +1303,113 @@ impl Review {
             ui.colored_label(ui.visuals().error_fg_color, error.as_str());
         }
         let mut shown = None;
-        match &mut file_text {
-            Ok(_) if file.diff.hunks.is_empty() => {
-                ui.add_space(4.0);
-                ui.weak("No changes left");
-            }
-            Ok((buffer, highlighter)) => {
-                let text = &texts[path];
-                view.editor.find_ui(ui, buffer);
-                ui.add_space(4.0);
-                let draft = if view.selection.is_some() {
-                    egui::Panel::bottom(("draft", path))
-                        .show(ui, |ui| {
-                            draft_ui(ui, egui::Id::unique(("draft", path)), view, agents)
-                        })
-                        .inner
-                } else {
-                    None
-                };
-                let file_comments: Vec<(usize, &Comment)> = comments
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, comment)| comment.path == path)
-                    .collect();
-                let revision = buffer.revision();
-                let (clicked, lines) = egui::ScrollArea::both()
-                    .id_salt(path)
-                    .auto_shrink(false)
+        let fallback = match &file_text {
+            Some(Err(message)) => Some(*message),
+            _ if !committed && file.diff.hunks.is_empty() => Some("No changes left"),
+            _ if committed && file.diff.binary => Some("Binary file"),
+            _ => None,
+        };
+        let rendered: Option<(&mut Buffer, Option<&mut Highlighter>)> =
+            match (&mut file_text, &mut commit_buffer) {
+                (Some(Ok((buffer, highlighter))), _) if fallback.is_none() => {
+                    Some((&mut **buffer, highlighter.as_deref_mut()))
+                }
+                (_, Some(buffer)) if fallback.is_none() => {
+                    Some((buffer, commit_highlighter.as_mut()))
+                }
+                _ => None,
+            };
+        if let Some((buffer, highlighter)) = rendered {
+            let text = &texts[path];
+            view.editor.set_read_only(committed);
+            view.editor.find_ui(ui, buffer);
+            ui.add_space(4.0);
+            let draft = if view.selection.is_some() {
+                egui::Panel::bottom(("draft", path))
                     .show(ui, |ui| {
-                        let can_ask = !agents.open.is_empty() || agents.new.is_some();
-                        rows_ui(
+                        draft_ui(
                             ui,
-                            path,
-                            file,
-                            text,
+                            egui::Id::unique(("draft", path)),
                             view,
-                            &file_comments,
-                            buffer,
-                            highlighter.as_deref_mut(),
-                            can_ask,
+                            agents,
+                            !committed,
                         )
                     })
-                    .inner;
-                if buffer.revision() != revision {
-                    ui.ctx().request_repaint();
-                }
-                view.scroll_to_current = false;
-                let mut revert = None;
-                match draft {
-                    Some(Draft::Comment) if !lines.is_empty() => {
-                        comments.push(Comment::new(
-                            path,
-                            lines,
-                            &file_lines(&text.work_lines, &file.diff),
-                            &view.draft,
-                        ));
-                        view.draft.clear();
-                        view.selection = None;
-                    }
-                    Some(Draft::Ask(agent)) if !lines.is_empty() => {
-                        outcome = Some(Outcome::Send {
-                            agent,
-                            text: comments::quote(path, &lines, &view.draft),
-                        });
-                        view.draft.clear();
-                        view.selection = None;
-                    }
-                    Some(Draft::Revert) => {
-                        let hunk_lines =
-                            file.diff.hunks.iter().enumerate().flat_map(|(h, hunk)| {
-                                hunk.lines
-                                    .iter()
-                                    .enumerate()
-                                    .map(move |(i, line)| ((h, i), line))
-                            });
-                        revert = Some(
-                            hunk_lines
-                                .filter(|(_, line)| lines.contains(line))
-                                .map(|(at, _)| at)
-                                .collect::<HashSet<_>>(),
-                        );
-                        view.selection = None;
-                    }
-                    Some(Draft::Cancel) => view.selection = None,
-                    _ => {}
-                }
-                shown = Some((clicked, revert, buffer));
+                    .inner
+            } else {
+                None
+            };
+            let file_comments: Vec<(usize, &Comment)> = comments
+                .iter()
+                .enumerate()
+                .filter(|(_, comment)| comment.path == path)
+                .collect();
+            let revision = buffer.revision();
+            let (clicked, lines) = egui::ScrollArea::both()
+                .id_salt(path)
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    let can_ask = !agents.open.is_empty() || agents.new.is_some();
+                    rows_ui(
+                        ui,
+                        path,
+                        file,
+                        text,
+                        view,
+                        &file_comments,
+                        buffer,
+                        highlighter,
+                        can_ask,
+                        !committed,
+                    )
+                })
+                .inner;
+            if buffer.revision() != revision {
+                ui.ctx().request_repaint();
             }
-            Err(message) => {
-                ui.add_space(4.0);
-                ui.weak(*message);
+            view.scroll_to_current = false;
+            let mut revert = None;
+            match draft {
+                Some(Draft::Comment) if !lines.is_empty() => {
+                    comments.push(Comment::new(
+                        path,
+                        lines,
+                        &file_lines(&text.work_lines, &file.diff),
+                        &view.draft,
+                    ));
+                    view.draft.clear();
+                    view.selection = None;
+                }
+                Some(Draft::Ask(agent)) if !lines.is_empty() => {
+                    outcome = Some(Outcome::Send {
+                        agent,
+                        text: comments::quote(path, &lines, &view.draft),
+                    });
+                    view.draft.clear();
+                    view.selection = None;
+                }
+                Some(Draft::Revert) if !committed => {
+                    let hunk_lines = file.diff.hunks.iter().enumerate().flat_map(|(h, hunk)| {
+                        hunk.lines
+                            .iter()
+                            .enumerate()
+                            .map(move |(i, line)| ((h, i), line))
+                    });
+                    revert = Some(
+                        hunk_lines
+                            .filter(|(_, line)| lines.contains(line))
+                            .map(|(at, _)| at)
+                            .collect::<HashSet<_>>(),
+                    );
+                    view.selection = None;
+                }
+                Some(Draft::Cancel) => view.selection = None,
+                _ => {}
             }
+            shown = Some((clicked, revert, buffer));
+        } else if let Some(message) = fallback {
+            ui.add_space(4.0);
+            ui.weak(message);
         }
         if let Some((clicked, revert, buffer)) = shown {
             if let Some(revert) = revert {
@@ -1309,6 +1457,12 @@ impl Review {
             if reviewed {
                 next = self.next(index);
             }
+        }
+        if let Some(buffer) = commit_buffer {
+            self.view(index).buffer = Some(buffer);
+        }
+        if let Some(highlighter) = commit_highlighter {
+            self.view(index).highlighter = Some(highlighter);
         }
         next.map(Outcome::Show).or(outcome)
     }

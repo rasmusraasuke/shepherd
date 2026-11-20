@@ -7,7 +7,7 @@ use super::{Action, Content};
 use crate::agents::Agent;
 use crate::editor::buffer::Pos;
 use crate::panels::search::Reveal;
-use crate::review;
+use crate::review::{self, Review};
 use crate::terminal::Activity;
 use crate::ui::theme;
 
@@ -30,7 +30,7 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
     fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, tab: &mut Tab) -> UiResponse {
         if ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.pointer.any_pressed()) {
             *self.focused = Some(tile_id);
-            if matches!(tab, Tab::Review(_)) {
+            if tab.is_review() {
                 *self.last_review = Some(tab.clone());
             }
         }
@@ -49,32 +49,25 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                         )
                     })
                     .inner;
-                match outcome {
-                    Some(review::Outcome::Show(path)) => {
-                        *self.action = Some(Action::Review {
-                            path,
-                            new_tab: false,
-                        })
-                    }
-                    Some(review::Outcome::Send { agent, text }) => {
-                        *self.action = Some(Action::Send {
-                            agent,
-                            text,
-                            window: self.window,
-                            images: Vec::new(),
-                        })
-                    }
-                    Some(review::Outcome::Open { path, line }) => {
-                        let place = Pos::new(line, 0);
-                        *self.action = Some(Action::Reveal(Reveal {
-                            path,
-                            start: place,
-                            end: place,
-                            focus: true,
-                        }));
-                    }
-                    None => {}
-                }
+                review_outcome(self, outcome, None);
+            }
+            Tab::CommitReview { path, range, label } => {
+                let Content {
+                    commits,
+                    open_files,
+                    repo,
+                    ..
+                } = &mut self.content;
+                let review = commits.entry(range.clone()).or_insert_with(|| {
+                    Review::for_commits(repo.clone(), range.clone(), label.clone())
+                });
+                let outcome = egui::Frame::new()
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        review.ui(ui, path.as_deref(), active, self.agents, open_files)
+                    })
+                    .inner;
+                review_outcome(self, outcome, Some((range.clone(), label.clone())));
             }
             Tab::File(path) => {
                 if let Some(line) = self.content.open_files.ui(ui, path) {
@@ -248,11 +241,24 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         };
         if response.clicked() {
             *self.focused = Some(tile_id);
-            if matches!(tab, Tab::Review(_)) {
+            if tab.is_review() {
                 *self.last_review = Some(tab.clone());
             }
         }
+        let history = match tab {
+            Tab::File(path) => Some(path.clone()),
+            _ => None,
+        };
         response.context_menu(|ui| {
+            if let Some(path) = &history
+                && ui.button("File history").clicked()
+            {
+                *self.action = Some(Action::FileHistory(path.clone()));
+                ui.close();
+            }
+            if history.is_some() {
+                ui.separator();
+            }
             let mut move_to = |ui: &mut egui::Ui, label: String, to: Option<usize>| {
                 if ui.button(label).clicked() {
                     *self.action = Some(Action::Move {
@@ -309,5 +315,46 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
             all_panes_must_have_tabs: true,
             ..Default::default()
         }
+    }
+}
+
+fn review_outcome(
+    behavior: &mut TabBehavior<'_>,
+    outcome: Option<review::Outcome>,
+    commit: Option<(crate::git::CommitRange, String)>,
+) {
+    match outcome {
+        Some(review::Outcome::Show(path)) => {
+            *behavior.action = Some(match commit {
+                Some((range, label)) => Action::OpenCommit {
+                    range,
+                    label,
+                    file: Some(path),
+                    new_tab: false,
+                },
+                None => Action::Review {
+                    path,
+                    new_tab: false,
+                },
+            });
+        }
+        Some(review::Outcome::Send { agent, text }) => {
+            *behavior.action = Some(Action::Send {
+                agent,
+                text,
+                window: behavior.window,
+                images: Vec::new(),
+            });
+        }
+        Some(review::Outcome::Open { path, line }) => {
+            let place = Pos::new(line, 0);
+            *behavior.action = Some(Action::Reveal(Reveal {
+                path,
+                start: place,
+                end: place,
+                focus: true,
+            }));
+        }
+        None => {}
     }
 }

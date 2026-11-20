@@ -115,6 +115,125 @@ fn the_sidebar_keeps_its_width_when_there_are_no_changes() {
 }
 
 #[test]
+fn opens_the_history_of_the_branch_and_reviews_a_commit() {
+    let (mut harness, dir) = harness("history-open");
+    let repo = Repo::open(dir.path()).unwrap();
+    crate::git::tests::commit_all(&repo);
+    dir.write("README.md", "# Changed\n");
+    dir.write("src/main.rs", "fn main() { println!(); }\n");
+    repo.stage_file("README.md", true).unwrap();
+    repo.stage_file("src/main.rs", true).unwrap();
+    repo.commit("change readme").unwrap();
+    harness.state().watcher.refresh_now();
+
+    harness.get_by_label("History").click();
+    harness.run();
+    wait_for(&mut harness, "change readme");
+    harness.get_by_label("change readme").click();
+    harness.run();
+
+    let tabs = open_tabs(&harness);
+    let (first, range) = match &tabs[0][0] {
+        Tab::CommitReview {
+            path: Some(path),
+            range,
+            ..
+        } => (path.clone(), range.clone()),
+        _ => panic!("no commit review"),
+    };
+
+    harness.key_press(Key::N);
+    harness.run();
+    match &open_tabs(&harness)[0][0] {
+        Tab::CommitReview {
+            path: Some(path),
+            range: shown,
+            ..
+        } => {
+            assert_eq!(*shown, range);
+            assert_ne!(*path, first);
+        }
+        _ => panic!("the review of the commit went away"),
+    }
+}
+
+#[test]
+fn shows_a_file_history_and_turns_git_blame_on_and_off() {
+    let (mut harness, dir) = harness("file-history");
+    let repo = Repo::open(dir.path()).unwrap();
+    crate::git::tests::commit_all(&repo);
+    dir.write("README.md", "# Changed\n");
+    repo.stage_file("README.md", true).unwrap();
+    repo.commit("change readme").unwrap();
+    harness.state().watcher.refresh_now();
+    harness.run();
+    let ctx = harness.ctx.clone();
+
+    harness
+        .state_mut()
+        .perform(Action::FileHistory("README.md".to_string()), &ctx);
+    harness.run();
+    assert_eq!(harness.state().workspace.sidebar, Sidebar::History);
+    assert!(harness.state().workspace.sidebar_open);
+    wait_for(&mut harness, "change readme");
+    let heading = harness.get_by_label("History of").rect();
+    let path = harness.get_by_label("README.md").rect();
+    let all = harness.get_by_label("All commits").rect();
+    assert!(path.top() < heading.bottom() && heading.top() < path.bottom());
+    assert!(all.top() < heading.bottom() && heading.top() < all.bottom());
+    assert!(all.left() > path.right());
+
+    harness.state_mut().action = Some(Action::Open(Tab::File("README.md".to_string()), 0));
+    harness.run();
+    for _ in 0..3 {
+        harness.run();
+    }
+
+    harness.get_by_label("Editor").click_secondary();
+    harness.run();
+    harness.get_by_label("Annotate with Git Blame").click();
+    harness.run();
+    assert!(harness.state().content.open_files.blame_on("README.md"));
+
+    let hash = repo.log().unwrap()[0].hash.clone();
+    let editor = harness.get_by_label("Editor").rect();
+    harness.event(egui::Event::PointerMoved(egui::pos2(
+        editor.left() + 20.0,
+        editor.top() + 8.0,
+    )));
+    harness.run_steps(4);
+    assert!(harness.query_by_label(&hash).is_some());
+
+    harness.get_by_label("Editor").click();
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    harness.run();
+    assert!(!harness.state().content.open_files.blame_on("README.md"));
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    harness.run();
+    assert!(harness.state().content.open_files.blame_on("README.md"));
+
+    let pos = egui::pos2(editor.left() + 20.0, editor.top() + 8.0);
+    harness.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    harness.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    harness.run();
+    assert_eq!(harness.state().workspace.sidebar, Sidebar::History);
+    assert!(harness.state().workspace.sidebar_open);
+    let (range, _) = harness.state().content.history.selected().unwrap();
+    assert_eq!(range.head, hash);
+}
+
+#[test]
 fn opens_and_closes_the_sidebar_from_the_bar_of_icons_and_shows_the_keys() {
     let (mut harness, _dir) = harness("activity-bar");
     harness.get_by_label("README.md");
