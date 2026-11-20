@@ -220,7 +220,7 @@ impl App {
                         self.action = Some(Action::Draft { text })
                     }
                     Some(flow::Outcome::Mark(reviewed)) => {
-                        content.review.set_reviewed("", reviewed)
+                        content.review.set_reviewed("", reviewed, ui.ctx())
                     }
                     None => {}
                 }

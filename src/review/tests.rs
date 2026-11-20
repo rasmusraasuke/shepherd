@@ -45,8 +45,14 @@ fn review(name: &str, files: &[(&str, &str, &str)]) -> (Review, TempDir) {
 }
 
 fn refresh(review: &mut Review) {
+    review.wait_for_staging();
     let changes = review.repo.changes().unwrap();
     review.set_changes(&changes, &BTreeSet::new());
+}
+
+fn set_reviewed(review: &mut Review, path: &str, reviewed: bool) {
+    review.set_reviewed(path, reviewed, &egui::Context::default());
+    review.wait_for_staging();
 }
 
 const TEN: &str = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n";
@@ -435,7 +441,7 @@ fn shows_the_hunk_nearest_to_a_line() {
 #[test]
 fn a_change_made_after_the_review_is_not_reviewed() {
     let (mut review, dir) = review("changed-after", TWO_FILES);
-    review.set_reviewed("b.txt", true);
+    set_reviewed(&mut review, "b.txt", true);
     dir.write("b.txt", "z\n");
     refresh(&mut review);
     assert_eq!(review.progress_of("b.txt"), (1, 2));
@@ -445,7 +451,7 @@ fn a_change_made_after_the_review_is_not_reviewed() {
 fn marks_files_without_lines_reviewed_as_a_whole() {
     let (mut review, _dir) = review("binary", &[("image.bin", "\0a", "\0b")]);
     assert_eq!(review.progress(), (0, 1));
-    review.set_reviewed("image.bin", true);
+    set_reviewed(&mut review, "image.bin", true);
     refresh(&mut review);
     assert_eq!(review.progress(), (1, 1));
 }
@@ -496,7 +502,7 @@ fn marks_files_and_directories_reviewed_and_counts_their_progress() {
         ],
         [(2, 6), (0, 2), (2, 8)]
     );
-    review.set_reviewed("src", true);
+    set_reviewed(&mut review, "src", true);
     assert_eq!(
         [
             review.progress_of("src"),
@@ -505,7 +511,7 @@ fn marks_files_and_directories_reviewed_and_counts_their_progress() {
         ],
         [(6, 6), (0, 2), (6, 8)]
     );
-    review.set_reviewed("src/ui/b.txt", false);
+    set_reviewed(&mut review, "src/ui/b.txt", false);
     refresh(&mut review);
     assert_eq!(
         [review.progress_of("src"), review.progress_of("src/ui")],
@@ -535,12 +541,12 @@ fn moves_on_to_the_next_file_to_review_in_the_order_of_the_tree() {
     let (mut review, _dir) = review("next-file", TREE);
     let a = review.by_path["src/a.txt"];
     assert_eq!((review.next(a), review.view(a).current), (None, 1));
-    review.set_reviewed("src/a.txt", true);
+    set_reviewed(&mut review, "src/a.txt", true);
     assert_eq!(review.next(a), Some("srcs.txt".to_string()));
-    review.set_reviewed("srcs.txt", true);
+    set_reviewed(&mut review, "srcs.txt", true);
     assert_eq!(review.next(a), Some("src/ui/b.txt".to_string()));
     assert_eq!(review.view(review.by_path["src/ui/b.txt"]).current, 0);
-    review.set_reviewed("src/ui", true);
+    set_reviewed(&mut review, "src/ui", true);
     assert_eq!(review.next(a), None);
 }
 
@@ -633,7 +639,7 @@ fn marks_a_file_reviewed_with_its_checkbox_in_the_tree_and_everything_at_once() 
     harness.run();
     assert_eq!(harness.state().progress_of("src"), (0, 6));
 
-    harness.state_mut().set_reviewed("", true);
+    set_reviewed(harness.state_mut(), "", true);
     assert_eq!(harness.state().progress(), (8, 8));
 }
 
@@ -792,4 +798,28 @@ fn a_review_without_a_file_or_changes_says_so() {
         let (review, _dir) = review("no-file", &[("a.txt", "x\n", "x\n")]);
         show(review, path, 600.0).get_by_label(label);
     }
+}
+
+#[test]
+fn queues_marks_that_arrive_while_git_is_staging() {
+    let (mut review, _dir) = review("queued-marks", TWO_FILES);
+    review.set_reviewed("", true, &egui::Context::default());
+    review.set_reviewed("", false, &egui::Context::default());
+    review.wait_for_staging();
+    refresh(&mut review);
+    assert_eq!(review.progress(), (0, 6));
+}
+
+#[test]
+fn marks_everything_reviewed_from_the_text_being_edited() {
+    let (mut review, dir) = review("mark-edited", &[("a.txt", "one\n", "two\n")]);
+    let text = FileText::load(&review.repo, &review.files[0].diff);
+    review.texts.insert("a.txt".to_string(), text);
+    review.follow_edits(0, &Buffer::new("three\n"), false);
+    set_reviewed(&mut review, "", true);
+    assert_eq!(review.repo.staged("a.txt").unwrap(), "three\n");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "two\n"
+    );
 }

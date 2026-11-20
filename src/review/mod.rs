@@ -9,6 +9,8 @@ use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::ops::Range;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 use eframe::egui::{self, Color32, Key, Modifiers, RichText};
 
@@ -43,6 +45,37 @@ pub struct Review {
     seen: Option<HashSet<u64>>,
     unseen: HashSet<String>,
     rolled_back: Vec<String>,
+    staging: Option<Receiver<Result<(), String>>>,
+    pending: Vec<StageJob>,
+}
+
+struct StageJob {
+    repo: Repo,
+    paths: Vec<String>,
+    versions: Vec<(String, Option<Vec<u8>>)>,
+    reviewed: bool,
+    ctx: egui::Context,
+}
+
+impl StageJob {
+    fn start(self) -> Receiver<Result<(), String>> {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = self.run();
+            let _ = sender.send(result);
+            self.ctx.request_repaint();
+        });
+        receiver
+    }
+
+    fn run(&self) -> Result<(), String> {
+        let paths: Vec<&str> = self.paths.iter().map(String::as_str).collect();
+        self.repo.stage_files(&paths, self.reviewed)?;
+        for (path, content) in &self.versions {
+            self.repo.stage_version(path, content.as_deref())?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -99,6 +132,18 @@ impl FileReview {
         let (done, total) = self.hunk_progress(hunk);
         done == total
     }
+
+    fn mark(&mut self, reviewed: bool) {
+        if self.diff.hunks.is_empty() {
+            self.file_staged = reviewed;
+            return;
+        }
+        for (hunk, staged) in self.diff.hunks.iter().zip(&mut self.staged) {
+            for (line, staged) in hunk.lines.iter().zip(staged) {
+                *staged = line.kind == LineKind::Context || reviewed;
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -130,6 +175,8 @@ impl Review {
             seen: None,
             unseen: HashSet::new(),
             rolled_back: Vec::new(),
+            staging: None,
+            pending: Vec::new(),
         }
     }
 
@@ -254,7 +301,39 @@ impl Review {
     }
 
     pub fn take_changed(&mut self) -> bool {
+        self.poll_staging();
         std::mem::take(&mut self.changed)
+    }
+
+    fn poll_staging(&mut self) {
+        let Some(receiver) = &self.staging else {
+            return;
+        };
+        let Ok(result) = receiver.try_recv() else {
+            return;
+        };
+        self.staging = None;
+        self.staging_done(result);
+        self.start_pending();
+    }
+
+    fn start_pending(&mut self) {
+        if self.staging.is_none() && !self.pending.is_empty() {
+            self.staging = Some(self.pending.remove(0).start());
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_for_staging(&mut self) {
+        loop {
+            let Some(receiver) = self.staging.take() else {
+                return;
+            };
+            if let Ok(result) = receiver.recv() {
+                self.staging_done(result);
+            }
+            self.start_pending();
+        }
     }
 
     pub fn take_rolled_back(&mut self) -> Vec<String> {
@@ -574,7 +653,7 @@ impl Review {
         self.make_current(file, hunk);
     }
 
-    pub fn set_reviewed(&mut self, path: &str, reviewed: bool) {
+    pub fn set_reviewed(&mut self, path: &str, reviewed: bool, ctx: &egui::Context) {
         let inside = |file: &str| {
             path.is_empty()
                 || file
@@ -584,18 +663,59 @@ impl Review {
         let files: Vec<usize> = (0..self.files.len())
             .filter(|&index| inside(&self.files[index].diff.path))
             .collect();
+        let mut paths = Vec::new();
+        let mut versions = Vec::new();
         for file in files {
             (0..self.files[file].diff.hunks.len()).for_each(|hunk| self.see(file, hunk));
             let (done, total) = self.files[file].progress();
             if done == if reviewed { total } else { 0 } {
                 continue;
             }
-            if self.files[file].diff.hunks.is_empty() {
-                self.stage_file(file, reviewed);
+            let path = self.files[file].diff.path.clone();
+            let from_buffer = reviewed
+                && self
+                    .texts
+                    .get(&path)
+                    .is_some_and(|text| !text.from_work(&self.repo.root.join(&path)));
+            if from_buffer {
+                versions.push((path, self.all_version(file)));
             } else {
-                self.stage(file, |_, _| reviewed);
+                paths.push(path);
             }
+            self.files[file].mark(reviewed);
         }
+        if paths.is_empty() && versions.is_empty() {
+            return;
+        }
+        self.update_progress();
+        self.error = None;
+        let job = StageJob {
+            repo: self.repo.clone(),
+            paths,
+            versions,
+            reviewed,
+            ctx: ctx.clone(),
+        };
+        match &self.staging {
+            None => self.staging = Some(job.start()),
+            Some(_) => self.pending.push(job),
+        }
+    }
+
+    fn all_version(&self, file: usize) -> Option<Vec<u8>> {
+        let diff = &self.files[file].diff;
+        let text = &self.texts[&diff.path];
+        let status = if text.head.is_none() {
+            FileStatus::Added
+        } else if text.missing && text.work.is_empty() {
+            FileStatus::Deleted
+        } else {
+            FileStatus::Modified
+        };
+        let head = text.head.as_deref().unwrap_or_default().as_bytes();
+        git::version(status, head, text.work.as_bytes(), &diff.hunks, &|_, _| {
+            true
+        })
     }
 
     fn handle_keys(
@@ -735,7 +855,7 @@ impl Review {
             self.roll_back(&path);
         }
         if let Some((path, reviewed)) = mark.into_inner() {
-            self.set_reviewed(&path, reviewed);
+            self.set_reviewed(&path, reviewed, ui.ctx());
         }
         clicked
     }
@@ -951,7 +1071,7 @@ impl Review {
             }
         }
         if let Some(reviewed) = mark_file {
-            self.set_reviewed(path, reviewed);
+            self.set_reviewed(path, reviewed, ui.ctx());
             if reviewed {
                 next = self.next(index);
             }

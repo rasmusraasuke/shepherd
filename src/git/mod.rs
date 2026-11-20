@@ -403,13 +403,17 @@ impl Repo {
         Ok(rolled_back)
     }
 
-    pub fn stage_file(&self, path: &str, staged: bool) -> Result<(), String> {
+    pub fn stage_files(&self, paths: &[&str], staged: bool) -> Result<(), String> {
         let args: &[&str] = match (staged, self.base()) {
             (true, _) => &["add", "--all", "--"],
             (false, EMPTY_TREE) => &["rm", "--cached", "--quiet", "--"],
             (false, _) => &["reset", "--quiet", "--"],
         };
-        git(&self.root, &[args, &[path]].concat()).map(drop)
+        git(&self.root, &[args, paths].concat()).map(drop)
+    }
+
+    pub fn stage_file(&self, path: &str, staged: bool) -> Result<(), String> {
+        self.stage_files(&[path], staged)
     }
 
     fn read_work(&self, path: &str) -> Vec<u8> {

@@ -113,6 +113,13 @@ impl FileText {
         text
     }
 
+    pub(super) fn from_work(&self, path: &Path) -> bool {
+        match file_view::read(path) {
+            Ok(work) => work == self.work,
+            Err(_) => self.missing,
+        }
+    }
+
     pub(super) fn set_index(&mut self, staged: &str) {
         self.index = staged.lines().map(str::to_string).collect();
         self.staged_removals = line_diff::diff(&self.old.lines, &self.index)

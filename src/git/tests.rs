@@ -341,6 +341,21 @@ fn stages_new_and_deleted_files_and_takes_them_back() {
 }
 
 #[test]
+fn stages_many_files_at_once_and_takes_them_back() {
+    let (repo, dir) = temp_repo("stage-many", &[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    commit_all(&repo);
+    dir.write("a.txt", "A\n");
+    fs::remove_file(dir.path().join("b.txt")).unwrap();
+    dir.write("c.txt", "c\n");
+    repo.stage_files(&["a.txt", "b.txt", "c.txt"], true)
+        .unwrap();
+    assert_eq!(short_status(&repo), "M  a.txt\nD  b.txt\nA  c.txt\n");
+    repo.stage_files(&["a.txt", "b.txt", "c.txt"], false)
+        .unwrap();
+    assert_eq!(short_status(&repo), " M a.txt\n D b.txt\n?? c.txt\n");
+}
+
+#[test]
 fn rolls_back_the_changes_of_a_file_or_a_directory() {
     let (repo, dir) = temp_repo(
         "roll-back",
