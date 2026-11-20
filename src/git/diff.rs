@@ -63,7 +63,7 @@ pub struct Conflict {
     pub theirs: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Hunk {
     pub old_start: u32,
     pub new_start: u32,

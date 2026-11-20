@@ -58,6 +58,14 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   redo. Enter keeps the indentation; Tab and Shift+Tab indent and outdent the selected lines.
 - **Saved on their own.** An edit is written to disk half a second after typing stops, and when
   the tab or the editor is closed; Cmd+S saves right away. There is nothing to save by hand.
+- **Uncommitted lines marked.** A file tab marks what differs from the last commit with a
+  colored bar after the line numbers: green when only lines were added, red when only lines
+  were deleted, and gray when lines were replaced, which counts as one change however many
+  lines it covers; a run of changed lines is one continuous bar. Hovering a bar shows a
+  short preview of the change as the review does, with the removed and added lines numbered,
+  colored and with the words that changed marked; clicking it opens the whole change in an
+  overlay that scrolls from its first line. Both stay within the file view and start at the
+  first line of the change. Escape or a click outside closes the overlay.
 - **Reloaded on their own.** A file changed on disk, for example by an agent, shows its new
   content without asking. Undo brings the previous content back.
 - **Find and replace.** Cmd+F finds text in the file, starting from what is selected. Letter

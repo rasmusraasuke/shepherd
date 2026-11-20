@@ -1,9 +1,11 @@
 pub mod comments;
 mod draft;
-mod line_diff;
+pub(crate) mod line_diff;
 mod rows;
 mod text;
 mod word_diff;
+
+pub(crate) use word_diff::changed_ranges;
 
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -1466,6 +1468,10 @@ impl Review {
         }
         next.map(Outcome::Show).or(outcome)
     }
+}
+
+pub(crate) fn diff_colors(kind: LineKind, dark_mode: bool) -> Option<(Color32, Color32)> {
+    text::row_colors(kind, dark_mode)
 }
 
 pub fn status_color(status: FileStatus, dark_mode: bool) -> Color32 {

@@ -234,6 +234,32 @@ fn shows_a_file_history_and_turns_git_blame_on_and_off() {
 }
 
 #[test]
+fn shows_changed_and_new_lines_in_a_file_view() {
+    let (mut harness, dir) = harness("file-changes");
+    let repo = Repo::open(dir.path()).unwrap();
+    dir.write("README.md", "one\ntwo\nthree\n");
+    crate::git::tests::commit_all(&repo);
+    dir.write("README.md", "one\nTWO\nthree\nnew\n");
+    harness.state_mut().action = Some(Action::Open(Tab::File("README.md".to_string()), 0));
+    harness.run();
+
+    harness.get_by_label("Changed line 2");
+    harness.get_by_label("New line 4");
+    harness.get_by_label("Changed line 2").hover();
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Diff of 2 lines").is_some());
+
+    harness.get_by_label("Changed line 2").click();
+    harness.run();
+    harness.event(egui::Event::PointerMoved(egui::pos2(10.0, 10.0)));
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Diff of 2 lines").is_some());
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(harness.query_by_label("Diff of 2 lines").is_none());
+}
+
+#[test]
 fn opens_and_closes_the_sidebar_from_the_bar_of_icons_and_shows_the_keys() {
     let (mut harness, _dir) = harness("activity-bar");
     harness.get_by_label("README.md");

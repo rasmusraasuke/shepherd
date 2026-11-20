@@ -8,7 +8,8 @@ use eframe::egui::{self, Key, Modifiers};
 use crate::editor::Editor;
 use crate::editor::buffer::{Buffer, Pos};
 use crate::editor::highlight::Highlighter;
-use crate::git::{Commit, Repo};
+use crate::git::{Commit, Hunk, Repo};
+use crate::review::line_diff;
 
 const MAX_SIZE: u64 = 20 * 1024 * 1024;
 
@@ -38,6 +39,9 @@ struct OpenFile {
     edited: (u64, Instant),
     save_error: Option<String>,
     blame: Option<Result<Vec<Commit>, String>>,
+    committed: Option<Vec<String>>,
+    changes: Vec<Hunk>,
+    changes_for: Option<u64>,
 }
 
 impl OpenFiles {
@@ -53,9 +57,14 @@ impl OpenFiles {
     }
 
     fn file(&mut self, path: &str) -> &mut OpenFile {
+        let root = self.root.clone();
+        let committed = self
+            .repo
+            .as_ref()
+            .map(|repo| repo.content_at("HEAD", path).unwrap_or_default());
         self.files
             .entry(path.to_string())
-            .or_insert_with(|| OpenFile::open(self.root.join(path)))
+            .or_insert_with(|| OpenFile::open(root.join(path), committed))
     }
 
     pub fn text(
@@ -188,6 +197,7 @@ impl OpenFiles {
             self.toggle_blame(path);
         }
         let file = self.file(path);
+        file.update_changes();
         if let Some(error) = &file.save_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
@@ -214,6 +224,7 @@ impl OpenFiles {
                     buffer,
                     file.highlighter.as_mut(),
                     annotations,
+                    &file.changes,
                     blame_on,
                     &mut toggle,
                     &mut open_commit,
@@ -241,7 +252,7 @@ impl OpenFiles {
 }
 
 impl OpenFile {
-    fn open(path: PathBuf) -> Self {
+    fn open(path: PathBuf, committed: Option<String>) -> Self {
         let buffer = read(&path).map(|text| Buffer::new(&text));
         let highlighter = Highlighter::for_path(&path);
         Self {
@@ -252,8 +263,27 @@ impl OpenFile {
             edited: (0, Instant::now()),
             save_error: None,
             blame: None,
+            committed: committed.map(|text| text.lines().map(str::to_string).collect()),
+            changes: Vec::new(),
+            changes_for: None,
             path,
         }
+    }
+
+    fn update_changes(&mut self) {
+        let (Some(committed), Ok(buffer)) = (&self.committed, &self.buffer) else {
+            self.changes.clear();
+            self.changes_for = None;
+            return;
+        };
+        let revision = buffer.revision();
+        if self.changes_for == Some(revision) {
+            return;
+        }
+        let lines = buffer.lines();
+        let work = &lines[..lines.len() - lines.last().is_some_and(String::is_empty) as usize];
+        self.changes = line_diff::diff(committed, work);
+        self.changes_for = Some(revision);
     }
 
     fn save(&mut self, repo: Option<&Repo>) {
@@ -360,6 +390,28 @@ mod tests {
             .unwrap()
             .set_modified(later)
             .unwrap();
+    }
+
+    #[test]
+    fn finds_the_lines_that_changed_since_the_commit() {
+        use crate::git::LineKind;
+
+        let (repo, dir) = crate::git::tests::temp_repo("file-changes", &[("a.txt", "one\ntwo\n")]);
+        crate::git::tests::commit_all(&repo);
+        let mut files = OpenFiles::new(dir.path().to_path_buf());
+        let file = files.file("a.txt");
+        file.update_changes();
+        assert!(file.changes.is_empty());
+
+        file.buffer.as_mut().unwrap().set_text("one\nTWO\nnew\n");
+        file.update_changes();
+        let kinds: Vec<LineKind> = file
+            .changes
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .map(|line| line.kind)
+            .collect();
+        assert_eq!(kinds, [LineKind::Removed, LineKind::Added, LineKind::Added]);
     }
 
     #[test]

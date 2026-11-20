@@ -5,6 +5,7 @@ pub mod highlight;
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::Path;
 use std::sync::Arc;
 
 use eframe::egui::text::CCursor;
@@ -16,7 +17,8 @@ use buffer::{Buffer, Move, Pos};
 use code::CodeStyle;
 use highlight::Highlighter;
 
-use crate::git::Commit;
+use crate::git::{Commit, Hunk, LineKind};
+use crate::ui::theme;
 
 #[derive(Default)]
 pub struct Editor {
@@ -28,6 +30,14 @@ pub struct Editor {
     active: bool,
     read_only: bool,
     find: Option<Find>,
+    open_change: Option<OpenChange>,
+    change_id: u64,
+}
+
+struct OpenChange {
+    hunk: Hunk,
+    anchor: egui::Pos2,
+    id: u64,
 }
 
 pub struct Rows {
@@ -164,6 +174,204 @@ impl Find {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Marker {
+    New,
+    Changed,
+    Deleted,
+}
+
+fn markers(changes: &[Hunk], lines: usize) -> HashMap<usize, (Marker, usize)> {
+    let mut markers = HashMap::new();
+    for (index, hunk) in changes.iter().enumerate() {
+        let removed = hunk
+            .lines
+            .iter()
+            .filter(|line| line.kind == LineKind::Removed)
+            .count();
+        let added: Vec<usize> = hunk
+            .lines
+            .iter()
+            .filter(|line| line.kind == LineKind::Added)
+            .filter_map(|line| line.new_no.map(|number| number as usize - 1))
+            .collect();
+        if !added.is_empty() {
+            let marker = if removed > 0 {
+                Marker::Changed
+            } else {
+                Marker::New
+            };
+            for line in added {
+                markers.insert(line, (marker, index));
+            }
+        } else if removed > 0 && lines > 0 {
+            let at = (hunk.ranges().1.start as usize)
+                .saturating_sub(1)
+                .min(lines - 1);
+            markers.insert(at, (Marker::Deleted, index));
+        }
+    }
+    markers
+}
+
+fn hunk_start(hunk: &Hunk, lines: usize) -> usize {
+    hunk.lines
+        .iter()
+        .filter(|line| line.kind == LineKind::Added)
+        .filter_map(|line| line.new_no)
+        .min()
+        .map_or_else(
+            || (hunk.ranges().1.start as usize).saturating_sub(1),
+            |number| number as usize - 1,
+        )
+        .min(lines.saturating_sub(1))
+}
+
+fn changed_in_hunk(hunk: &Hunk) -> Vec<Vec<Range<usize>>> {
+    let lines = &hunk.lines;
+    let mut changed = vec![Vec::new(); lines.len()];
+    let mut at = 0;
+    while at < lines.len() {
+        let removed = lines[at..]
+            .iter()
+            .take_while(|line| line.kind == LineKind::Removed)
+            .count();
+        let added = lines[at + removed..]
+            .iter()
+            .take_while(|line| line.kind == LineKind::Added)
+            .count();
+        for index in 0..removed.min(added) {
+            let (removed_at, added_at) = (at + index, at + removed + index);
+            if let Some((old, new)) =
+                crate::review::changed_ranges(&lines[removed_at].text, &lines[added_at].text)
+            {
+                changed[removed_at] = old;
+                changed[added_at] = new;
+            }
+        }
+        at += (removed + added).max(1);
+    }
+    changed
+}
+
+struct DiffLayout {
+    width: f32,
+    number_width: f32,
+    code_x: f32,
+}
+
+fn change_layout(ui: &egui::Ui, hunk: &Hunk, max_width: f32) -> DiffLayout {
+    let style = CodeStyle::new(ui);
+    let digits = hunk
+        .lines
+        .iter()
+        .filter_map(|line| line.old_no.or(line.new_no))
+        .max()
+        .unwrap_or(1)
+        .to_string()
+        .len()
+        .max(3);
+    let number_width = style.digit_width * (digits + 1) as f32;
+    let code_x = number_width * 2.0 + style.digit_width * 1.5;
+    let code_width = hunk
+        .lines
+        .iter()
+        .map(|line| {
+            ui.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(line.text.clone(), style.font.clone(), style.text_color)
+                    .size()
+                    .x
+            })
+        })
+        .fold(0.0, f32::max);
+    DiffLayout {
+        width: (code_x + code_width + 12.0).clamp(280.0, max_width),
+        number_width,
+        code_x,
+    }
+}
+
+fn change_tooltip(
+    ui: &mut egui::Ui,
+    path: &str,
+    hunk: &Hunk,
+    layout: &DiffLayout,
+    limit: Option<usize>,
+) {
+    let style = CodeStyle::new(ui);
+    let dark = ui.visuals().dark_mode;
+    let total = hunk.lines.len();
+    let shown = limit.map_or(total, |limit| limit.min(total));
+    let truncated = shown < total;
+    let height = style.row_height * (shown + truncated as usize) as f32;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(layout.width, height), Sense::hover());
+    let label = format!("Diff of {total} line{}", if total == 1 { "" } else { "s" });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), &label));
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let texts: Vec<String> = hunk
+        .lines
+        .iter()
+        .take(shown)
+        .map(|line| line.text.clone())
+        .collect();
+    let spans = Highlighter::spans_of(Path::new(path), &texts);
+    let changed = changed_in_hunk(hunk);
+    for (at, line) in hunk.lines.iter().take(shown).enumerate() {
+        let y = rect.top() + style.row_height * at as f32;
+        let row = egui::Rect::from_min_size(
+            egui::pos2(rect.left(), y),
+            Vec2::new(rect.width(), style.row_height),
+        );
+        let (background, mark) = crate::review::diff_colors(line.kind, dark)
+            .unwrap_or((Color32::TRANSPARENT, Color32::TRANSPARENT));
+        painter.rect_filled(row, 0.0, background);
+        let old_x = rect.left() + layout.number_width;
+        let new_x = rect.left() + layout.number_width * 2.0;
+        style.number(&painter, old_x, y + 1.0, line.old_no);
+        style.number(&painter, new_x, y + 1.0, line.new_no);
+        let sign = match line.kind {
+            LineKind::Added => "+",
+            LineKind::Removed => "-",
+            LineKind::Context => " ",
+        };
+        style.text(
+            &painter,
+            new_x + style.digit_width * 0.4,
+            y + 1.0,
+            sign,
+            style.weak_color,
+        );
+        let line_spans = spans.get(at).map(Vec::as_slice).unwrap_or(&[]);
+        let galley = ui.fonts_mut(|fonts| {
+            fonts.layout_job(highlight::layout_job(
+                &line.text,
+                line_spans,
+                &changed[at],
+                mark,
+                &style.font,
+                style.text_color,
+                dark,
+            ))
+        });
+        painter.galley(
+            egui::pos2(rect.left() + layout.code_x, y + 1.0),
+            galley,
+            style.text_color,
+        );
+    }
+    if truncated {
+        let y = rect.top() + style.row_height * shown as f32;
+        style.text(
+            &painter,
+            rect.left() + style.digit_width,
+            y + 1.0,
+            format!("… {} more lines", total - shown),
+            style.weak_color,
+        );
+    }
+}
+
 impl Editor {
     pub fn focus(&mut self) {
         self.focus = true;
@@ -228,6 +436,7 @@ impl Editor {
         buffer: &mut Buffer,
         highlighter: Option<&mut Highlighter>,
         blame: Option<&[Commit]>,
+        changes: &[Hunk],
         blame_on: bool,
         toggle_blame: &mut bool,
         open_commit: &mut Option<String>,
@@ -248,6 +457,16 @@ impl Editor {
         let blame_width = style.digit_width * (blame_chars + 2) as f32;
         let code_x = blame_width + number_width + style.digit_width * 2.0;
         let width = code_x + style.digit_width * (self.longest_line(buffer) + 2) as f32;
+        let line_count = buffer.lines().len();
+        let markers = markers(changes, line_count);
+        let palette = theme::palette(ui.visuals().dark_mode);
+        let view = ui.max_rect().shrink(4.0);
+        let preview_lines =
+            (((view.height() / style.row_height) as usize).saturating_sub(3)).clamp(4, 16);
+        let max_width = (view.width() - 32.0).clamp(280.0, 900.0);
+        let mut clicked_change = None;
+        let mut hovered_change = None;
+        let mut change_id = self.change_id;
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::both()
             .id_salt(id_salt)
@@ -350,8 +569,112 @@ impl Editor {
                         y + 1.0,
                         Some(line as u32 + 1),
                     );
+                    if let Some((marker, index)) = markers.get(&line) {
+                        let hunk = &changes[*index];
+                        let color = match marker {
+                            Marker::New => palette.added,
+                            Marker::Changed => palette.weak,
+                            Marker::Deleted => palette.removed,
+                        };
+                        let left = visible.left() + blame_width + number_width;
+                        let bar = egui::Rect::from_min_size(
+                            egui::pos2(left + style.digit_width * 0.6, y),
+                            Vec2::new(2.5, style.row_height),
+                        );
+                        painter.rect_filled(bar, 0.0, color);
+                        let hit = egui::Rect::from_min_size(
+                            egui::pos2(left, y),
+                            Vec2::new(style.digit_width * 1.2, style.row_height),
+                        );
+                        let marker_response =
+                            ui.interact(hit, response.id.with(("change", line)), Sense::click());
+                        let label = match marker {
+                            Marker::New => format!("New line {}", line + 1),
+                            Marker::Changed => format!("Changed line {}", line + 1),
+                            Marker::Deleted => format!("Deleted line {}", line + 1),
+                        };
+                        marker_response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &label)
+                        });
+                        let anchor = egui::pos2(
+                            hit.left(),
+                            rect.top() + style.row_height * hunk_start(hunk, line_count) as f32,
+                        );
+                        if marker_response.clicked() {
+                            change_id += 1;
+                            clicked_change = Some(OpenChange {
+                                hunk: hunk.clone(),
+                                anchor,
+                                id: change_id,
+                            });
+                        }
+                        if marker_response.hovered() {
+                            hovered_change = Some((*index, anchor));
+                        }
+                    }
                 }
             });
+        let opened = clicked_change.is_some();
+        self.change_id = change_id;
+        if let Some(change) = clicked_change {
+            self.open_change = Some(change);
+        }
+        let mut close = false;
+        if let Some(open) = &self.open_change {
+            let below = (view.bottom() - open.anchor.y - 8.0).max(200.0);
+            let max_height = below.min(view.height() * 0.85).max(200.0);
+            let area = egui::Area::new(ui.scope_id().with(("change-overlay", id_salt)))
+                .order(egui::Order::Foreground)
+                .fixed_pos(open.anchor + egui::vec2(24.0, 0.0))
+                .constrain_to(view)
+                .show(ui.ctx(), |ui| {
+                    let layout = change_layout(ui, &open.hunk, max_width);
+                    egui::Frame::popup(ui.style())
+                        .inner_margin(egui::Margin::ZERO)
+                        .show(ui, |ui| {
+                            ui.set_width(layout.width);
+                            egui::ScrollArea::vertical()
+                                .id_salt(("change-scroll", id_salt, open.id))
+                                .max_height(max_height)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    change_tooltip(ui, id_salt, &open.hunk, &layout, None);
+                                });
+                        });
+                });
+            if !opened {
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    close = true;
+                }
+                let pointer = ui.input(|i| i.pointer.interact_pos());
+                let inside = pointer.is_some_and(|pointer| area.response.rect.contains(pointer));
+                if ui.input(|i| i.pointer.any_click()) && !inside {
+                    close = true;
+                }
+            }
+        } else if let Some((index, anchor)) = hovered_change {
+            let hunk = &changes[index];
+            let _ = egui::Area::new(ui.scope_id().with(("change-preview", id_salt)))
+                .order(egui::Order::Tooltip)
+                .interactable(false)
+                .fixed_pos(anchor + egui::vec2(24.0, 0.0))
+                .constrain_to(view)
+                .show(ui.ctx(), |ui| {
+                    let layout = change_layout(ui, hunk, max_width);
+                    egui::Frame::popup(ui.style())
+                        .inner_margin(egui::Margin::ZERO)
+                        .show(ui, |ui| {
+                            ui.set_width(layout.width);
+                            ui.add_space(4.0);
+                            ui.weak("Click to keep it open and scroll");
+                            ui.add_space(4.0);
+                            change_tooltip(ui, id_salt, hunk, &layout, Some(preview_lines));
+                        });
+                });
+        }
+        if close {
+            self.open_change = None;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -647,5 +970,46 @@ fn handle_key(buffer: &mut Buffer, key: Key, modifiers: Modifiers, page_rows: is
     match key {
         Key::Backspace | Key::Delete => buffer.delete(to),
         _ => buffer.move_cursor(to, modifiers.shift),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::review::line_diff;
+
+    #[test]
+    fn marks_new_changed_and_deleted_lines() {
+        let changes = line_diff::diff(&["a", "b", "c"], &["a", "B", "c", "new"]);
+        let marks = markers(&changes, 4);
+        assert_eq!(
+            marks.get(&1).map(|(marker, _)| *marker),
+            Some(Marker::Changed)
+        );
+        assert_eq!(marks.get(&3).map(|(marker, _)| *marker), Some(Marker::New));
+        assert_eq!(marks.get(&0), None);
+
+        let mixed = line_diff::diff(&["a", "b", "c"], &["a", "B", "new", "c"]);
+        let marks = markers(&mixed, 4);
+        assert_eq!(
+            marks.get(&1).map(|(marker, _)| *marker),
+            Some(Marker::Changed)
+        );
+        assert_eq!(
+            marks.get(&2).map(|(marker, _)| *marker),
+            Some(Marker::Changed)
+        );
+
+        let deleted = line_diff::diff(&["a", "b", "c"], &["a", "c"]);
+        let marks = markers(&deleted, 2);
+        assert_eq!(
+            marks.get(&1).map(|(marker, _)| *marker),
+            Some(Marker::Deleted)
+        );
+
+        let added = line_diff::diff::<&str, &str>(&[], &["x", "y"]);
+        let marks = markers(&added, 2);
+        assert_eq!(marks.get(&0).map(|(marker, _)| *marker), Some(Marker::New));
+        assert_eq!(marks.get(&1).map(|(marker, _)| *marker), Some(Marker::New));
     }
 }
