@@ -292,6 +292,7 @@ impl App {
                 content.files = snapshot.files;
                 content.flow.update(snapshot.status, &snapshot.changes);
                 content.history.set_commits(snapshot.commits);
+                content.open_files.set_head(&snapshot.head);
                 content.open_files.reload_changed();
                 content.search.files_changed();
             }

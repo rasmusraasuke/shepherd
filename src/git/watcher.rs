@@ -16,6 +16,7 @@ pub struct Snapshot {
     pub files: Vec<String>,
     pub status: Status,
     pub commits: Vec<Commit>,
+    pub head: String,
 }
 
 impl Snapshot {
@@ -25,6 +26,7 @@ impl Snapshot {
             files: repo.list_files()?,
             status: repo.status(),
             commits: repo.log()?,
+            head: repo.head(),
         })
     }
 }

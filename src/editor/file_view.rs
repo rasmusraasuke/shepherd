@@ -18,6 +18,7 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 pub struct OpenFiles {
     root: PathBuf,
     repo: Option<Repo>,
+    head: String,
     files: HashMap<String, OpenFile>,
     last_active: Option<String>,
     commit_to_open: Option<String>,
@@ -47,9 +48,11 @@ struct OpenFile {
 impl OpenFiles {
     pub fn new(root: PathBuf) -> Self {
         let repo = Repo::open(&root).ok();
+        let head = repo.as_ref().map(Repo::head).unwrap_or_default();
         Self {
             root,
             repo,
+            head,
             files: HashMap::new(),
             last_active: None,
             commit_to_open: None,
@@ -121,6 +124,33 @@ impl OpenFiles {
         let repo = self.repo.as_ref();
         for file in self.files.values_mut() {
             file.reload_if_changed(repo);
+        }
+    }
+
+    pub fn set_head(&mut self, head: &str) {
+        if self.head == head {
+            return;
+        }
+        self.head = head.to_string();
+        let (root, repo) = (&self.root, self.repo.as_ref());
+        for file in self.files.values_mut() {
+            file.committed = repo.map(|repo| {
+                let path = file
+                    .path
+                    .strip_prefix(root)
+                    .unwrap_or(&file.path)
+                    .to_string_lossy();
+                repo.content_at("HEAD", &path)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            });
+            file.changes_for = None;
+            file.update_changes();
+            if file.blame.is_some() {
+                file.refresh_blame(repo);
+            }
         }
     }
 
@@ -412,6 +442,26 @@ mod tests {
             .map(|line| line.kind)
             .collect();
         assert_eq!(kinds, [LineKind::Removed, LineKind::Added, LineKind::Added]);
+    }
+
+    #[test]
+    fn takes_a_commit_as_the_new_baseline_for_open_files() {
+        let (repo, dir) = crate::git::tests::temp_repo("file-commit", &[("a.txt", "one\ntwo\n")]);
+        crate::git::tests::commit_all(&repo);
+        let mut files = OpenFiles::new(dir.path().to_path_buf());
+        let file = files.file("a.txt");
+        file.update_changes();
+        assert!(file.changes.is_empty());
+
+        file.buffer.as_mut().unwrap().set_text("one\nTWO\nnew\n");
+        file.update_changes();
+        assert!(!file.changes.is_empty());
+
+        dir.write("a.txt", "one\nTWO\nnew\n");
+        repo.stage_file("a.txt", true).unwrap();
+        repo.commit("change").unwrap();
+        files.set_head(&repo.head());
+        assert!(files.file("a.txt").changes.is_empty());
     }
 
     #[test]

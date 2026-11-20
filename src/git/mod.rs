@@ -126,6 +126,11 @@ impl Repo {
         )
     }
 
+    pub fn head(&self) -> String {
+        git(&self.root, &["rev-parse", "HEAD"])
+            .map_or_else(|_| String::new(), |hash| hash.trim().to_string())
+    }
+
     pub fn status(&self) -> Status {
         let lines = |args: &[&str]| -> Vec<String> {
             let out = git(&self.root, args).unwrap_or_default();

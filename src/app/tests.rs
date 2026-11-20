@@ -257,6 +257,15 @@ fn shows_changed_and_new_lines_in_a_file_view() {
     harness.key_press(Key::Escape);
     harness.run();
     assert!(harness.query_by_label("Diff of 2 lines").is_none());
+
+    repo.stage_file("README.md", true).unwrap();
+    repo.commit("commit the changes").unwrap();
+    harness
+        .state_mut()
+        .apply(Ok(Snapshot::take(&repo).unwrap()));
+    harness.run();
+    assert!(harness.query_by_label("Changed line 2").is_none());
+    assert!(harness.query_by_label("New line 4").is_none());
 }
 
 #[test]

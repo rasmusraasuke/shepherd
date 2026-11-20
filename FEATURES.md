@@ -65,7 +65,8 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   short preview of the change as the review does, with the removed and added lines numbered,
   colored and with the words that changed marked; clicking it opens the whole change in an
   overlay that scrolls from its first line. Both stay within the file view and start at the
-  first line of the change. Escape or a click outside closes the overlay.
+  first line of the change. Escape or a click outside closes the overlay. The marks follow
+  commits, also ones made outside the editor, and go away once the lines are committed.
 - **Reloaded on their own.** A file changed on disk, for example by an agent, shows its new
   content without asking. Undo brings the previous content back.
 - **Find and replace.** Cmd+F finds text in the file, starting from what is selected. Letter
