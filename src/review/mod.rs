@@ -42,6 +42,7 @@ pub struct Review {
     comments: Vec<Comment>,
     seen: Option<HashSet<u64>>,
     unseen: HashSet<String>,
+    rolled_back: Vec<String>,
 }
 
 #[derive(Default)]
@@ -128,6 +129,7 @@ impl Review {
             comments: Vec::new(),
             seen: None,
             unseen: HashSet::new(),
+            rolled_back: Vec::new(),
         }
     }
 
@@ -253,6 +255,18 @@ impl Review {
 
     pub fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
+    }
+
+    pub fn take_rolled_back(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.rolled_back)
+    }
+
+    pub fn roll_back(&mut self, path: &str) {
+        match self.repo.roll_back(path) {
+            Ok(files) => self.rolled_back.extend(files),
+            Err(error) => self.error = Some(error),
+        }
+        self.changed = true;
     }
 
     pub fn show_line(&mut self, path: &str, line: usize) {
@@ -649,6 +663,7 @@ impl Review {
         }
         let dark_mode = ui.visuals().dark_mode;
         let mark = Cell::new(None);
+        let rolled_back = Cell::new(None);
         let Self {
             tree,
             files,
@@ -665,6 +680,14 @@ impl Review {
             }
             if done > 0 && ui.button("Mark as not reviewed").clicked() {
                 mark.set(Some((path.to_string(), false)));
+            }
+            ui.separator();
+            let label = match by_path.contains_key(path) {
+                true => "Roll back",
+                false => "Roll back changes",
+            };
+            if ui.button(label).clicked() {
+                rolled_back.set(Some(path.to_string()));
             }
         };
         let mut reviewed_mark = |ui: &egui::Ui, rect: egui::Rect, path: &str| {
@@ -708,6 +731,9 @@ impl Review {
             Some(&mut menu),
             Some(&mut reviewed_mark),
         );
+        if let Some(path) = rolled_back.into_inner() {
+            self.roll_back(&path);
+        }
         if let Some((path, reviewed)) = mark.into_inner() {
             self.set_reviewed(&path, reviewed);
         }

@@ -563,6 +563,60 @@ fn marks_a_directory_reviewed_from_its_menu_in_the_tree() {
 }
 
 #[test]
+fn rolls_back_a_file_or_a_directory_from_its_menu_in_the_tree() {
+    let (review, dir) = review("tree-roll-back", TREE);
+    let mut harness = Harness::new_ui_state(
+        |ui, review: &mut Review| {
+            review.tree_ui(ui, &mut BTreeSet::new(), None);
+        },
+        review,
+    );
+    harness.run();
+    harness.get_by_label("a.txt").click_secondary();
+    harness.run();
+    harness.get_by_label("Roll back").click();
+    harness.run();
+    assert_eq!(
+        harness.state_mut().take_rolled_back(),
+        ["src/a.txt".to_string()]
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("src/a.txt")).unwrap(),
+        TEN
+    );
+
+    harness.get_by_label("src").click_secondary();
+    harness.run();
+    harness.get_by_label("Roll back changes").click();
+    harness.run();
+    assert_eq!(
+        harness.state_mut().take_rolled_back(),
+        ["src/ui/b.txt".to_string()]
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("src/ui/b.txt")).unwrap(),
+        "x\n"
+    );
+
+    refresh(harness.state_mut());
+    harness.run();
+    assert_eq!(harness.state().progress(), (0, 2));
+    assert_eq!(harness.state().files[0].diff.path, "srcs.txt".to_string());
+
+    harness.get_by_label("srcs.txt").click_secondary();
+    harness.run();
+    harness.get_by_label("Roll back").click();
+    harness.run();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("srcs.txt")).unwrap(),
+        "x\n"
+    );
+    refresh(harness.state_mut());
+    assert_eq!(harness.state().progress(), (0, 0));
+    assert!(harness.state().files.is_empty());
+}
+
+#[test]
 fn marks_a_file_reviewed_with_its_checkbox_in_the_tree_and_everything_at_once() {
     let (review, _dir) = review("tree-marks", TREE);
     let mut harness = Harness::new_ui_state(

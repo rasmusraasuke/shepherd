@@ -107,6 +107,15 @@ impl OpenFiles {
         }
     }
 
+    pub fn reload(&mut self, path: &str) {
+        let Some(file) = self.files.get_mut(path) else {
+            return;
+        };
+        file.buffer = read(&file.path).map(|text| Buffer::new(&text));
+        file.modified = modified(&file.path);
+        file.save_error = None;
+    }
+
     pub fn save_edited(&mut self, ctx: &egui::Context) {
         for file in self.files.values_mut() {
             let Ok(buffer) = &file.buffer else { continue };
@@ -323,6 +332,22 @@ mod tests {
                 .buffer
                 .as_ref()
                 .is_err_and(|message| message.starts_with("Cannot open file"))
+        );
+    }
+
+    #[test]
+    fn reload_takes_the_file_from_disk_even_over_unsaved_edits() {
+        let dir = TempDir::new("reload");
+        let mut files = open(&dir, "a.txt", "one");
+        buffer(&mut files, "a.txt").type_text("my ");
+        write_later(&dir, "a.txt", "theirs");
+        files.reload("a.txt");
+        assert_eq!(buffer(&mut files, "a.txt").text(), "theirs");
+        assert!(!buffer(&mut files, "a.txt").is_dirty());
+        files.save_all();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "theirs"
         );
     }
 

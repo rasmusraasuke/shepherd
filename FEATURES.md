@@ -196,6 +196,10 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   *Mark file reviewed* at the top of a review marks the whole file, and the checkbox of a
   file or directory under *Changes*, or a right click on it, marks all of it, reviewed or not. Files without lines,
   such as binary ones, are marked as a whole.
+- **Rolling back.** A right click on a file or directory under *Changes* offers *Roll back*,
+  which takes the file, or everything under the directory, back to how it was committed:
+  changed lines go and are unstaged, added files are deleted and deleted ones come back.
+  A file open in a tab or in the review is reloaded from disk.
 - **Changes after the review.** When a reviewed line is changed again, for example by an
   agent, the new version shows as not reviewed, while the staged one stays as it was. A
   file is only staged when it is as the review shows it; otherwise the review asks to try

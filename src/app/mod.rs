@@ -503,6 +503,9 @@ impl App {
         if self.content.review.take_changed() {
             self.watcher.refresh_now();
         }
+        for path in self.content.review.take_rolled_back() {
+            self.content.open_files.reload(&path);
+        }
         self.content.open_files.save_edited(&ctx);
 
         if let Some(action) = self.action.take() {

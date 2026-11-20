@@ -340,6 +340,49 @@ fn stages_new_and_deleted_files_and_takes_them_back() {
     assert!(!staged_file(&repo));
 }
 
+#[test]
+fn rolls_back_the_changes_of_a_file_or_a_directory() {
+    let (repo, dir) = temp_repo(
+        "roll-back",
+        &[
+            ("a.txt", "a\n"),
+            ("src/kept.txt", "k\n"),
+            ("src/edited.txt", "e\n"),
+        ],
+    );
+    commit_all(&repo);
+    dir.write("a.txt", "changed\n");
+    dir.write("src/edited.txt", "edited\n");
+    repo.stage_file("src/edited.txt", true).unwrap();
+    dir.write("src/new.txt", "new\n");
+    dir.write("staged-new.txt", "staged\n");
+    repo.stage_file("staged-new.txt", true).unwrap();
+    dir.write("loose.txt", "loose\n");
+    assert_eq!(
+        short_status(&repo),
+        " M a.txt\nM  src/edited.txt\nA  staged-new.txt\n?? loose.txt\n?? src/new.txt\n"
+    );
+
+    assert_eq!(repo.roll_back("a.txt").unwrap(), ["a.txt"]);
+    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "a\n");
+
+    assert_eq!(
+        repo.roll_back("src").unwrap(),
+        ["src/edited.txt", "src/new.txt"]
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("src/edited.txt")).unwrap(),
+        "e\n"
+    );
+    assert!(!dir.path().join("src/new.txt").exists());
+
+    repo.roll_back("staged-new.txt").unwrap();
+    assert!(!dir.path().join("staged-new.txt").exists());
+    repo.roll_back("loose.txt").unwrap();
+    assert!(!dir.path().join("loose.txt").exists());
+    assert_eq!(short_status(&repo), "");
+}
+
 const DIFF: &str = "\
 diff --git a/src/main.rs b/src/main.rs
 index 1111111..2222222 100644

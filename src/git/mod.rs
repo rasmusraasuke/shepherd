@@ -364,6 +364,45 @@ impl Repo {
         git(&self.root, &["show", &format!(":{path}")]).ok()
     }
 
+    pub fn roll_back(&self, path: &str) -> Result<Vec<String>, String> {
+        let base = self.base();
+        let changed = git(
+            &self.root,
+            &["diff", "--name-only", "--no-renames", base, "--", path],
+        )?;
+        let mut rolled_back = Vec::new();
+        for file in changed.lines().filter(|file| !file.is_empty()) {
+            if git(&self.root, &["cat-file", "-e", &format!("{base}:{file}")]).is_ok() {
+                git(
+                    &self.root,
+                    &[
+                        "restore",
+                        "--quiet",
+                        "--source",
+                        base,
+                        "--staged",
+                        "--worktree",
+                        "--",
+                        file,
+                    ],
+                )?;
+            } else {
+                git(
+                    &self.root,
+                    &["rm", "--cached", "--force", "--quiet", "--", file],
+                )?;
+                let _ = fs::remove_file(self.root.join(file));
+            }
+            rolled_back.push(file.to_string());
+        }
+        for file in self.untracked(&[path])? {
+            fs::remove_file(self.root.join(&file))
+                .map_err(|e| format!("Cannot remove {file}: {e}"))?;
+            rolled_back.push(file);
+        }
+        Ok(rolled_back)
+    }
+
     pub fn stage_file(&self, path: &str, staged: bool) -> Result<(), String> {
         let args: &[&str] = match (staged, self.base()) {
             (true, _) => &["add", "--all", "--"],
