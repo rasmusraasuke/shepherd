@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 
 use diff::added_file_diff;
 pub use diff::{Conflict, DiffLine, FileDiff, FileStatus, Hunk, LineKind, parse_diff};
-pub use history::{Commit, CommitRange};
+pub use history::{Commit, CommitRange, commit_times};
 pub use staging::{Staged, version};
 
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";

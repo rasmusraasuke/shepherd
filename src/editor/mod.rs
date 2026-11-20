@@ -17,7 +17,7 @@ use buffer::{Buffer, Move, Pos};
 use code::CodeStyle;
 use highlight::Highlighter;
 
-use crate::git::{Commit, Hunk, LineKind};
+use crate::git::{Commit, Hunk, LineKind, commit_times};
 use crate::ui::theme;
 
 #[derive(Default)]
@@ -522,7 +522,8 @@ impl Editor {
                     ((viewport.bottom() / style.row_height) as usize + 1).min(buffer.lines().len());
                 let blame_font =
                     egui::FontId::new((style.font.size * 0.82).max(9.0), style.font.family.clone());
-                let accent = ui.visuals().selection.bg_fill;
+                let accent = palette.accent;
+                let times = blame.map(commit_times).unwrap_or_default();
                 for line in first.min(last)..last {
                     let y = rect.top() + style.row_height * line as f32;
                     if let Some(commit) = blame
@@ -533,7 +534,7 @@ impl Editor {
                             egui::pos2(visible.left(), y),
                             Vec2::new(blame_width, style.row_height),
                         );
-                        let alpha = (20.0 + 120.0 * commit.recency()).round() as u8;
+                        let alpha = (8.0 + 100.0 * commit.recency(&times)).round() as u8;
                         painter.rect_filled(
                             cell,
                             0.0,

@@ -330,7 +330,8 @@ Work that is already committed is reviewed in the same view as work in the worki
   the commit changed in it, as above. *All commits* goes back to the history of the branch.
 - **Blame.** *Annotate with Git Blame* behind a right-click in a file, or Cmd+Shift+B while
   the file has the keyboard, shows the author of each line's last commit before the line
-  numbers. The background of the name is stronger for recent changes and fades with age;
+  numbers. The background of the name is strongest for the file's newest commit and fades
+  to the oldest one, ranked among the commits of the file;
   hovering it shows the commit's hash, message and when it was made, and a click opens that
   commit in *History*, as a click on it there does. Lines that are not committed yet have no
   blame. *Hide Git Blame* turns it off again.

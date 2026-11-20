@@ -24,13 +24,24 @@ pub struct Commit {
 }
 
 impl Commit {
-    pub fn recency(&self) -> f32 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
-        let age = now.saturating_sub(self.timestamp) as f32 / 86_400.0;
-        (1.0 / (1.0 + age / 90.0)).clamp(0.05, 1.0)
+    pub fn recency(&self, times: &[u64]) -> f32 {
+        if times.len() < 2 {
+            return 1.0;
+        }
+        let rank = times.partition_point(|&time| time < self.timestamp);
+        rank as f32 / (times.len() - 1) as f32
     }
+}
+
+pub fn commit_times(lines: &[Commit]) -> Vec<u64> {
+    let mut times: Vec<u64> = lines
+        .iter()
+        .filter(|commit| !commit.short.is_empty())
+        .map(|commit| commit.timestamp)
+        .collect();
+    times.sort_unstable();
+    times.dedup();
+    times
 }
 
 fn commits(out: &str) -> Vec<Commit> {
@@ -257,22 +268,22 @@ mod tests {
     }
 
     #[test]
-    fn recency_fades_with_age() {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let commit = |days: u64| Commit {
+    fn recency_ranks_the_commits_of_a_file_from_oldest_to_newest() {
+        let commit = |timestamp: u64| Commit {
             hash: "a".repeat(40),
             short: "aaaaaaa".to_string(),
             author: "Test".to_string(),
             time: String::new(),
             subject: String::new(),
-            timestamp: now - days * 86_400,
+            timestamp,
         };
-        assert_eq!(commit(0).recency(), 1.0);
-        assert!(commit(0).recency() > commit(30).recency());
-        assert!(commit(30).recency() > commit(365).recency());
+        let lines = [commit(300), commit(100), commit(100_000), commit(300)];
+        let times = commit_times(&lines);
+        assert_eq!(times, vec![100, 300, 100_000]);
+        assert_eq!(lines[1].recency(&times), 0.0);
+        assert_eq!(lines[0].recency(&times), 0.5);
+        assert_eq!(lines[2].recency(&times), 1.0);
+        assert_eq!(commit(5).recency(&[5]), 1.0);
     }
 
     #[test]
