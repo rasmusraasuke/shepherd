@@ -44,10 +44,13 @@ and shipping as a real application: an app bundle for macOS and a tarball for Li
 scripts, releases made from a tag, and updates found and downloaded in the background, and
 pictures for agents: a screenshot pasted or dropped into an Agent tab or a quick chat
 becomes a file the agent reads, and the same fonts everywhere: IBM Plex Sans and Lilex, with
-the system's fonts a switch away in the window under Cmd+/, kept in the editor's settings.
+the system's fonts a switch away in the window under Cmd+/, kept in the editor's settings,
+and merge conflicts in the same view: conflicts from a merge, rebase, pull or stash apply
+shown as special hunks that take either side or both, are edited in place, can be handed to
+an agent, and can be continued or aborted from the same view.
 FEATURES.md describes the features.
 
-Next is milestone 11: merge conflicts in the same view.
+Next is milestone 12: reviewing commits.
 
 ## Milestones
 
@@ -239,7 +242,7 @@ a file by hand and its path typed.
 Done when: a screenshot pasted into an Agent tab, or attached to a quick chat, reaches the agent
 as an image without saving it by hand.
 
-### 11. Merge conflicts in the same view
+### 11. Merge conflicts in the same view (completed)
 
 - Conflicts appear in the file's review as a special kind of hunk, during merge, rebase,
   pull and stash apply
@@ -320,6 +323,11 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
   git does) on every edit, against the committed and the staged versions, so that what is
   typed shows up as a change at once and staging works on text that isn't saved yet. Reverts
   are edits of the text, so they are undone like any other edit.
+- **Conflicts are hunks of the file.** Conflict markers are read from the file as it is on
+  disk, so a conflict is shown and resolved as an edit of the same text: taking a side or
+  both, and typing over the markers, are edits, and the resolved file is reviewed and staged
+  like any other change. The file stays the source of truth, and the editor keeps no merge
+  state of its own.
 - **Syntax trees from tree-sitter.** Highlighting is built on tree-sitter, so that the same
   trees serve selection by syntax node, outline and folding later.
 - **Terminals on alacritty_terminal.** The terminal emulation and the processes come from
@@ -334,9 +342,9 @@ These keep the project small. Each can be reconsidered when it starts to hurt.
 - **Git runs in the background and leaves no mess.** Commit, push, sync and switching run
   git itself, away from the interface. A sync always merges what it pulls, fast-forwarding
   when it can, whatever `pull.rebase` says; uncommitted changes, with their review
-  marks, are set aside for the pull and brought back. Until conflicts are shown in the review
-  (milestone 11), a pull that runs into them is taken back, and a sync is refused when the
-  commits to pull touch files with uncommitted changes.
+  marks, are set aside for the pull and brought back. A pull that runs into conflicts leaves
+  them for the review, and a sync is refused when the commits to pull touch files with
+  uncommitted changes.
 - **Changes left on a branch live in git's stash.** Leaving the changes behind when switching
   stashes them under the name of the branch, and switching back brings them out again, review
   marks included, so they stay visible to plain git.

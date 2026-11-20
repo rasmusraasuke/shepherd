@@ -24,7 +24,7 @@ use comments::Comment;
 
 pub use draft::new_agent_button;
 use draft::{Draft, draft_ui, send_button};
-use rows::{Clicked, fade, place_in_file, reviewed_mark_ui, rows_ui};
+use rows::{Clicked, Side, fade, place_in_file, reviewed_mark_ui, rows_ui};
 use text::{FileText, Gap, changed_in_lines, file_lines, gaps, read_lines};
 
 pub const NEW_COLOR: Color32 = theme::DARK.accent;
@@ -47,6 +47,8 @@ pub struct Review {
     rolled_back: Vec<String>,
     staging: Option<Receiver<Result<(), String>>>,
     pending: Vec<StageJob>,
+    conflicts: Vec<String>,
+    operation: Option<git::Operation>,
 }
 
 struct StageJob {
@@ -116,7 +118,9 @@ fn fingerprint(path: &str, hunk: &Hunk) -> u64 {
 
 impl FileReview {
     fn lines_progress(&self, hunks: Range<usize>) -> (usize, usize) {
-        let lines = hunks.flat_map(|h| self.diff.hunks[h].lines.iter().zip(&self.staged[h]));
+        let lines = hunks
+            .filter(|&hunk| self.diff.hunks[hunk].conflict.is_none())
+            .flat_map(|h| self.diff.hunks[h].lines.iter().zip(&self.staged[h]));
         let changed = lines.filter(|(line, _)| line.kind != LineKind::Context);
         changed.fold((0, 0), |(done, total), (_, staged)| {
             (done + *staged as usize, total + 1)
@@ -183,26 +187,46 @@ impl Review {
             rolled_back: Vec::new(),
             staging: None,
             pending: Vec::new(),
+            conflicts: Vec::new(),
+            operation: None,
         }
     }
 
     pub fn set_changes(&mut self, changes: &Changes, collapsed: &BTreeSet<String>) {
         let staged = Staged::new(changes);
+        self.operation = changes.operation;
+        self.conflicts.clone_from(&changes.conflicts);
         let before: HashMap<String, FileReview> = self
             .files
             .drain(..)
             .map(|file| (file.diff.path.clone(), file))
             .collect();
+        let repo = &self.repo;
         self.files = git::parse_diff(&changes.diff)
             .into_iter()
-            .map(|diff| {
+            .map(|mut diff| {
+                let conflicted = changes.conflicts.contains(&diff.path);
+                if conflicted && !diff.binary {
+                    let base = diff.old_path.as_deref().unwrap_or(&diff.path);
+                    let old: Vec<String> = repo
+                        .committed(base)
+                        .unwrap_or_default()
+                        .lines()
+                        .map(str::to_string)
+                        .collect();
+                    let work = read_lines(&repo.root, &diff);
+                    diff.hunks = text::hunks_with_conflicts(&old, &work, &text::conflicts(&work));
+                }
                 let lines = diff
                     .hunks
                     .iter()
                     .map(|hunk| {
                         hunk.lines
                             .iter()
-                            .map(|line| staged.is_staged(&diff.path, line))
+                            .map(|line| {
+                                line.kind == LineKind::Context
+                                    || (!conflicted && staged.is_staged(&diff.path, line))
+                            })
                             .collect()
                     })
                     .collect();
@@ -213,7 +237,7 @@ impl Review {
                     .collect();
                 FileReview {
                     staged: lines,
-                    file_staged: staged.is_file_staged(&diff.path),
+                    file_staged: !conflicted && staged.is_file_staged(&diff.path),
                     new: vec![false; fingerprints.len()],
                     fingerprints,
                     diff,
@@ -484,7 +508,23 @@ impl Review {
         Some(next)
     }
 
+    fn has_conflicts(&self, file: usize) -> bool {
+        let diff = &self.files[file].diff;
+        if diff.binary || !self.conflicts.contains(&diff.path) {
+            return false;
+        }
+        match self.texts.get(&diff.path) {
+            Some(text) => !text.conflicts.is_empty(),
+            None => !text::conflicts(&read_lines(&self.repo.root, diff)).is_empty(),
+        }
+    }
+
     fn stage(&mut self, file: usize, chosen: impl Fn(usize, usize) -> bool) {
+        if self.has_conflicts(file) {
+            self.error = Some("Resolve the conflicts of this file first".to_string());
+            self.changed = true;
+            return;
+        }
         let FileReview { diff, staged, .. } = &mut self.files[file];
         let old = diff.old_path.clone();
         let result = match self.texts.get_mut(&diff.path) {
@@ -585,7 +625,12 @@ impl Review {
         let lines = buffer.lines();
         let work = &lines[..lines.len() - (lines.last().is_some_and(String::is_empty)) as usize];
         let before = gaps(&self.files[file].diff.hunks, text.work_lines.len());
-        let hunks = line_diff::diff(&text.old.lines, work);
+        let blocks = if self.conflicts.contains(&path) {
+            text::conflicts(work)
+        } else {
+            Vec::new()
+        };
+        let hunks = text::hunks_with_conflicts(&text.old.lines, work, &blocks);
         let unstaged: HashSet<u32> = line_diff::diff(&text.index, work)
             .iter()
             .flat_map(|hunk| &hunk.lines)
@@ -620,6 +665,7 @@ impl Review {
             .unwrap_or(0);
         text.work = buffer.text();
         text.work_lines = work.to_vec();
+        text.conflicts = blocks;
         text.revision = Some(buffer.revision());
 
         let review = &mut self.files[file];
@@ -655,6 +701,9 @@ impl Review {
     }
 
     fn toggle_reviewed(&mut self, file: usize, hunk: usize) -> Option<String> {
+        if self.files[file].diff.hunks[hunk].conflict.is_some() {
+            return None;
+        }
         let reviewed = !self.files[file].is_reviewed(hunk);
         let staged = self.files[file].staged.clone();
         self.stage(file, |h, i| if h == hunk { reviewed } else { staged[h][i] });
@@ -667,6 +716,9 @@ impl Review {
     }
 
     fn toggle_line(&mut self, file: usize, hunk: usize, line: usize) {
+        if self.files[file].diff.hunks[hunk].conflict.is_some() {
+            return;
+        }
         let staged = self.files[file].staged.clone();
         self.stage(file, |h, i| staged[h][i] != ((h, i) == (hunk, line)));
         self.make_current(file, hunk);
@@ -685,7 +737,12 @@ impl Review {
         let mut paths = Vec::new();
         let mut versions = Vec::new();
         let mut renamed = Vec::new();
+        let mut blocked = false;
         for file in files {
+            if self.has_conflicts(file) {
+                blocked = true;
+                continue;
+            }
             (0..self.files[file].diff.hunks.len()).for_each(|hunk| self.see(file, hunk));
             let (done, total) = self.files[file].progress();
             if done == if reviewed { total } else { 0 } {
@@ -713,6 +770,10 @@ impl Review {
             self.files[file].mark(reviewed);
         }
         if paths.is_empty() && versions.is_empty() && renamed.is_empty() {
+            if blocked {
+                self.error = Some("Resolve the conflicts first".to_string());
+                self.changed = true;
+            }
             return;
         }
         self.update_progress();
@@ -734,6 +795,84 @@ impl Review {
     fn all_version(&self, file: usize) -> Option<Vec<u8>> {
         let diff = &self.files[file].diff;
         self.texts[&diff.path].version(&diff.hunks, |_, _| true)
+    }
+
+    fn resolve(&mut self, file: usize, hunk: usize, side: Side, buffer: &mut Buffer) {
+        let path = self.files[file].diff.path.clone();
+        let Some(text) = self.texts.get(&path) else {
+            return;
+        };
+        let Some(start) = self.files[file].diff.hunks[hunk]
+            .lines
+            .first()
+            .and_then(|line| line.new_no)
+            .map(|number| number as usize - 1)
+        else {
+            return;
+        };
+        let Some(block) = text
+            .conflicts
+            .iter()
+            .find(|block| block.block.start == start)
+        else {
+            return;
+        };
+        let work = &text.work_lines;
+        let lines = match side {
+            Side::Ours => work[block.ours.clone()].to_vec(),
+            Side::Theirs => work[block.theirs.clone()].to_vec(),
+            Side::Both => work[block.ours.clone()]
+                .iter()
+                .chain(&work[block.theirs.clone()])
+                .cloned()
+                .collect(),
+        };
+        let block = block.block.clone();
+        buffer.replace_lines(block, &lines);
+        if let Some(view) = self.views.get_mut(&path) {
+            view.selection = None;
+        }
+    }
+
+    fn conflict_text(&self, file: usize, hunk: usize) -> Option<String> {
+        let path = &self.files[file].diff.path;
+        let text = self.texts.get(path)?;
+        let start = self.files[file].diff.hunks[hunk].lines.first()?.new_no? as usize - 1;
+        let block = text
+            .conflicts
+            .iter()
+            .find(|block| block.block.start == start)?;
+        Some(comments::conflict(
+            path,
+            &text.work_lines[block.block.clone()],
+        ))
+    }
+
+    fn all_conflicts_text(&self) -> Option<String> {
+        let quotes: Vec<String> = self
+            .conflicts
+            .iter()
+            .flat_map(|path| {
+                let lines = match self.texts.get(path) {
+                    Some(text) => text.work_lines.clone(),
+                    None => std::fs::read_to_string(self.repo.root.join(path))
+                        .map(|text| text.lines().map(str::to_string).collect())
+                        .unwrap_or_default(),
+                };
+                text::conflicts(&lines)
+                    .into_iter()
+                    .map(|block| comments::conflict(path, &lines[block.block]))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        (!quotes.is_empty()).then(|| comments::conflicts(quotes))
+    }
+
+    fn take_side(&mut self, path: &str, ours: bool) {
+        match self.repo.take_side(path, ours) {
+            Ok(()) => self.changed = true,
+            Err(error) => self.error = Some(error),
+        }
     }
 
     fn handle_keys(
@@ -808,9 +947,18 @@ impl Review {
             by_path,
             progress,
             unseen,
+            conflicts,
             ..
         } = self;
         let progress_of = |path: &str| progress.get(path).copied().unwrap_or_default();
+        let conflicted = |path: &str| {
+            conflicts.iter().any(|file| {
+                file == path
+                    || file
+                        .strip_prefix(path)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+        };
         let mut menu = |ui: &mut egui::Ui, path: &str| {
             let (done, total) = progress_of(path);
             if done < total && ui.button("Mark as reviewed").clicked() {
@@ -829,6 +977,9 @@ impl Review {
             }
         };
         let mut reviewed_mark = |ui: &egui::Ui, rect: egui::Rect, path: &str| {
+            if conflicted(path) {
+                return;
+            }
             let (done, total) = progress_of(path);
             let state = if done == total {
                 Some(true)
@@ -851,6 +1002,13 @@ impl Review {
         };
         let look = |path: &str| {
             let (done, total) = progress_of(path);
+            if conflicted(path) {
+                return FileLook {
+                    color: Some(theme::palette(dark_mode).removed),
+                    detail: Some("conflict".to_string()),
+                    dot: None,
+                };
+            }
             let color = by_path
                 .get(path)
                 .map(|&index| status_color(files[index].diff.status, dark_mode))
@@ -922,6 +1080,11 @@ impl Review {
             self.follow_edits(index, buffer, editing);
         }
         let (done, total) = self.progress_of(path);
+        let any_conflicts = !self.conflicts.is_empty();
+        let conflicted = self.conflicts.iter().any(|file| file == path);
+        let blocks = self.texts.get(path).map_or(0, |text| text.conflicts.len());
+        let operation = self.operation;
+        let file_conflict = self.has_conflicts(index);
         let Self {
             files,
             views,
@@ -934,6 +1097,8 @@ impl Review {
         let view = views.entry(path.to_string()).or_default();
 
         let mut mark_file = None;
+        let mut take_side = None;
+        let mut send_all = None;
         let unsent = comments.iter().filter(|comment| !comment.sent).count();
         ui.horizontal(|ui| {
             let name = file.diff.display_name();
@@ -947,7 +1112,15 @@ impl Review {
             ui.label(RichText::new(file_name).strong());
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.add_space(12.0);
-            ui.weak(format!("{done}/{total} reviewed"));
+            if blocks > 0 {
+                ui.weak(if blocks == 1 {
+                    "1 conflict".to_string()
+                } else {
+                    format!("{blocks} conflicts")
+                });
+            } else {
+                ui.weak(format!("{done}/{total} reviewed"));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if unsent == 1 {
                     "Send 1 comment".to_string()
@@ -961,17 +1134,39 @@ impl Review {
                     comments.iter_mut().for_each(|comment| comment.sent = true);
                     outcome = Some(Outcome::Send { agent, text });
                 }
-                if done < total && ui.add(theme::quiet("Mark file reviewed")).clicked() {
-                    mark_file = Some(true);
-                }
-                if done > 0
-                    && done == total
-                    && ui.add(theme::quiet("Mark file not reviewed")).clicked()
-                {
-                    mark_file = Some(false);
+                if !file_conflict {
+                    if done < total && ui.add(theme::quiet("Mark file reviewed")).clicked() {
+                        mark_file = Some(true);
+                    }
+                    if done > 0
+                        && done == total
+                        && ui.add(theme::quiet("Mark file not reviewed")).clicked()
+                    {
+                        mark_file = Some(false);
+                    }
                 }
             });
         });
+        if conflicted || operation.is_some() {
+            ui.horizontal(|ui| {
+                if let Some(operation) = operation {
+                    ui.weak(operation.label());
+                }
+                if conflicted && blocks == 0 && (file.diff.binary || file.diff.hunks.is_empty()) {
+                    if ui.add(theme::quiet("Take ours")).clicked() {
+                        take_side = Some(true);
+                    }
+                    if ui.add(theme::quiet("Take theirs")).clicked() {
+                        take_side = Some(false);
+                    }
+                }
+                if any_conflicts
+                    && let Some(agent) = send_button(ui, "Send all conflicts", true, false, agents)
+                {
+                    send_all = Some(agent);
+                }
+            });
+        }
         if let Some(error) = error {
             ui.colored_label(ui.visuals().error_fg_color, error.as_str());
         }
@@ -1004,6 +1199,7 @@ impl Review {
                     .id_salt(path)
                     .auto_shrink(false)
                     .show(ui, |ui| {
+                        let can_ask = !agents.open.is_empty() || agents.new.is_some();
                         rows_ui(
                             ui,
                             path,
@@ -1013,6 +1209,7 @@ impl Review {
                             &file_comments,
                             buffer,
                             highlighter.as_deref_mut(),
+                            can_ask,
                         )
                     })
                     .inner;
@@ -1079,6 +1276,13 @@ impl Review {
                     self.view(index).selection = None;
                 }
                 Some(Clicked::Revert(hunk)) => self.revert(index, buffer, |h, _| h == hunk),
+                Some(Clicked::Resolve(hunk, side)) => self.resolve(index, hunk, side, buffer),
+                Some(Clicked::AskConflict(hunk)) => {
+                    outcome = self.conflict_text(index, hunk).map(|text| Outcome::Send {
+                        agent: agents.open.first().map(|(agent, _)| *agent),
+                        text,
+                    });
+                }
                 Some(Clicked::Open(line)) => {
                     outcome = Some(Outcome::Open {
                         path: path.to_string(),
@@ -1086,6 +1290,18 @@ impl Review {
                     })
                 }
                 None => {}
+            }
+        }
+        if let Some(ours) = take_side {
+            self.take_side(path, ours);
+        }
+        if let Some(agent) = send_all {
+            match self.all_conflicts_text() {
+                Some(text) => outcome = Some(Outcome::Send { agent, text }),
+                None => {
+                    self.error =
+                        Some("These conflicts have no lines to send: take a side".to_string())
+                }
             }
         }
         if let Some(reviewed) = mark_file {

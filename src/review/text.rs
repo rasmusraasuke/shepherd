@@ -7,9 +7,144 @@ use eframe::egui::Color32;
 use super::word_diff::Ranges;
 use crate::editor::file_view;
 use crate::editor::highlight::{Highlighter, Spans};
-use crate::git::{DiffLine, FileDiff, FileStatus, Hunk, LineKind, Repo};
+use crate::git::{Conflict, DiffLine, FileDiff, FileStatus, Hunk, LineKind, Repo};
 
 use super::{line_diff, word_diff};
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ConflictBlock {
+    pub(super) block: Range<usize>,
+    pub(super) ours: Range<usize>,
+    pub(super) theirs: Range<usize>,
+    pub(super) ours_label: String,
+    pub(super) theirs_label: String,
+}
+
+fn marker(line: &str, sign: char) -> Option<String> {
+    let count = line.chars().take_while(|letter| *letter == sign).count();
+    (count == 7).then(|| line[7..].trim().to_string())
+}
+
+pub(super) fn conflicts(lines: &[String]) -> Vec<ConflictBlock> {
+    let mut blocks = Vec::new();
+    let mut at = 0;
+    while at < lines.len() {
+        let Some(ours_label) = marker(&lines[at], '<') else {
+            at += 1;
+            continue;
+        };
+        let (mut base, mut separator, mut end) = (None, None, None);
+        let mut scan = at + 1;
+        while scan < lines.len() {
+            let line = &lines[scan];
+            if base.is_none() && separator.is_none() && marker(line, '|').is_some() {
+                base = Some(scan);
+            } else if separator.is_none() && line.trim_end() == "=======" {
+                separator = Some(scan);
+            } else if separator.is_some() && marker(line, '>').is_some() {
+                end = Some(scan);
+                break;
+            }
+            scan += 1;
+        }
+        let (Some(separator), Some(end)) = (separator, end) else {
+            at += 1;
+            continue;
+        };
+        let theirs_label = marker(&lines[end], '>').unwrap_or_default();
+        blocks.push(ConflictBlock {
+            block: at..end + 1,
+            ours: at + 1..base.unwrap_or(separator),
+            theirs: separator + 1..end,
+            ours_label,
+            theirs_label,
+        });
+        at = end + 1;
+    }
+    blocks
+}
+
+fn new_start(hunk: &Hunk) -> usize {
+    if hunk.new_count == 0 {
+        hunk.new_start as usize
+    } else {
+        hunk.new_start as usize - 1
+    }
+}
+
+fn overlaps(hunk: &Hunk, block: &ConflictBlock) -> bool {
+    let start = new_start(hunk);
+    match hunk.new_count {
+        0 => (block.block.start..=block.block.end).contains(&start),
+        count => start < block.block.end && block.block.start < start + count,
+    }
+}
+
+pub(super) fn hunks_with_conflicts(
+    old: &[String],
+    work: &[String],
+    blocks: &[ConflictBlock],
+) -> Vec<Hunk> {
+    if blocks.is_empty() {
+        return line_diff::diff(old, work);
+    }
+    enum Piece {
+        Change(Hunk),
+        Conflict(usize),
+    }
+    let mut pieces: Vec<Piece> = line_diff::diff(old, work)
+        .into_iter()
+        .filter(|hunk| !blocks.iter().any(|block| overlaps(hunk, block)))
+        .map(Piece::Change)
+        .collect();
+    pieces.extend((0..blocks.len()).map(Piece::Conflict));
+    pieces.sort_by_key(|piece| match piece {
+        Piece::Change(hunk) => new_start(hunk),
+        Piece::Conflict(index) => blocks[*index].block.start,
+    });
+    let (mut old_pos, mut new_pos) = (0usize, 0usize);
+    let mut hunks = Vec::new();
+    for piece in pieces {
+        match piece {
+            Piece::Change(hunk) => {
+                let start = new_start(&hunk);
+                old_pos += start.saturating_sub(new_pos);
+                old_pos += hunk.old_count;
+                new_pos = start + hunk.new_count;
+                hunks.push(hunk);
+            }
+            Piece::Conflict(index) => {
+                let block = &blocks[index];
+                old_pos += block.block.start.saturating_sub(new_pos);
+                let count = if old.is_empty() { 0 } else { block.ours.len() };
+                let lines = block
+                    .block
+                    .clone()
+                    .map(|at| DiffLine {
+                        kind: LineKind::Added,
+                        old_no: None,
+                        new_no: Some(at as u32 + 1),
+                        text: work[at].clone(),
+                    })
+                    .collect();
+                hunks.push(Hunk {
+                    old_start: (old_pos + usize::from(count > 0)) as u32,
+                    new_start: block.block.start as u32 + 1,
+                    old_count: count,
+                    new_count: block.block.len(),
+                    lines,
+                    conflict: Some(Conflict {
+                        ours: block.ours_label.clone(),
+                        theirs: block.theirs_label.clone(),
+                    }),
+                });
+                old_pos += count;
+                new_pos = block.block.end;
+            }
+        }
+    }
+    hunks
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Gap {
@@ -27,6 +162,7 @@ pub(super) struct FileText {
     pub(super) work_lines: Vec<String>,
     pub(super) revision: Option<u64>,
     pub(super) changed: Vec<Vec<Ranges>>,
+    pub(super) conflicts: Vec<ConflictBlock>,
     pub(super) longest: usize,
 }
 
@@ -108,6 +244,7 @@ impl FileText {
             work_lines: Vec::new(),
             revision: None,
             changed: Vec::new(),
+            conflicts: Vec::new(),
             longest: 0,
         };
         let index = repo

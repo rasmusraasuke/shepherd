@@ -8,12 +8,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use diff::added_file_diff;
-pub use diff::{DiffLine, FileDiff, FileStatus, Hunk, LineKind, parse_diff};
+pub use diff::{Conflict, DiffLine, FileDiff, FileStatus, Hunk, LineKind, parse_diff};
 pub use staging::{Staged, version};
 
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 const LEFT: &str = "shepherd: changes left on ";
+
+const LEFT_PULL: &str = "shepherd: changes kept over a pull";
 
 const DIFF: &[&str] = &[
     "diff",
@@ -31,6 +33,37 @@ pub struct Changes {
     pub staged: String,
     pub unstaged: String,
     pub untracked: Vec<String>,
+    pub conflicts: Vec<String>,
+    pub operation: Option<Operation>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Operation {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+    Stash,
+}
+
+impl Operation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Operation::Merge => "Merging",
+            Operation::Rebase => "Rebasing",
+            Operation::CherryPick => "Cherry-picking",
+            Operation::Revert => "Reverting",
+            Operation::Stash => "Applying a stash",
+        }
+    }
+
+    pub fn can_abort(self) -> bool {
+        !matches!(self, Operation::Stash)
+    }
+
+    pub fn can_continue(self) -> bool {
+        !matches!(self, Operation::Stash)
+    }
 }
 
 #[derive(Clone, PartialEq, Default, Debug)]
@@ -164,15 +197,74 @@ impl Repo {
             ));
         }
         self.carrying(|| {
-            let pulled = git(
+            git(
                 &self.root,
                 &["pull", "--quiet", "--no-rebase", "--ff", "--no-edit"],
-            );
-            if pulled.is_err() {
-                let _ = git(&self.root, &["merge", "--abort"]);
-            }
-            pulled.map(drop)
+            )
+            .map(drop)
         })
+    }
+
+    pub fn continue_operation(&self) -> Result<(), String> {
+        let operation = self
+            .current_operation()
+            .ok_or("There is nothing to continue")?;
+        match operation {
+            Operation::Merge => self.editor_git(&["merge", "--continue"]),
+            Operation::Rebase => self.editor_git(&["rebase", "--continue"]),
+            Operation::CherryPick => self.editor_git(&["cherry-pick", "--continue"]),
+            Operation::Revert => self.editor_git(&["revert", "--continue"]),
+            Operation::Stash => self.drop_applied_stash(),
+        }?;
+        self.pop_kept()
+    }
+
+    pub fn abort_operation(&self) -> Result<(), String> {
+        let operation = self
+            .current_operation()
+            .ok_or("There is nothing to abort")?;
+        let aborted = match operation {
+            Operation::Merge => git(&self.root, &["merge", "--abort"]).map(drop),
+            Operation::Rebase => git(&self.root, &["rebase", "--abort"]).map(drop),
+            Operation::CherryPick => git(&self.root, &["cherry-pick", "--abort"]).map(drop),
+            Operation::Revert => git(&self.root, &["revert", "--abort"]).map(drop),
+            Operation::Stash => Err("The changes of a stash can't be taken back".to_string()),
+        };
+        aborted?;
+        self.pop_kept()
+    }
+
+    fn editor_git(&self, args: &[&str]) -> Result<(), String> {
+        git(&self.root, &[&["-c", "core.editor=true"], args].concat()).map(drop)
+    }
+
+    fn drop_applied_stash(&self) -> Result<(), String> {
+        let stashes = git(&self.root, &["stash", "list", "--format=%gd"])?;
+        match stashes.lines().next() {
+            Some(stash) => git(&self.root, &["stash", "drop", "--quiet", stash]).map(drop),
+            None => Ok(()),
+        }
+    }
+
+    fn pop_kept(&self) -> Result<(), String> {
+        let stashes = git(&self.root, &["stash", "list", "--format=%gd %gs"])?;
+        let kept = stashes
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .find(|(_, subject)| subject.contains(LEFT_PULL));
+        match kept {
+            Some((stash, _)) => self.pop(stash),
+            None => Ok(()),
+        }
+    }
+
+    pub fn take_side(&self, path: &str, ours: bool) -> Result<(), String> {
+        let (side, stage) = if ours { ("--ours", 2) } else { ("--theirs", 3) };
+        if git(&self.root, &["cat-file", "-e", &format!(":{stage}:{path}")]).is_ok() {
+            git(&self.root, &["checkout", side, "--", path])?;
+            return git(&self.root, &["add", "--all", "--", path]).map(drop);
+        }
+        git(&self.root, &["rm", "--force", "--quiet", "--", path]).map(drop)
     }
 
     pub fn create_branch(&self, name: &str) -> Result<(), String> {
@@ -234,14 +326,36 @@ impl Repo {
     }
 
     fn carrying(&self, action: impl Fn() -> Result<(), String>) -> Result<(), String> {
-        let stashed = self.stash("shepherd: changes kept over a pull")?;
+        let stashed = self.stash(LEFT_PULL)?;
         let done = action();
+        if self.current_operation().is_some() {
+            let error = done.err().unwrap_or_default();
+            return Err(format!(
+                "The pull ran into conflicts. Resolve them under Changes.\n{error}"
+            ));
+        }
         let popped = if stashed {
             self.pop("stash@{0}")
         } else {
             Ok(())
         };
         done.and(popped)
+    }
+
+    pub fn conflicts(&self) -> Result<Vec<String>, String> {
+        let out = git(
+            &self.root,
+            &["diff", "--name-only", "--diff-filter=U", "-z"],
+        )?;
+        Ok(out
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    fn current_operation(&self) -> Option<Operation> {
+        self.operation(&self.conflicts().unwrap_or_default())
     }
 
     fn base(&self) -> &'static str {
@@ -271,18 +385,51 @@ impl Repo {
     pub fn changes(&self) -> Result<Changes, String> {
         let base = self.base();
         let untracked = self.untracked(&[])?;
+        let conflicts = self.conflicts()?;
         let mut diff = git(&self.root, &[DIFF, &[base]].concat())?;
         for path in &untracked {
             diff.push_str(&added_file_diff(path, &self.root.join(path)));
         }
+        for path in &conflicts {
+            let header = format!("diff --git a/{path} b/{path}");
+            if !diff.lines().any(|line| line == header) {
+                diff.push_str(&header);
+                diff.push('\n');
+                if !self.root.join(path).exists() {
+                    diff.push_str(&format!(
+                        "deleted file mode 100644\n--- a/{path}\n+++ /dev/null\n"
+                    ));
+                }
+            }
+        }
         let staged = git(&self.root, &[DIFF, &["--cached", base]].concat())?;
         let unstaged = git(&self.root, DIFF)?;
+        let operation = self.operation(&conflicts);
         Ok(Changes {
             diff,
             staged,
             unstaged,
             untracked,
+            conflicts,
+            operation,
         })
+    }
+
+    fn operation(&self, conflicts: &[String]) -> Option<Operation> {
+        let exists = |name: &str| self.git_dir.join(name).exists();
+        if exists("rebase-merge") || exists("rebase-apply") {
+            return Some(Operation::Rebase);
+        }
+        if exists("MERGE_HEAD") {
+            return Some(Operation::Merge);
+        }
+        if exists("CHERRY_PICK_HEAD") {
+            return Some(Operation::CherryPick);
+        }
+        if exists("REVERT_HEAD") {
+            return Some(Operation::Revert);
+        }
+        (!conflicts.is_empty()).then_some(Operation::Stash)
     }
 
     fn file_diff(&self, path: &str, old_path: Option<&str>) -> Result<Option<FileDiff>, String> {

@@ -1,5 +1,5 @@
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use std::path::Path;
 
@@ -151,6 +151,60 @@ fn open_tabs(harness: &Harness<'_, App>) -> Vec<Vec<Tab>> {
         .iter()
         .map(|window| window.tabs().into_iter().cloned().collect())
         .collect()
+}
+
+#[test]
+fn resolves_a_conflict_in_the_review_and_continues_the_merge() {
+    let (repo, dir) = crate::git::tests::conflict_repo("app-conflict");
+    let snapshot = Snapshot::take(&repo);
+    let mut app = App::with_settings(
+        repo,
+        Workspace::default(),
+        Settings::default(),
+        None,
+        egui::Context::default(),
+    );
+    app.content
+        .terminals
+        .keep_images_in(dir.path().join("images"));
+    app.apply(snapshot);
+    let mut harness = Harness::builder()
+        .with_step_dt(0.25)
+        .with_size(egui::vec2(1000.0, 700.0))
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    theme::apply(&harness.ctx, false);
+    harness.run();
+
+    harness.get_by_label("Changes").click();
+    harness.run();
+    harness.get_by_label("a.txt").click();
+    harness.run();
+    harness.get_by_label("1 conflict");
+    harness.get_by_label("Ours").click();
+    harness.run();
+    harness.run();
+    harness.get_by_label("Mark file reviewed").click();
+    for _ in 0..400 {
+        harness.step();
+        if !harness
+            .get_by_label("Continue")
+            .accesskit_node()
+            .is_disabled()
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness.get_by_label("Continue").click();
+    for _ in 0..400 {
+        harness.step();
+        if harness.query_by_label("✓ Continued").is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness.get_by_label("✓ Continued");
+    assert_eq!(Repo::open(dir.path()).unwrap().status().behind, 0);
 }
 
 fn wait_for(harness: &mut Harness<'_, App>, label: &str) {

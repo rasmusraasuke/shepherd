@@ -265,7 +265,8 @@ the background; what it complains about is shown above the commit message.
   committing; *Cancel* stops waiting for it.
 - **Sync and push.** *Sync ↓2* shows the commits there are to pull, as far as is known from
   the last fetch, and fetches and pulls, always merging and never rebasing. Uncommitted
-  changes stay as they are, reviewed marks included. A pull that runs into conflicts is taken back, and when the commits to pull change a file with uncommitted
+  changes stay as they are, reviewed marks included. A pull that runs into conflicts leaves
+  them for the review, and when the commits to pull change a file with uncommitted
   changes, sync asks to commit those first. *Push ↑1* shows the commits there are to push
   and pushes them; a branch that isn't on a remote yet is pushed to `origin`.
 - **Progress of git.** Right below the branch, a spinner says what git is doing
@@ -278,6 +279,25 @@ the background; what it complains about is shown above the commit message.
   fit on the other branch. With *Leave the changes on …* ticked they stay behind instead, in
   git's stash, and come back, reviewed marks included, when the branch is switched to
   again; until then the list says *(changes left there)*.
+
+## Merge conflicts
+
+- **In the review.** When a merge, rebase, pull or stash apply stops on conflicts, each
+  conflicted file is red under *Changes*, marked with "conflict", and its review shows each
+  conflicting region as a special hunk holding the conflict markers and both sides. The file
+  is still the file: it can be edited anywhere, including over the markers.
+- **Taking a side.** Each conflict hunk has *Ours*, *Theirs* and *Both*, which replace the
+  region with one side or both and remove the markers. It is an edit of the text, so Cmd+Z
+  takes it back. Binary and delete conflicts, which have no markers, offer *Take ours* and
+  *Take theirs* at the top of the review.
+- **Handing it to an agent.** *Ask agent* in a conflict hunk sends that conflict, and *Send
+  all conflicts* at the top sends every conflict in the repository, each with its file as
+  `@path` and its markers quoted. The agent's resolution comes back as an ordinary change to
+  review and mark.
+- **Finishing.** Once every conflict is resolved and marked reviewed, *Continue* finishes
+  the merge, rebase, cherry-pick or revert, and *Abort* takes the operation back; both are
+  beside the sync buttons. Changes set aside for the pull come back as before, and a stash
+  that didn't apply shows its conflicts the same way.
 
 ## Agents in the loop
 

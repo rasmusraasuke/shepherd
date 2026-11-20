@@ -7,7 +7,7 @@ use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{self, Key, Modifiers, PopupCloseBehavior, RichText};
 
 use crate::agents::{self, Agent, Choice, Model};
-use crate::git::{Changes, Repo, Status};
+use crate::git::{Changes, Operation, Repo, Status};
 use crate::review::{self, Agents};
 use crate::ui::theme;
 
@@ -21,6 +21,8 @@ pub enum Op {
     Commit { push: bool },
     Push,
     Sync,
+    Continue,
+    Abort,
     Create(String),
     Switch { branch: String, leave: bool },
 }
@@ -31,6 +33,8 @@ impl Op {
             Op::Commit { .. } => "Committing…",
             Op::Push => "Pushing…",
             Op::Sync => "Syncing…",
+            Op::Continue => "Continuing…",
+            Op::Abort => "Aborting…",
             Op::Create(_) | Op::Switch { .. } => "Switching…",
         }
     }
@@ -40,6 +44,8 @@ impl Op {
             Op::Commit { .. } => "Committed".to_string(),
             Op::Push => "Pushed".to_string(),
             Op::Sync => "Synced".to_string(),
+            Op::Continue => "Continued".to_string(),
+            Op::Abort => "Aborted".to_string(),
             Op::Create(branch) | Op::Switch { branch, .. } => format!("Switched to {branch}"),
         }
     }
@@ -49,6 +55,8 @@ impl Op {
             Op::Commit { .. } => repo.commit(message),
             Op::Push => repo.push(),
             Op::Sync => repo.sync(),
+            Op::Continue => repo.continue_operation(),
+            Op::Abort => repo.abort_operation(),
             Op::Create(name) => repo.create_branch(name),
             Op::Switch { branch, leave } => repo.switch(branch, *leave),
         }
@@ -67,6 +75,8 @@ pub struct Flow {
     status: Status,
     staged: bool,
     changed: bool,
+    conflicts: bool,
+    operation: Option<Operation>,
     message: String,
     new_branch: String,
     leave: bool,
@@ -83,6 +93,8 @@ impl Flow {
             status: Status::default(),
             staged: false,
             changed: false,
+            conflicts: false,
+            operation: None,
             message: String::new(),
             new_branch: String::new(),
             leave: false,
@@ -97,6 +109,8 @@ impl Flow {
         self.status = status;
         self.staged = !changes.staged.is_empty();
         self.changed = !changes.diff.is_empty();
+        self.conflicts = !changes.conflicts.is_empty();
+        self.operation = changes.operation;
     }
 
     pub fn status(&self) -> &Status {
@@ -186,6 +200,31 @@ impl Flow {
             ..
         } = self.status;
         let mut op = None;
+        if let Some(operation) = self.operation {
+            ui.horizontal(|ui| {
+                ui.weak(operation.label());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if operation.can_abort()
+                        && ui
+                            .add_enabled(!busy, theme::quiet("Abort"))
+                            .on_hover_text("Take the operation back")
+                            .clicked()
+                    {
+                        op = Some(Op::Abort);
+                    }
+                    if operation.can_continue()
+                        && ui
+                            .add_enabled(!busy && !self.conflicts, theme::primary(ui, "Continue"))
+                            .on_hover_text("Finish the operation")
+                            .on_disabled_hover_text("Resolve and mark the conflicts first")
+                            .clicked()
+                    {
+                        op = Some(Op::Continue);
+                    }
+                });
+            });
+            return op;
+        }
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (sync, push) = if upstream {
@@ -412,7 +451,7 @@ mod tests {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
     use super::*;
-    use crate::git::tests::{commit_all, temp_repo, with_remote};
+    use crate::git::tests::{commit_all, conflict_repo, temp_repo, with_remote};
     use crate::testing::TempDir;
 
     struct Shown {
@@ -481,6 +520,63 @@ mod tests {
             "{label:?} shown isn't {shown}: {:?}",
             harness.state().flow.error
         );
+    }
+
+    #[test]
+    fn continues_a_merge_once_the_conflicts_are_resolved() {
+        let (repo, dir) = conflict_repo("flow-conflict");
+        let shown = Shown {
+            flow: Flow::new(repo),
+            asked: None,
+            choice: Choice::default(),
+        };
+        let ui = |ui: &mut egui::Ui, shown: &mut Shown| {
+            let agents = Agents {
+                open: vec![(1, "Claude Code".to_string())],
+                new: Some("Claude Code".to_string()),
+            };
+            let found = [Agent::Claude];
+            let models = HashMap::new();
+            let branch = shown.flow.branch_ui(ui).map(Outcome::Run);
+            match branch.or(shown
+                .flow
+                .ui(ui, (0, 0), &agents, &found, &models, &mut shown.choice))
+            {
+                Some(Outcome::Run(op)) => shown.flow.run(op, ui.ctx()),
+                Some(asked) => shown.asked = Some(asked),
+                None => {}
+            }
+            if shown.flow.finished(ui.ctx()) {
+                refresh(&mut shown.flow);
+            }
+        };
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(260.0, 500.0))
+            .build_ui_state(ui, shown);
+        crate::ui::theme::apply(&harness.ctx, false);
+        refresh(&mut harness.state_mut().flow);
+        harness.run();
+        harness.get_by_label("Merging");
+        assert!(
+            harness
+                .get_by_label("Continue")
+                .accesskit_node()
+                .is_disabled()
+        );
+
+        dir.write("a.txt", "resolved\n");
+        harness.state().flow.repo.stage_file("a.txt", true).unwrap();
+        refresh(&mut harness.state_mut().flow);
+        harness.run();
+        assert!(
+            !harness
+                .get_by_label("Continue")
+                .accesskit_node()
+                .is_disabled()
+        );
+        harness.get_by_label("Continue").click();
+        wait_for(&mut harness, "✓ Continued", true);
+        assert_eq!(harness.state().flow.operation, None);
     }
 
     #[test]

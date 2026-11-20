@@ -74,13 +74,12 @@ fn commits_what_is_staged_pushes_it_and_pulls_what_others_pushed() {
     assert_eq!(repo.status().ahead, 0);
 }
 
-#[test]
-fn a_pull_that_runs_into_conflicts_is_taken_back() {
-    let (repo, dir) = temp_repo("conflict", &[("a.txt", "a\n")]);
+fn conflicting_pull(name: &str) -> (Repo, TempDir, TempDir) {
+    let (repo, dir) = temp_repo(name, &[("a.txt", "a\n")]);
     commit_all(&repo);
-    let remote = with_remote(&repo, "conflict-remote");
+    let remote = with_remote(&repo, &format!("{name}-remote"));
     repo.push().unwrap();
-    let other = TempDir::new("conflict-other");
+    let other = TempDir::new(&format!("{name}-other"));
     let url = remote.path().to_string_lossy().into_owned();
     git(other.path(), &["clone", "--quiet", &url, "."]).unwrap();
     identify(other.path());
@@ -91,19 +90,143 @@ fn a_pull_that_runs_into_conflicts_is_taken_back() {
 
     dir.write("a.txt", "ours\n");
     commit_all(&repo);
+    (repo, dir, remote)
+}
+
+pub fn conflict_repo(name: &str) -> (Repo, TempDir) {
+    let (repo, dir) = temp_repo(name, &[("a.txt", "one\ntwo\nthree\n")]);
+    commit_all(&repo);
+    let branch = repo.branch();
+    git(&repo.root, &["branch", "other"]).unwrap();
+    dir.write("a.txt", "one\nours\nthree\n");
+    commit_all(&repo);
+    git(&repo.root, &["switch", "--quiet", "other"]).unwrap();
+    dir.write("a.txt", "one\ntheirs\nthree\n");
+    commit_all(&repo);
+    git(&repo.root, &["switch", "--quiet", &branch]).unwrap();
+    let _ = git(&repo.root, &["merge", "--no-edit", "other"]);
+    (repo, dir)
+}
+
+#[test]
+fn a_pull_that_runs_into_conflicts_leaves_them_to_resolve_and_continue() {
+    let (repo, dir, _remote) = conflicting_pull("conflict");
     dir.write("b.txt", "b\n");
     assert!(repo.sync().is_err());
+    let changes = repo.changes().unwrap();
+    assert_eq!(changes.conflicts, ["a.txt"]);
+    assert_eq!(changes.operation, Some(Operation::Merge));
     let status = repo.status();
     assert_eq!((status.ahead, status.behind), (1, 1));
-    assert_eq!(short_status(&repo), "?? b.txt\n");
+    assert_eq!(short_status(&repo), "UU a.txt\n");
 
+    dir.write("a.txt", "resolved\n");
+    repo.stage_file("a.txt", true).unwrap();
+    assert!(repo.changes().unwrap().conflicts.is_empty());
+    repo.continue_operation().unwrap();
+    let changes = repo.changes().unwrap();
+    assert_eq!((changes.operation, repo.status().behind), (None, 0));
+    assert_eq!(short_status(&repo), "?? b.txt\n");
+}
+
+#[test]
+fn asks_to_commit_the_files_that_the_commits_to_pull_change() {
+    let (repo, dir, _remote) = conflicting_pull("conflict-dirty");
     dir.write("a.txt", "ours\nand more\n");
     assert!(
         repo.sync()
             .unwrap_err()
             .contains("Commit the changes of a.txt")
     );
-    assert_eq!(short_status(&repo), " M a.txt\n?? b.txt\n");
+    assert_eq!(short_status(&repo), " M a.txt\n");
+}
+
+#[test]
+fn takes_a_conflicting_pull_back_with_the_changes_it_was_holding() {
+    let (repo, dir, _remote) = conflicting_pull("conflict-abort");
+    dir.write("b.txt", "b\n");
+    assert!(repo.sync().is_err());
+    assert_eq!(repo.changes().unwrap().operation, Some(Operation::Merge));
+
+    repo.abort_operation().unwrap();
+    let changes = repo.changes().unwrap();
+    assert_eq!((changes.operation, changes.conflicts.len()), (None, 0));
+    assert_eq!(short_status(&repo), "?? b.txt\n");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "ours\n"
+    );
+    assert_eq!(repo.status().behind, 1);
+}
+
+#[test]
+fn continues_a_cherry_pick_whose_conflicts_are_resolved() {
+    let (repo, dir) = temp_repo("cherry", &[("a.txt", "base\n")]);
+    commit_all(&repo);
+    let branch = repo.branch();
+    git(&repo.root, &["switch", "--quiet", "--create", "side"]).unwrap();
+    dir.write("a.txt", "side\n");
+    commit_all(&repo);
+    git(&repo.root, &["switch", "--quiet", &branch]).unwrap();
+    dir.write("a.txt", "main\n");
+    commit_all(&repo);
+    assert!(git(&repo.root, &["cherry-pick", "side"]).is_err());
+    assert_eq!(
+        repo.changes().unwrap().operation,
+        Some(Operation::CherryPick)
+    );
+
+    dir.write("a.txt", "resolved\n");
+    repo.stage_file("a.txt", true).unwrap();
+    repo.continue_operation().unwrap();
+    assert_eq!(repo.changes().unwrap().operation, None);
+    assert_eq!(short_status(&repo), "");
+}
+
+#[test]
+fn shows_a_conflict_whose_file_is_deleted_on_one_side_and_takes_that_side() {
+    let (repo, dir) = temp_repo("delete-conflict", &[("a.txt", "base\n")]);
+    commit_all(&repo);
+    let branch = repo.branch();
+    git(&repo.root, &["branch", "other"]).unwrap();
+    dir.write("a.txt", "changed\n");
+    commit_all(&repo);
+    git(&repo.root, &["switch", "--quiet", "other"]).unwrap();
+    git(&repo.root, &["rm", "--quiet", "a.txt"]).unwrap();
+    commit_all(&repo);
+    git(&repo.root, &["switch", "--quiet", &branch]).unwrap();
+    assert!(git(&repo.root, &["merge", "--no-edit", "other"]).is_err());
+
+    let changes = repo.changes().unwrap();
+    assert_eq!(changes.conflicts, ["a.txt"]);
+    let files = parse_diff(&changes.diff);
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "a.txt");
+
+    repo.take_side("a.txt", false).unwrap();
+    assert!(!dir.path().join("a.txt").exists());
+    assert!(repo.changes().unwrap().conflicts.is_empty());
+}
+
+#[test]
+fn shows_a_conflict_of_a_stash_that_did_not_apply() {
+    let (repo, dir) = temp_repo("stash-conflict", &[("a.txt", "base\n")]);
+    commit_all(&repo);
+    dir.write("a.txt", "stashed\n");
+    git(&repo.root, &["stash", "push", "--quiet"]).unwrap();
+    dir.write("a.txt", "moved on\n");
+    commit_all(&repo);
+    assert!(git(&repo.root, &["stash", "pop"]).is_err());
+    assert_eq!(repo.changes().unwrap().operation, Some(Operation::Stash));
+
+    dir.write("a.txt", "resolved\n");
+    repo.stage_file("a.txt", true).unwrap();
+    assert_eq!(repo.changes().unwrap().operation, None);
+    assert!(
+        git(&repo.root, &["stash", "list"])
+            .unwrap()
+            .contains("stash@")
+    );
 }
 
 #[test]

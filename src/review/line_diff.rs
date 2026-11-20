@@ -61,10 +61,13 @@ pub fn diff<A: AsRef<str>, B: AsRef<str>>(old: &[A], new: &[B]) -> Vec<Hunk> {
         .map(|(removed, added)| Hunk {
             old_start: first(&removed),
             new_start: first(&added),
+            old_count: removed.len(),
+            new_count: added.len(),
             lines: removed
                 .map(|at| line(LineKind::Removed, at, old[at].as_ref()))
                 .chain(added.map(|at| line(LineKind::Added, at, new[at].as_ref())))
                 .collect(),
+            conflict: None,
         })
         .collect()
 }

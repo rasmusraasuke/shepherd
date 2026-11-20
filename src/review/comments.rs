@@ -94,6 +94,22 @@ pub fn quote(path: &str, lines: &[DiffLine], text: &str) -> String {
     out
 }
 
+pub fn conflict(path: &str, lines: &[String]) -> String {
+    format!(
+        "Resolve the conflict in @{path}: edit the file to keep the right lines \
+         and remove the conflict markers.\n```\n{}\n```",
+        lines.join("\n")
+    )
+}
+
+pub fn conflicts(quotes: impl IntoIterator<Item = String>) -> String {
+    format!(
+        "Resolve the merge conflicts in this repository: edit each file to keep \
+         the right lines and remove the conflict markers.\n\n{}",
+        quotes.into_iter().collect::<Vec<_>>().join("\n\n")
+    )
+}
+
 pub fn feedback<'a>(comments: impl IntoIterator<Item = &'a Comment>) -> String {
     let quotes: Vec<String> = comments
         .into_iter()

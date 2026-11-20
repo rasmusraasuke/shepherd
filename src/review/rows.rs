@@ -8,10 +8,17 @@ use crate::editor::Rows;
 use crate::editor::buffer::Buffer;
 use crate::editor::code::CodeStyle;
 use crate::editor::highlight::{self, Highlighter};
-use crate::git::{DiffLine, Hunk, LineKind};
+use crate::git::{Conflict, DiffLine, Hunk, LineKind};
 
 use super::text::{FileText, Gap, gaps, row_colors, unchanged_line};
 use super::{CONTEXT, FileReview, NEW_COLOR, View};
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum Side {
+    Ours,
+    Theirs,
+    Both,
+}
 
 #[derive(Debug, PartialEq)]
 pub(super) enum Row {
@@ -107,6 +114,8 @@ pub(super) enum Clicked {
     Line(usize, usize),
     DeleteComment(usize),
     Revert(usize),
+    Resolve(usize, Side),
+    AskConflict(usize),
     Open(usize),
 }
 
@@ -120,6 +129,7 @@ pub(super) fn rows_ui(
     comments: &[(usize, &Comment)],
     buffer: &mut Buffer,
     highlighter: Option<&mut Highlighter>,
+    can_ask: bool,
 ) -> (Option<Clicked>, Vec<DiffLine>) {
     let hunks = &file.diff.hunks;
     let gaps = gaps(hunks, text.work_lines.len());
@@ -228,7 +238,9 @@ pub(super) fn rows_ui(
         match *row {
             Row::Hunk(hunk, at) => {
                 let line = &hunks[hunk].lines[at];
-                let mark = line_background(ui, row_rect, line.kind, file.staged[hunk][at]);
+                let conflict = hunks[hunk].conflict.is_some();
+                let mark =
+                    line_background(ui, row_rect, line.kind, file.staged[hunk][at], conflict);
                 if line.kind == LineKind::Removed {
                     let (code, spans) = text.old.line(line.old_no);
                     let galley = ui.fonts_mut(|fonts| {
@@ -330,11 +342,13 @@ pub(super) fn rows_ui(
                     LineKind::Context,
                     numbers,
                     false,
+                    false,
                 );
             }
             Row::Hunk(hunk, at) => {
                 let line = &hunks[hunk].lines[at];
                 let staged = file.staged[hunk][at];
+                let conflict = hunks[hunk].conflict.is_some();
                 line_gutter(
                     ui,
                     &style,
@@ -343,6 +357,7 @@ pub(super) fn rows_ui(
                     line.kind,
                     (line.old_no, line.new_no),
                     staged,
+                    conflict,
                 );
                 if hunk == view.current {
                     let bar = egui::Rect::from_min_size(
@@ -352,7 +367,7 @@ pub(super) fn rows_ui(
                     ui.painter()
                         .rect_filled(bar, 0.0, ui.visuals().selection.stroke.color);
                 }
-                if file.new[hunk] {
+                if file.new[hunk] && !conflict {
                     let bar = egui::Rect::from_min_size(
                         egui::pos2(gutter_left + digit * 19.7, row_rect.top()),
                         Vec2::new(2.0, row_height),
@@ -360,7 +375,7 @@ pub(super) fn rows_ui(
                     ui.painter().rect_filled(bar, 0.0, NEW_COLOR);
                 }
                 let (done, total) = file.hunk_progress(hunk);
-                if at == 0 {
+                if at == 0 && !conflict {
                     let state = if done == total {
                         Some(true)
                     } else if done == 0 {
@@ -379,8 +394,25 @@ pub(super) fn rows_ui(
                         clicked = Some(Clicked::Hunk(hunk));
                     }
                 }
+                if conflict
+                    && at == 0
+                    && let Some(conflict) = &hunks[hunk].conflict
+                {
+                    clicked = conflict_tools(
+                        ui,
+                        row_rect,
+                        clip,
+                        gutter_left + digit * GUTTER_DIGITS as f32,
+                        hunk,
+                        response.id.with(("conflict", hunk)),
+                        conflict,
+                        can_ask,
+                    );
+                }
                 let partly = done > 0 && done < total;
-                let shown = (hovered == Some(index) || partly) && line.kind != LineKind::Context;
+                let shown = !conflict
+                    && (hovered == Some(index) || partly)
+                    && line.kind != LineKind::Context;
                 if shown
                     && reviewed_mark_ui(
                         ui,
@@ -445,6 +477,18 @@ pub(super) fn rows_ui(
             }
         };
         match view.menu_row.and_then(|row| rows.get(row)) {
+            Some(&Row::Hunk(hunk, at)) if hunks[hunk].conflict.is_some() => {
+                item("Take ours", Clicked::Resolve(hunk, Side::Ours));
+                item("Take theirs", Clicked::Resolve(hunk, Side::Theirs));
+                item("Take both", Clicked::Resolve(hunk, Side::Both));
+                if can_ask {
+                    item("Ask agent", Clicked::AskConflict(hunk));
+                }
+                item(
+                    "Open in file (o)",
+                    Clicked::Open(place_in_file(&hunks[hunk], Some(&hunks[hunk].lines[at]))),
+                );
+            }
             Some(&Row::Hunk(hunk, at)) => {
                 item("Revert", Clicked::Revert(hunk));
                 item(
@@ -485,8 +529,30 @@ pub(super) fn fade(color: Color32, reviewed: bool) -> Color32 {
     }
 }
 
-fn line_background(ui: &egui::Ui, row: egui::Rect, kind: LineKind, reviewed: bool) -> Color32 {
-    match row_colors(kind, ui.visuals().dark_mode) {
+fn conflict_colors(dark_mode: bool) -> (Color32, Color32) {
+    if dark_mode {
+        (Color32::from_rgb(58, 38, 36), Color32::from_rgb(94, 58, 52))
+    } else {
+        (
+            Color32::from_rgb(255, 236, 232),
+            Color32::from_rgb(244, 198, 188),
+        )
+    }
+}
+
+fn line_background(
+    ui: &egui::Ui,
+    row: egui::Rect,
+    kind: LineKind,
+    reviewed: bool,
+    conflict: bool,
+) -> Color32 {
+    let colors = if conflict {
+        Some(conflict_colors(ui.visuals().dark_mode))
+    } else {
+        row_colors(kind, ui.visuals().dark_mode)
+    };
+    match colors {
         Some((bg, mark)) => {
             ui.painter().rect_filled(row, 0.0, fade(bg, reviewed));
             fade(mark, reviewed)
@@ -495,6 +561,7 @@ fn line_background(ui: &egui::Ui, row: egui::Rect, kind: LineKind, reviewed: boo
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn line_gutter(
     ui: &egui::Ui,
     style: &CodeStyle,
@@ -503,6 +570,7 @@ fn line_gutter(
     kind: LineKind,
     (old_no, new_no): (Option<u32>, Option<u32>),
     reviewed: bool,
+    conflict: bool,
 ) {
     let painter = ui.painter();
     let digit = style.digit_width;
@@ -511,14 +579,14 @@ fn line_gutter(
         Vec2::new(digit * (GUTTER_DIGITS - 1) as f32, row.height()),
     );
     painter.rect_filled(gutter, 0.0, ui.visuals().panel_fill);
-    line_background(ui, gutter, kind, reviewed);
+    line_background(ui, gutter, kind, reviewed, conflict);
     let y = row.top() + 1.0;
     style.number(painter, gutter_left + digit * 12.0, y, old_no);
     style.number(painter, gutter_left + digit * 17.0, y, new_no);
-    let sign = match kind {
-        LineKind::Context => " ",
-        LineKind::Added => "+",
-        LineKind::Removed => "-",
+    let sign = match (conflict, kind) {
+        (true, _) | (false, LineKind::Context) => " ",
+        (false, LineKind::Added) => "+",
+        (false, LineKind::Removed) => "-",
     };
     style.text(
         painter,
@@ -527,6 +595,81 @@ fn line_gutter(
         sign,
         style.weak_color,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn conflict_tools(
+    ui: &egui::Ui,
+    row: egui::Rect,
+    clip: egui::Rect,
+    left: f32,
+    hunk: usize,
+    id: egui::Id,
+    conflict: &Conflict,
+    can_ask: bool,
+) -> Option<Clicked> {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let ours = format!("Keep {}", conflict.ours);
+    let theirs = format!("Keep {}", conflict.theirs);
+    let mut items: Vec<(&str, &str, Option<Side>)> = vec![
+        ("Ours", &ours, Some(Side::Ours)),
+        ("Theirs", &theirs, Some(Side::Theirs)),
+        ("Both", "Keep both", Some(Side::Both)),
+    ];
+    if can_ask {
+        items.push(("Ask agent", "Ask an agent to resolve it", None));
+    }
+    let widths: Vec<f32> = items
+        .iter()
+        .map(|(label, _, _)| {
+            ui.painter()
+                .layout_no_wrap((*label).to_string(), font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+                + 14.0
+        })
+        .collect();
+    let gap = 4.0;
+    let total: f32 = widths.iter().sum::<f32>() + gap * (items.len() - 1) as f32;
+    let mut x = (clip.right() - total - 6.0).max(left);
+    let mut clicked = None;
+    for ((label, hint, side), width) in items.iter().zip(widths) {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(x, row.top() + 2.0),
+            Vec2::new(width, row.height() - 4.0),
+        );
+        if conflict_button(ui, rect, label, hint, id.with(*label)) {
+            clicked = Some(match side {
+                Some(side) => Clicked::Resolve(hunk, *side),
+                None => Clicked::AskConflict(hunk),
+            });
+        }
+        x += width + gap;
+    }
+    clicked
+}
+
+fn conflict_button(ui: &egui::Ui, rect: egui::Rect, label: &str, hint: &str, id: egui::Id) -> bool {
+    let response = ui
+        .interact(rect, id, Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    let visuals = ui.style().interact(&response);
+    ui.painter().rect(
+        rect,
+        3.0,
+        visuals.bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::TextStyle::Body.resolve(ui.style()),
+        visuals.text_color(),
+    );
+    response.on_hover_text(hint).clicked()
 }
 
 fn comment_colors(dark_mode: bool) -> (Color32, Color32) {

@@ -6,7 +6,7 @@ use std::process::Command;
 
 use super::rows::{Row, rows};
 use super::*;
-use crate::git::tests::{commit_all, temp_repo};
+use crate::git::tests::{commit_all, conflict_repo, temp_repo};
 use crate::testing::TempDir;
 
 const DIFF: &str = "\
@@ -898,6 +898,150 @@ fn queues_marks_that_arrive_while_git_is_staging() {
     review.wait_for_staging();
     refresh(&mut review);
     assert_eq!(review.progress(), (0, 6));
+}
+
+fn conflict_review(name: &str) -> (Review, TempDir) {
+    let (repo, dir) = conflict_repo(name);
+    let mut review = Review::new(repo);
+    refresh(&mut review);
+    (review, dir)
+}
+
+fn buffer_text(harness: &mut Harness<'_, Shown>) -> String {
+    harness
+        .state_mut()
+        .files
+        .text("a.txt", false)
+        .unwrap()
+        .0
+        .text()
+}
+
+#[test]
+fn shows_a_conflict_as_a_hunk_that_takes_a_side_or_both() {
+    let (review, _dir) = conflict_review("conflict-side");
+    assert_eq!(review.conflicts, ["a.txt"]);
+    assert_eq!(review.operation, Some(git::Operation::Merge));
+    assert_eq!(review.progress(), (0, 0));
+    let mut harness = show(review, Some("a.txt"), 600.0);
+    harness.get_by_label("1 conflict");
+    let block = &harness.state().review.files[0].diff.hunks[0];
+    assert_eq!(
+        block
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        ["<<<<<<< HEAD", "ours", "=======", "theirs", ">>>>>>> other"]
+    );
+    assert_eq!(
+        block
+            .conflict
+            .as_ref()
+            .map(|c| (c.ours.as_str(), c.theirs.as_str())),
+        Some(("HEAD", "other"))
+    );
+    harness.get_by_label("Ours").click();
+    harness.run();
+    harness.run();
+    assert_eq!(buffer_text(&mut harness), "one\nours\nthree\n");
+    assert!(harness.state().review.files[0].diff.hunks.is_empty());
+    assert!(
+        harness.state().review.files[0]
+            .diff
+            .hunks
+            .iter()
+            .all(|h| h.conflict.is_none())
+    );
+
+    let mut harness = show(conflict_review("conflict-theirs").0, Some("a.txt"), 600.0);
+    harness.get_by_label("Theirs").click();
+    harness.run();
+    harness.run();
+    assert_eq!(buffer_text(&mut harness), "one\ntheirs\nthree\n");
+
+    let mut harness = show(conflict_review("conflict-both").0, Some("a.txt"), 600.0);
+    harness.get_by_label("Both").click();
+    harness.run();
+    harness.run();
+    assert_eq!(buffer_text(&mut harness), "one\nours\ntheirs\nthree\n");
+}
+
+#[test]
+fn stages_a_resolved_conflict_and_does_not_stage_the_markers() {
+    let (mut review, _dir) = conflict_review("conflict-stage");
+    review.toggle_reviewed(0, 0);
+    assert_eq!(review.repo.changes().unwrap().conflicts, ["a.txt"]);
+    set_reviewed(&mut review, "a.txt", true);
+    assert_eq!(review.repo.changes().unwrap().conflicts, ["a.txt"]);
+    assert!(
+        review
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Resolve the conflicts"))
+    );
+
+    let mut harness = show(review, Some("a.txt"), 600.0);
+    harness.get_by_label("Ours").click();
+    harness.run();
+    harness.run();
+    harness.get_by_label("Mark file reviewed").click();
+    harness.run();
+    harness.state_mut().review.wait_for_staging();
+    refresh(&mut harness.state_mut().review);
+    assert!(
+        harness
+            .state()
+            .review
+            .repo
+            .changes()
+            .unwrap()
+            .conflicts
+            .is_empty()
+    );
+    assert_eq!(
+        harness.state().review.operation,
+        Some(git::Operation::Merge)
+    );
+}
+
+#[test]
+fn leaves_conflict_like_lines_alone_when_git_has_no_conflict() {
+    let text = "one\n<<<<<<< HEAD\ntwo\n=======\nthree\n>>>>>>> other\n";
+    let (review, _dir) = review("markers", &[("a.txt", "one\n", text)]);
+    let harness = show(review, Some("a.txt"), 600.0);
+    assert!(
+        harness.state().review.files[0]
+            .diff
+            .hunks
+            .iter()
+            .all(|hunk| hunk.conflict.is_none())
+    );
+    assert!(harness.query_by_label("Ours").is_none());
+}
+
+#[test]
+fn sends_a_conflict_or_all_of_them_to_an_agent() {
+    let (mut review, _dir) = conflict_review("conflict-agent");
+    review.operation = Some(git::Operation::Merge);
+    let mut harness = show(review, Some("a.txt"), 600.0);
+    harness.get_by_label("Ask agent").click();
+    harness.run();
+    let Some(Outcome::Send { text, .. }) = &harness.state().asked else {
+        panic!("nothing was sent");
+    };
+    assert!(text.contains("@a.txt"));
+    assert!(text.contains("<<<<<<< HEAD"));
+    assert!(text.contains("theirs"));
+
+    harness.get_by_label("Send all conflicts").click();
+    harness.run();
+    let Some(Outcome::Send { text, .. }) = &harness.state().asked else {
+        panic!("nothing was sent");
+    };
+    assert!(text.contains("Resolve the merge conflicts"));
+    assert!(text.contains("<<<<<<< HEAD"));
+    assert!(text.contains("theirs"));
 }
 
 #[test]

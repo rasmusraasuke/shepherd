@@ -57,11 +57,20 @@ impl DiffLine {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Conflict {
+    pub ours: String,
+    pub theirs: String,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Hunk {
     pub old_start: u32,
     pub new_start: u32,
+    pub old_count: usize,
+    pub new_count: usize,
     pub lines: Vec<DiffLine>,
+    pub conflict: Option<Conflict>,
 }
 
 impl Hunk {
@@ -74,17 +83,10 @@ impl Hunk {
                 start..start + count
             }
         };
-        let old = self
-            .lines
-            .iter()
-            .filter(|line| line.old_no.is_some())
-            .count();
-        let new = self
-            .lines
-            .iter()
-            .filter(|line| line.new_no.is_some())
-            .count();
-        (range(self.old_start, old), range(self.new_start, new))
+        (
+            range(self.old_start, self.old_count),
+            range(self.new_start, self.new_count),
+        )
     }
 }
 
@@ -193,9 +195,26 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
             file.hunks.push(Hunk {
                 old_start: old_no,
                 new_start: new_no,
+                old_count: 0,
+                new_count: 0,
                 lines: Vec::new(),
+                conflict: None,
             });
             in_hunk = true;
+        }
+    }
+    for file in &mut files {
+        for hunk in &mut file.hunks {
+            hunk.old_count = hunk
+                .lines
+                .iter()
+                .filter(|line| line.old_no.is_some())
+                .count();
+            hunk.new_count = hunk
+                .lines
+                .iter()
+                .filter(|line| line.new_no.is_some())
+                .count();
         }
     }
     files
