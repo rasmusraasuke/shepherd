@@ -661,9 +661,7 @@ fn conflict_tools(
 }
 
 fn conflict_button(ui: &egui::Ui, rect: egui::Rect, label: &str, hint: &str, id: egui::Id) -> bool {
-    let response = ui
-        .interact(rect, id, Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let visuals = ui.style().interact(&response);
     ui.painter().rect(
@@ -744,9 +742,7 @@ fn comment_line_ui(
 }
 
 fn gutter_mark_ui(ui: &egui::Ui, rect: egui::Rect, sign: &str, label: &str, id: egui::Id) -> bool {
-    let response = ui
-        .interact(rect, id, Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let visuals = ui.style().interact(&response);
     let mark = rect.shrink(2.0);
@@ -777,9 +773,7 @@ fn delete_mark_ui(ui: &egui::Ui, rect: egui::Rect, id: egui::Id) -> bool {
 
 fn fold_ui(ui: &egui::Ui, rect: egui::Rect, hidden: usize, id: egui::Id) -> bool {
     let label = format!("Show {hidden} hidden lines");
-    let response = ui
-        .interact(rect, id, Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &label));
     let color = if response.hovered() {
         ui.visuals().text_color()

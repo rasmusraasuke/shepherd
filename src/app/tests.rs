@@ -735,6 +735,35 @@ fn shows_the_title_of_a_dragged_tab_at_the_pointer() {
 }
 
 #[test]
+fn points_at_a_tab_and_grabs_it_only_while_it_is_held() {
+    let (mut harness, _dir) = harness("tab-cursor");
+    harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
+    harness.run();
+    let cursor = |harness: &Harness<'_, App>| harness.output().platform_output.cursor_icon;
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    let tab = harness
+        .query_all_by_label("README.md")
+        .last()
+        .unwrap()
+        .rect()
+        .center();
+    harness.event(egui::Event::PointerMoved(tab));
+    harness.run();
+    assert_eq!(cursor(&harness), egui::CursorIcon::PointingHand);
+    harness.event(button(tab, true));
+    harness.run();
+    assert_eq!(cursor(&harness), egui::CursorIcon::Grabbing);
+    harness.event(button(tab, false));
+    harness.run();
+    assert_eq!(cursor(&harness), egui::CursorIcon::PointingHand);
+}
+
+#[test]
 fn edits_an_opened_file_with_the_keyboard_and_saves_it() {
     let (mut harness, dir) = harness("edit");
     let on_disk = || fs::read_to_string(dir.path().join("README.md")).unwrap();

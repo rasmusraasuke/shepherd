@@ -38,6 +38,9 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   emoji, so the arrows, bullets and stars agents draw show on any system.
   Under `⌘/` the system's own fonts can be chosen instead. The tab shown in each group is the
   one in bright text. With no tab open, the main space shows the few keys to start with.
+- **A pointer over what can be clicked.** Buttons, menus, rows, checkboxes and tabs turn the
+  cursor into a pointing hand. A tab shows the grabbing hand only while it is held down with
+  the left button or dragged.
 - **The branch in the title bar.** The main window draws its own title bar beside the traffic
   lights with the branch dropdown, and can be dragged and zoomed from it. Popped-out windows
   end their title with the current branch behind a

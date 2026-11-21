@@ -90,6 +90,7 @@ pub fn apply(ctx: &egui::Context, system_fonts: bool) {
         style.spacing.interact_size.y = 22.0;
     });
     ctx.set_fonts(fonts(system_fonts));
+    ctx.add_plugin(super::cursor::Pointer);
 }
 
 pub fn primary(ui: &egui::Ui, label: &str) -> egui::Button<'static> {

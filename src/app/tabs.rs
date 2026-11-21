@@ -9,7 +9,7 @@ use crate::editor::buffer::Pos;
 use crate::panels::search::Reveal;
 use crate::review::{self, Review};
 use crate::terminal::Activity;
-use crate::ui::theme;
+use crate::ui::{cursor, theme};
 
 const WAITING_COLOR: egui::Color32 = egui::Color32::from_rgb(214, 160, 92);
 
@@ -236,6 +236,7 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
         tile_id: TileId,
         response: egui::Response,
     ) -> egui::Response {
+        cursor::tab(&response);
         let Some(tab) = tiles.get_pane(&tile_id) else {
             return response;
         };
