@@ -5,6 +5,7 @@ mod dirs;
 mod editor;
 mod git;
 mod panels;
+mod projects;
 mod review;
 mod settings;
 mod terminal;
@@ -119,6 +120,9 @@ fn remember(root: &Path) {
     let Some(dir) = dirs::config() else { return };
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(dir.join("last-project"), root.to_string_lossy().as_bytes());
+    if let Some(store) = projects::path() {
+        projects::remember(&store, root);
+    }
 }
 
 #[cfg(test)]

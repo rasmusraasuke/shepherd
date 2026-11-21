@@ -151,7 +151,7 @@ pub fn bundled() -> Option<PathBuf> {
         .then(|| bundle.to_path_buf())
 }
 
-pub fn restart(root: &Path) -> Result<(), String> {
+pub fn launch(root: &Path) -> Result<(), String> {
     match bundled() {
         Some(bundle) => {
             Command::new("open")

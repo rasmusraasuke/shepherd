@@ -22,6 +22,7 @@ use crate::panels::file_tree::FileTree;
 use crate::panels::flow::{self, Flow};
 use crate::panels::history::{History, Outcome as HistoryOutcome};
 use crate::panels::keys::{self, DoubleTap};
+use crate::panels::projects::Projects;
 use crate::panels::quick_chat::QuickChat;
 use crate::panels::quick_open::QuickOpen;
 use crate::panels::search::{ProjectSearch, Reveal};
@@ -66,6 +67,7 @@ pub struct App {
     updates: update::Updates,
     build: update::Build,
     restarting: bool,
+    projects: Projects,
 }
 
 struct Content {
@@ -226,6 +228,13 @@ impl App {
             double_shift: DoubleTap::shift(),
             double_ctrl: DoubleTap::ctrl(),
             show_keys: false,
+            projects: Projects::new(
+                settings_path
+                    .as_ref()
+                    .and_then(|path| path.parent())
+                    .map(|dir| dir.join("projects")),
+                repo.root.clone(),
+            ),
             settings,
             settings_path,
             drag: None,

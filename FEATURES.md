@@ -42,6 +42,16 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   lights with the branch dropdown, and can be dragged and zoomed from it. Popped-out windows
   end their title with the current branch behind a
   ⎇ branch symbol, while the macOS menu bar shows just "Shepherd".
+- **Projects.** Left of the branch dropdown, the name of the project folder opens a menu
+  with *New Project…*, which creates a folder with a new git repository, and *Open…*, which
+  picks a folder that is a git repository; both open it. Below them, *Recent Projects*
+  lists the current project first, its name in blue, and then every other project ever
+  opened with Shepherd, most recent first, each with its folder below the name, relative to
+  the home directory. The menu grows with the list up to
+  a fixed height and then scrolls. Typing anywhere in the menu replaces the actions with a
+  search of the names and folders, and Enter opens the first match. A project opens in a
+  new Shepherd window. Hovering a project other than the current one shows a cross that makes
+  Shepherd forget it.
 - **Restored on restart.** Windows with their position and size, splits, open tabs, the
   sidebar, open or closed, and the expanded directories are saved per repository in `.git/shepherd-layout.json`.
 - **Closing the editor.** Closing the window or quitting saves the open files and the layout,

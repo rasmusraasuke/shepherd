@@ -94,6 +94,12 @@ impl Repo {
         })
     }
 
+    pub fn init(path: &Path) -> Result<Self, String> {
+        fs::create_dir_all(path).map_err(|e| format!("Cannot create {}: {e}", path.display()))?;
+        git(path, &["init", "--quiet"])?;
+        Self::open(path)
+    }
+
     pub fn layout_path(&self) -> PathBuf {
         self.git_dir.join("shepherd-layout.json")
     }

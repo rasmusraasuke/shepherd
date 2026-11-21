@@ -3,6 +3,7 @@ pub mod flow;
 pub mod graph;
 pub mod history;
 pub mod keys;
+pub mod projects;
 pub mod quick_chat;
 pub mod quick_open;
 pub mod search;

@@ -41,11 +41,19 @@ impl App {
                     let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
                     ui.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
                 }
-                let op = ui
-                    .horizontal_centered(|ui| self.content.flow.branch_ui(ui))
+                let (project, op) = ui
+                    .horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        (self.projects.ui(ui), self.content.flow.branch_ui(ui))
+                    })
                     .inner;
                 if let Some(op) = op {
                     self.content.run(op, ui.ctx());
+                }
+                if let Some(project) = project
+                    && let Err(error) = update::launch(&project)
+                {
+                    self.projects.fail(error);
                 }
             });
     }
@@ -127,7 +135,7 @@ impl App {
         self.restarting = true;
         self.content.open_files.save_all();
         self.save_layout();
-        match update::restart(&self.content.root) {
+        match update::launch(&self.content.root) {
             Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
             Err(e) => self.updates.fail(e),
         }
