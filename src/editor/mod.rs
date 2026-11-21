@@ -666,9 +666,6 @@ impl Editor {
                         .inner_margin(egui::Margin::ZERO)
                         .show(ui, |ui| {
                             ui.set_width(layout.width);
-                            ui.add_space(4.0);
-                            ui.weak("Click to keep it open and scroll");
-                            ui.add_space(4.0);
                             change_tooltip(ui, id_salt, hunk, &layout, Some(preview_lines));
                         });
                 });
