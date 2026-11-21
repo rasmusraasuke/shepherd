@@ -39,8 +39,8 @@ fn harness_stepping(name: &str, step_dt: f32) -> (Harness<'static, App>, TempDir
     let mut harness = Harness::builder()
         .with_step_dt(step_dt)
         .with_size(egui::vec2(1000.0, 700.0))
+        .with_context_setup(|ctx| theme::apply(ctx, false))
         .build_ui_state(|ui, app: &mut App| app.show(ui), app);
-    theme::apply(&harness.ctx, false);
     harness.run();
     (harness, dir)
 }
@@ -82,12 +82,17 @@ fn shows_the_branch_in_the_title_bar_on_every_sidebar() {
     crate::git::tests::commit_all(&Repo::open(dir.path()).unwrap());
     harness.state().watcher.refresh_now();
     let branch = Repo::open(dir.path()).unwrap().branch();
-    for (sidebar, first) in [(Sidebar::Files, "README.md"), (Sidebar::Changes, "Push")] {
+    for (sidebar, first) in [(Sidebar::Files, "README.md"), (Sidebar::Changes, "Commit")] {
         harness.state_mut().workspace.sidebar = sidebar;
         harness.run();
         let button = harness.get_by_label(branch.as_str());
         assert!(button.rect().bottom() < harness.get_by_label(first).rect().top());
         assert!(button.rect().left() >= TITLE_INSET as f32);
+        for sync in ["↓", "↑"] {
+            let sync = harness.get_by_label(sync).rect();
+            assert!(sync.left() >= button.rect().right());
+            assert!(sync.bottom() < harness.get_by_label(first).rect().top());
+        }
     }
     harness.get_by_label(branch.as_str()).click();
     harness.run();
@@ -325,8 +330,8 @@ fn resolves_a_conflict_in_the_review_and_continues_the_merge() {
     let mut harness = Harness::builder()
         .with_step_dt(0.25)
         .with_size(egui::vec2(1000.0, 700.0))
+        .with_context_setup(|ctx| theme::apply(ctx, false))
         .build_ui_state(|ui, app: &mut App| app.show(ui), app);
-    theme::apply(&harness.ctx, false);
     harness.run();
 
     harness.get_by_label("Changes").click();

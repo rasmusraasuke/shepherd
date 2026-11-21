@@ -284,12 +284,13 @@ the background; what it complains about is shown above the commit message.
   smarter one does the work; the ⋯ menu next to *Draft*, on the right, has the harness and the model to pick. While the agent writes, the message box says so, until the
   message lands in it with `shepherd ctl commit-message`, to be read and changed before
   committing; *Cancel* stops waiting for it.
-- **Sync and push.** *Sync ↓2* shows the commits there are to pull, as far as is known from
+- **Sync and push.** Next to the branch menu in the title bar, *↓2* shows the commits there are to pull, as far as is known from
   the last fetch, and fetches and pulls, always merging and never rebasing. Uncommitted
   changes stay as they are, reviewed marks included. A pull that runs into conflicts leaves
   them for the review, and when the commits to pull change a file with uncommitted
-  changes, sync asks to commit those first. *Push ↑1* shows the commits there are to push
-  and pushes them; a branch that isn't on a remote yet is pushed to `origin`.
+  changes, sync asks to commit those first. *↑1* shows the commits there are to push
+  and pushes them; a branch that isn't on a remote yet is pushed to `origin`. Hovering either
+  says what it does.
 - **Progress of git.** Right below the branch, a spinner says what git is doing
   (*Committing…*, *Pushing…*, *Syncing…*, *Switching…*), a ✓ line says what was done for a
   few seconds afterwards, and an error from git stays there until the next action.

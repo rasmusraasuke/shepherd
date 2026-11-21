@@ -171,7 +171,7 @@ impl Flow {
         models: &HashMap<Agent, Vec<Model>>,
         choice: &mut Choice,
     ) -> Option<Outcome> {
-        let op = self.sync_ui(ui);
+        let op = self.operation_ui(ui);
         self.progress_ui(ui);
         ui.add_space(4.0);
         let commit = egui::Panel::bottom("commit")
@@ -191,14 +191,8 @@ impl Flow {
         op.map(Outcome::Run).or(commit)
     }
 
-    fn sync_ui(&mut self, ui: &mut egui::Ui) -> Option<Op> {
+    fn operation_ui(&mut self, ui: &mut egui::Ui) -> Option<Op> {
         let busy = self.running.is_some();
-        let Status {
-            upstream,
-            ahead,
-            behind,
-            ..
-        } = self.status;
         let mut op = None;
         if let Some(operation) = self.operation {
             ui.horizontal(|ui| {
@@ -223,36 +217,43 @@ impl Flow {
                     }
                 });
             });
-            return op;
         }
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (sync, push) = if upstream {
-                    (format!("Sync ↓{behind}"), format!("Push ↑{ahead}"))
-                } else {
-                    ("Sync".to_string(), "Push".to_string())
-                };
-                let pushing = if upstream {
-                    "Push the commits of the branch"
-                } else {
-                    "Push the branch, which isn't on a remote yet"
-                };
-                if ui
-                    .add_enabled(!busy && (ahead > 0 || !upstream), theme::quiet(push))
-                    .on_hover_text(pushing)
-                    .clicked()
-                {
-                    op = Some(Op::Push);
-                }
-                if ui
-                    .add_enabled(!busy, theme::quiet(sync))
-                    .on_hover_text("Fetch, and pull the commits there are to pull")
-                    .clicked()
-                {
-                    op = Some(Op::Sync);
-                }
-            });
-        });
+        op
+    }
+
+    fn sync_buttons(&mut self, ui: &mut egui::Ui) -> Option<Op> {
+        let busy = self.running.is_some();
+        let Status {
+            upstream,
+            ahead,
+            behind,
+            ..
+        } = self.status;
+        let (sync, push) = if upstream {
+            (format!("↓{behind}"), format!("↑{ahead}"))
+        } else {
+            ("↓".to_string(), "↑".to_string())
+        };
+        let pushing = if upstream {
+            "Push the commits of the branch"
+        } else {
+            "Push the branch, which isn't on a remote yet"
+        };
+        let mut op = None;
+        if ui
+            .add_enabled(!busy, theme::quiet(sync))
+            .on_hover_text("Fetch, and pull the commits there are to pull")
+            .clicked()
+        {
+            op = Some(Op::Sync);
+        }
+        if ui
+            .add_enabled(!busy && (ahead > 0 || !upstream), theme::quiet(push))
+            .on_hover_text(pushing)
+            .clicked()
+        {
+            op = Some(Op::Push);
+        }
         op
     }
 
@@ -265,7 +266,11 @@ impl Flow {
             .ui(ui, |ui| self.branches_ui(ui));
         theme::caret(ui, &response);
         response.on_hover_text("Branches");
-        menu.and_then(|menu| menu.inner)
+        let op = menu.and_then(|menu| menu.inner);
+        if self.operation.is_some() {
+            return op;
+        }
+        self.sync_buttons(ui).or(op)
     }
 
     fn progress_ui(&mut self, ui: &mut egui::Ui) {
@@ -490,8 +495,8 @@ mod tests {
         };
         let mut harness = Harness::builder()
             .with_size(egui::vec2(260.0, 500.0))
+            .with_context_setup(|ctx| theme::apply(ctx, false))
             .build_ui_state(ui, shown);
-        crate::ui::theme::apply(&harness.ctx, false);
         refresh(&mut harness.state_mut().flow);
         harness.run();
         (harness, dir)
@@ -552,8 +557,8 @@ mod tests {
         };
         let mut harness = Harness::builder()
             .with_size(egui::vec2(260.0, 500.0))
+            .with_context_setup(|ctx| theme::apply(ctx, false))
             .build_ui_state(ui, shown);
-        crate::ui::theme::apply(&harness.ctx, false);
         refresh(&mut harness.state_mut().flow);
         harness.run();
         harness.get_by_label("Merging");
@@ -594,7 +599,8 @@ mod tests {
             .get_by_label("Harness and model of the agent")
             .hover();
         harness.run();
-        let menu = harness.get_by_label("Harness and model of the agent");
+        let menu =
+            harness.get_by_role_and_label(egui::Role::Button, "Harness and model of the agent");
         assert!(menu.rect().left() >= draft.right());
         menu.click();
         harness.run();
@@ -639,7 +645,7 @@ mod tests {
         harness.run();
         assert!(!harness.get_by_label("Draft").accesskit_node().is_disabled());
         harness.get_by_label("Commit and push").click();
-        wait_for(&mut harness, "Push ↑0", true);
+        wait_for(&mut harness, "↑0", true);
         assert_eq!(repo.changes().unwrap().untracked, ["b.txt"]);
         assert!(repo.changes().unwrap().staged.is_empty());
         assert!(harness.state().flow.message.is_empty());
@@ -650,16 +656,16 @@ mod tests {
         let (mut harness, dir) = show("flow-push");
         let repo = harness.state().flow.repo.clone();
         let _remote = with_remote(&repo, "flow-push-remote");
-        harness.get_by_label("Push").click();
+        harness.get_by_label("↑").click();
         wait_for(&mut harness, "Pushing…", true);
         wait_for(&mut harness, "✓ Pushed", true);
-        wait_for(&mut harness, "Push ↑0", true);
+        wait_for(&mut harness, "↑0", true);
         dir.write("a.txt", "changed\n");
         commit_all(&repo);
         refresh(&mut harness.state_mut().flow);
         harness.run();
-        harness.get_by_label("Push ↑1").click();
-        wait_for(&mut harness, "Push ↑0", true);
+        harness.get_by_label("↑1").click();
+        wait_for(&mut harness, "↑0", true);
         assert_eq!(repo.status().ahead, 0);
     }
 
