@@ -1322,6 +1322,33 @@ fn agents_ask_the_editor_what_it_shows_and_have_it_show_files() {
 }
 
 #[test]
+fn agents_see_the_hunks_and_stage_the_ones_of_one_commit() {
+    let (mut harness, _dir) = harness("stage-hunks");
+    harness.get_by_label("Changes").click();
+    harness.run();
+    let hunks = ask(&mut harness, &["hunks"]).unwrap();
+    assert!(
+        hunks.contains("=== README.md\n--- hunk 1 @@ -0,0 +1,1 @@\n   1 +# Readme\n"),
+        "{hunks}"
+    );
+    assert!(ask(&mut harness, &["stage", "README.md:1"]).is_ok());
+    wait_for(&mut harness, "1/2 reviewed");
+    assert!(ask(&mut harness, &["stage", "src/main.rs"]).is_ok());
+    wait_for(&mut harness, "1/2 reviewed");
+    assert_eq!(
+        harness
+            .state()
+            .repo
+            .changes()
+            .unwrap()
+            .staged
+            .lines()
+            .next(),
+        Some("diff --git a/src/main.rs b/src/main.rs")
+    );
+}
+
+#[test]
 fn commits_all_changes_from_the_sidebar_with_the_message_an_agent_wrote() {
     let (mut harness, dir) = harness("commit");
     harness.get_by_label("Changes").click();

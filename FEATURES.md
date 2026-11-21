@@ -287,6 +287,13 @@ the background; what it complains about is shown above the commit message.
   smarter one does the work; the ⋯ menu next to *Draft*, on the right, has the harness and the model to pick. While the agent writes, the message box says so, until the
   message lands in it with `shepherd ctl commit-message`, to be read and changed before
   committing; *Cancel* stops waiting for it.
+- **Split into commits.** *Split*, next to *Draft*, has the same agent look at all the
+  uncommitted changes. When they serve one intent, it stages them all; when they mix work
+  that belongs in different commits, it picks one group that clearly belongs together and
+  stages only its hunks with `shepherd ctl stage`, or only some lines of a hunk when
+  the hunk itself mixes them. Either way it then writes the message for
+  what it staged. The result is reviewed, changed and committed like any other, and *Split*
+  again takes the next group.
 - **Sync and push.** Next to the branch menu in the title bar, *↓2* shows the commits there are to pull, as far as is known from
   the last fetch, and fetches and pulls, always merging and never rebasing. Uncommitted
   changes stay as they are, reviewed marks included. A pull that runs into conflicts leaves
@@ -386,6 +393,8 @@ Work that is already committed is reviewed in the same view as work in the worki
   | `shepherd ctl selection` | The place and the text selected in the file edited last |
   | `shepherd ctl comments` | The review comments on the uncommitted changes |
   | `shepherd ctl review-state` | Which changed lines are reviewed (staged), by file |
+  | `shepherd ctl hunks` | The uncommitted changes of every file, in numbered hunks of numbered lines |
+  | `shepherd ctl stage <path>[:<pick>,…]…` | Stages only what is picked and unstages the rest; a pick is a hunk `2`, a line `2.3` or lines `2.3-5`, a path alone the whole file |
   | `shepherd ctl terminals` | The terminals and what their programs are doing |
   | `shepherd ctl terminal <id>` | What a terminal or Agent tab shows |
   | `shepherd ctl open <path>[:<line>[-<line>]]` | Opens a file, selecting the lines |

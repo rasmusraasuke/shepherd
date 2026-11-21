@@ -14,6 +14,17 @@ use crate::ui::theme;
 const DRAFT: &str = "Write a commit message for the staged changes, which `git diff --cached` \
 shows, and put it into the editor with `shepherd ctl commit-message \"<message>\"`. Don't commit.";
 
+const SPLIT: &str = "The uncommitted changes may mix work of different intents that belong in different \
+commits. See them with `shepherd ctl hunks`, which numbers the hunks of every file and the lines of \
+every hunk. If they all serve one intent, stage all of them. Otherwise choose one group of changes \
+that clearly belongs together and stage only that. Stage with \
+`shepherd ctl stage <path>[:<pick>,<pick>...] ...`, naming every file of the group: a pick is a hunk \
+`<hunk>`, or some of its lines `<hunk>.<line>` or `<hunk>.<first>-<last>` when a hunk mixes intents, \
+with both the removed and the added lines of a changed line; \
+without picks the whole file is staged and whatever is not named is unstaged. Check the result with \
+`git diff --cached`. Then write a commit message for the staged changes and put it into the editor \
+with `shepherd ctl commit-message \"<message>\"`. Don't commit.";
+
 const DONE_SHOWN: f64 = 4.0;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -80,7 +91,7 @@ pub struct Flow {
     message: String,
     new_branch: String,
     leave: bool,
-    drafting: bool,
+    drafting: Option<&'static str>,
     running: Option<(Op, Receiver<Result<(), String>>)>,
     done: Option<(String, f64)>,
     error: Option<String>,
@@ -98,7 +109,7 @@ impl Flow {
             message: String::new(),
             new_branch: String::new(),
             leave: false,
-            drafting: false,
+            drafting: None,
             running: None,
             done: None,
             error: None,
@@ -119,12 +130,12 @@ impl Flow {
 
     pub fn set_message(&mut self, message: String) {
         self.message = message;
-        self.drafting = false;
+        self.drafting = None;
     }
 
     pub fn fail(&mut self, error: String) {
         self.error = Some(error);
-        self.drafting = false;
+        self.drafting = None;
     }
 
     pub fn run(&mut self, op: Op, ctx: &egui::Context) {
@@ -385,16 +396,32 @@ impl Flow {
                 }
             });
         });
-        let drafting = self.drafting.then_some("An agent is writing the message…");
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 agents::choice_menu(ui, found, models, choice);
-                if review::new_agent_button(ui, "Draft", self.staged, drafting, agents) {
-                    self.drafting = true;
-                    outcome = Some(Outcome::Draft {
-                        text: DRAFT.to_string(),
-                    });
+                for (label, text, enabled, busy) in [
+                    (
+                        "Draft",
+                        DRAFT,
+                        self.staged,
+                        "An agent is writing the message…",
+                    ),
+                    (
+                        "Split",
+                        SPLIT,
+                        self.changed && !self.conflicts,
+                        "An agent is choosing the changes of one commit…",
+                    ),
+                ] {
+                    let busy = (self.drafting == Some(label)).then_some(busy);
+                    let enabled = enabled && self.drafting.is_none();
+                    if review::new_agent_button(ui, label, enabled, busy, agents) {
+                        self.drafting = Some(label);
+                        outcome = Some(Outcome::Draft {
+                            text: text.to_string(),
+                        });
+                    }
                 }
             });
         });
@@ -410,7 +437,7 @@ impl Flow {
                 .id(id)
                 .desired_rows(3)
                 .desired_width(f32::INFINITY)
-                .hint_text(if self.drafting {
+                .hint_text(if self.drafting.is_some() {
                     "The message of the agent will show up here"
                 } else {
                     "Commit message"
@@ -609,6 +636,32 @@ mod tests {
         harness.get_by_label("Claude Code").click();
         harness.run();
         assert_eq!(harness.state().choice.agent, Some(Agent::Claude));
+    }
+
+    #[test]
+    fn splits_the_changes_with_an_agent_next_to_draft() {
+        let (mut harness, dir) = show("flow-split");
+        assert!(harness.get_by_label("Split").accesskit_node().is_disabled());
+        dir.write("a.txt", "changed\n");
+        refresh(&mut harness.state_mut().flow);
+        harness.run();
+        assert!(harness.get_by_label("Draft").accesskit_node().is_disabled());
+        assert!(
+            harness.get_by_label("Split").rect().right()
+                <= harness.get_by_label("Draft").rect().left()
+        );
+        harness.get_by_label("Split").click();
+        harness.run_steps(4);
+        assert!(matches!(
+            &harness.state().asked,
+            Some(Outcome::Draft { text }) if text.contains("shepherd ctl stage")
+                && text.contains("shepherd ctl commit-message")
+        ));
+        assert!(harness.get_by_label("Split").accesskit_node().is_disabled());
+        assert!(harness.get_by_label("Draft").accesskit_node().is_disabled());
+        harness.state_mut().flow.set_message("Change a".to_string());
+        harness.run();
+        assert!(!harness.get_by_label("Split").accesskit_node().is_disabled());
     }
 
     #[test]

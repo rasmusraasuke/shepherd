@@ -2,6 +2,7 @@ pub mod comments;
 mod draft;
 pub(crate) mod line_diff;
 mod rows;
+mod split;
 mod text;
 mod word_diff;
 
@@ -413,7 +414,6 @@ impl Review {
         }
     }
 
-    #[cfg(test)]
     fn wait_for_staging(&mut self) {
         loop {
             let Some(receiver) = self.staging.take() else {

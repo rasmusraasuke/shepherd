@@ -14,6 +14,10 @@ shepherd ctl: ask the editor what the user sees, or have it show something.
   shepherd ctl selection            The place and the text selected in the file edited last
   shepherd ctl comments             The user's review comments on the uncommitted changes
   shepherd ctl review-state         Which changed lines are reviewed, by file; reviewed means staged
+  shepherd ctl hunks                The uncommitted changes of every file, in numbered hunks of numbered lines
+  shepherd ctl stage <path>[:<pick>,<pick>...]...
+                                  Stage only what is picked and unstage the rest; a pick is <hunk>,
+                                  <hunk>.<line> or <hunk>.<first>-<last>, a path alone is the whole file
   shepherd ctl terminals            The terminals and what their programs are doing
   shepherd ctl terminal <id>        What a terminal shows
   shepherd ctl open <path>[:<line>[-<line>]]
@@ -50,6 +54,8 @@ impl App {
                 all => Ok(comments::feedback(all)),
             },
             (Some("review-state"), None) => Ok(self.review_state()),
+            (Some("hunks"), None) => Ok(content.review.hunks_text()),
+            (Some("stage"), Some(_)) => self.content.review.stage_only(&args[1..]),
             (Some("terminals"), None) => Ok(self.terminals()),
             (Some("terminal"), Some(id)) => id
                 .parse()

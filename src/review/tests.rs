@@ -1116,3 +1116,61 @@ fn marks_everything_reviewed_from_the_text_being_edited() {
         "two\n"
     );
 }
+
+#[test]
+fn lists_the_hunks_and_stages_only_the_ones_named() {
+    let (mut review, _dir) = review("stage-only", TWO_FILES);
+    let hunks = review.hunks_text();
+    for part in [
+        "=== a.txt\n--- hunk 1 @@ -1,1 +1,1 @@\n   1 -1\n   2 +one\n",
+        "--- hunk 2 @@ -9,1 +9,1 @@\n   1 -9\n   2 +nine\n",
+        "=== b.txt\n--- hunk 1",
+    ] {
+        assert!(hunks.contains(part), "{part:?} not in:\n{hunks}");
+    }
+
+    assert_eq!(
+        review.stage_only(&["a.txt:2".to_string(), "b.txt".to_string()]),
+        Ok("Staged 4 of 6 changed lines, the rest is not staged".to_string())
+    );
+    refresh(&mut review);
+    assert_eq!(review.progress_of("a.txt"), (2, 4));
+    assert_eq!(review.progress_of("b.txt"), (2, 2));
+    let staged = review.repo.changes().unwrap().staged;
+    assert!(
+        staged.contains("+nine") && staged.contains("+y"),
+        "{staged}"
+    );
+    assert!(!staged.contains("+one"), "{staged}");
+
+    assert!(review.stage_only(&["a.txt:1".to_string()]).is_ok());
+    refresh(&mut review);
+    assert_eq!(review.progress(), (2, 6));
+    assert_eq!(
+        review.stage_only(&["a.txt:3".to_string()]),
+        Err("a.txt has no hunk 3, it has 2".to_string())
+    );
+    assert_eq!(
+        review.stage_only(&["c.txt".to_string()]),
+        Err("No changes in c.txt".to_string())
+    );
+    assert_eq!(review.progress(), (2, 6));
+}
+
+#[test]
+fn stages_only_the_lines_named_when_a_hunk_mixes_changes() {
+    let (mut review, _dir) = review("stage-lines", &[("a.txt", "1\n2\n", "1\nx\ny\nz\n2\n")]);
+    assert_eq!(review.files[0].diff.hunks.len(), 1);
+    assert!(review.stage_only(&["a.txt:1.1,1.3".to_string()]).is_ok());
+    refresh(&mut review);
+    assert_eq!(review.progress(), (2, 3));
+    assert_eq!(review.repo.staged("a.txt").unwrap(), "1\nx\nz\n2\n");
+
+    assert!(review.stage_only(&["a.txt:1.2-3".to_string()]).is_ok());
+    refresh(&mut review);
+    assert_eq!(review.repo.staged("a.txt").unwrap(), "1\ny\nz\n2\n");
+    assert_eq!(
+        review.stage_only(&["a.txt:1.2-7".to_string()]),
+        Err("Hunk 1 of a.txt has no lines 2-7, it has 3".to_string())
+    );
+}
