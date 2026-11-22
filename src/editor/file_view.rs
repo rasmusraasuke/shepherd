@@ -307,11 +307,9 @@ impl OpenFiles {
             self.toggle_blame(path);
         }
         let status = self.lsp.status(path);
+        let view = ui.max_rect();
         let file = self.file(path);
         file.update_changes();
-        if let Some(status) = status {
-            ui.weak(status);
-        }
         if let Some(error) = &file.save_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
@@ -361,8 +359,38 @@ impl OpenFiles {
         if toggle {
             self.toggle_blame(path);
         }
+        if let Some(status) = status {
+            status_ui(ui, view, &status);
+        }
         line
     }
+}
+
+fn status_ui(ui: &egui::Ui, view: egui::Rect, status: &str) {
+    let margin = egui::vec2(10.0, 8.0);
+    let galley = ui.painter().layout(
+        status.to_string(),
+        egui::TextStyle::Small.resolve(ui.style()),
+        ui.visuals().weak_text_color(),
+        (view.width() * 0.8).min(520.0),
+    );
+    let size = galley.size() + margin * 2.0;
+    let rect = egui::Rect::from_min_size(view.max - size - egui::vec2(12.0, 12.0), size);
+    let painter = ui.painter().with_clip_rect(view);
+    painter.rect(
+        rect,
+        6.0,
+        ui.visuals().panel_fill,
+        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.min + margin, galley, ui.visuals().weak_text_color());
+    ui.interact(
+        rect,
+        ui.id().with("language-server-status"),
+        egui::Sense::hover(),
+    )
+    .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, status));
 }
 
 impl OpenFile {

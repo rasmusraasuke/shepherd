@@ -1425,6 +1425,7 @@ fn shows_what_the_language_server_knows_about_the_code() {
             .query_by_label("Starting the Rust language server…")
             .is_some()
     );
+    let editor_while_starting = harness.get_by_label("Editor").rect();
     peer.answer_initialize();
     run_until(&mut harness, |harness| {
         harness
@@ -1432,6 +1433,7 @@ fn shows_what_the_language_server_knows_about_the_code() {
             .is_none()
     });
     assert_eq!(peer.next()["method"], "initialized");
+    assert_eq!(harness.get_by_label("Editor").rect(), editor_while_starting);
     let opened = peer.next();
     assert_eq!(opened["method"], "textDocument/didOpen");
     let uri = opened["params"]["textDocument"]["uri"].clone();

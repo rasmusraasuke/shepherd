@@ -108,9 +108,10 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   against the SHA-256 sums the sources publish. An installed server is checked for a newer
   version at most once a day, and is kept when there is no network. Java's `jdtls` has to be
   on the PATH. `"download_language_servers": false` in `settings.json` turns the downloads
-  off. The server is told about every edit as it is typed. A quiet line above the file says
-  what is going on: looking for the server, downloading it with how many MB are done,
-  importing the project, or why the server stopped, from the last line of its error output.
+  off. The server is told about every edit as it is typed. A small label floating in the
+  bottom right corner of the file, which never moves the code, says what is going on:
+  looking for the server, downloading it with how many MB are done, importing the project,
+  or why the server stopped, from the last line of its error output.
 - **Problems in the code.** Errors, warnings and notes from the language server are
   underlined with a wavy line in red, yellow or blue. Resting the pointer on code shows the
   problems there and what the server knows about it, such as its type and documentation.
