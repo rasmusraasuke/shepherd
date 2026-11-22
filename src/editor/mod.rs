@@ -18,7 +18,12 @@ use code::CodeStyle;
 use highlight::Highlighter;
 
 use crate::git::{Commit, Hunk, LineKind, commit_times};
+use crate::lsp::{Diagnostic, Severity};
 use crate::ui::theme;
+
+const HOVER_DELAY: f64 = 0.5;
+
+const HOVER_LINES: usize = 30;
 
 #[derive(Default)]
 pub struct Editor {
@@ -32,6 +37,19 @@ pub struct Editor {
     find: Option<Find>,
     open_change: Option<OpenChange>,
     change_id: u64,
+    navigable: bool,
+    diagnostics: Arc<Vec<Diagnostic>>,
+    hover: Option<Hover>,
+    definition: Option<Pos>,
+}
+
+struct Hover {
+    pos: Pos,
+    revision: u64,
+    since: f64,
+    ready: bool,
+    asked: bool,
+    text: Option<String>,
 }
 
 struct OpenChange {
@@ -428,6 +446,30 @@ impl Editor {
         self.read_only = read_only;
     }
 
+    pub fn set_language_server(&mut self, navigable: bool, diagnostics: Arc<Vec<Diagnostic>>) {
+        self.navigable = navigable;
+        self.diagnostics = diagnostics;
+    }
+
+    pub fn take_hover_request(&mut self) -> Option<Pos> {
+        let hover = self
+            .hover
+            .as_mut()
+            .filter(|hover| hover.ready && !hover.asked)?;
+        hover.asked = true;
+        Some(hover.pos)
+    }
+
+    pub fn set_hover_text(&mut self, pos: Pos, text: String) {
+        if let Some(hover) = self.hover.as_mut().filter(|hover| hover.pos == pos) {
+            hover.text = Some(text);
+        }
+    }
+
+    pub fn take_definition_request(&mut self) -> Option<Pos> {
+        self.definition.take()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn ui(
         &mut self,
@@ -675,6 +717,70 @@ impl Editor {
         }
     }
 
+    fn track_hover(&mut self, ui: &egui::Ui, hovered: Option<Pos>, revision: u64) {
+        let now = ui.input(|i| i.time);
+        match hovered {
+            Some(pos)
+                if self
+                    .hover
+                    .as_ref()
+                    .is_some_and(|hover| hover.pos == pos && hover.revision == revision) => {}
+            Some(pos) => {
+                self.hover = Some(Hover {
+                    pos,
+                    revision,
+                    since: now,
+                    ready: false,
+                    asked: false,
+                    text: None,
+                })
+            }
+            None => self.hover = None,
+        }
+        if let Some(hover) = self.hover.as_mut().filter(|hover| !hover.ready) {
+            let left = HOVER_DELAY - (now - hover.since);
+            if left <= 0.0 {
+                hover.ready = true;
+            } else {
+                ui.ctx().request_repaint_after_secs(left as f32);
+            }
+        }
+        if self.navigable && hovered.is_some() && ui.input(|i| i.modifiers.command) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+
+    fn hover_ui(&self, response: &egui::Response, diagnostics: &[Diagnostic]) {
+        let Some(hover) = self.hover.as_ref().filter(|hover| hover.ready) else {
+            return;
+        };
+        let found: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.covers(hover.pos))
+            .collect();
+        if found.is_empty() && hover.text.is_none() {
+            return;
+        }
+        egui::Tooltip::for_widget(response)
+            .at_pointer()
+            .width(560.0)
+            .show(|ui| {
+                for diagnostic in &found {
+                    ui.colored_label(severity_color(ui, diagnostic.severity), &diagnostic.message);
+                }
+                if let Some(text) = &hover.text {
+                    if !found.is_empty() {
+                        ui.separator();
+                    }
+                    let mut lines: Vec<&str> = text.lines().take(HOVER_LINES).collect();
+                    if text.lines().nth(HOVER_LINES).is_some() {
+                        lines.push("…");
+                    }
+                    ui.label(egui::RichText::new(lines.join("\n")).monospace());
+                }
+            });
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn text_ui(
         &mut self,
@@ -700,7 +806,7 @@ impl Editor {
                 .and_then(|after| after.iter().flatten().next().copied())
                 .unwrap_or(line_count - 1),
         };
-        let found = self.find.as_ref().map_or(&[][..], |find| &find.found);
+        let diagnostics = self.diagnostics.clone();
         let find_has_focus = self.find.as_ref().is_some_and(|find| find.has_focus);
         let layout = |ui: &egui::Ui, line: &str| {
             ui.painter()
@@ -724,16 +830,26 @@ impl Editor {
             egui::WidgetInfo::labeled(egui::Role::MultilineTextInput, ui.is_enabled(), "Editor")
         });
 
-        if let Some(pointer) = response.interact_pointer_pos() {
+        let place = |ui: &egui::Ui, buffer: &Buffer, pointer: egui::Pos2| {
             let line = line_at(((pointer.y - rect.top()) / style.row_height).max(0.0) as usize);
-            let x = pointer.x.max(visible.left() + code_x);
-            let col = layout(ui, &buffer.lines()[line])
-                .cursor_from_pos(Vec2::new(x - code_left, 0.0))
-                .index
-                .0;
-            let pos = Pos::new(line, col);
+            let galley = layout(ui, &buffer.lines()[line]);
+            let x = pointer.x.max(visible.left() + code_x) - code_left;
+            let col = galley.cursor_from_pos(Vec2::new(x, 0.0)).index.0;
+            let under = if col > 0 && galley.pos_from_cursor(CCursor::new(col)).left() > x {
+                col - 1
+            } else {
+                col
+            };
+            (
+                Pos::new(line, col),
+                Pos::new(line, under),
+                x < galley.size().x,
+            )
+        };
+        if let Some(pointer) = response.interact_pointer_pos() {
+            let (pos, _, _) = place(ui, buffer, pointer);
             if response.triple_clicked() {
-                buffer.select_line(line);
+                buffer.select_line(pos.line);
             } else if response.double_clicked() {
                 buffer.select_word(pos);
             } else if response.is_pointer_button_down_on()
@@ -741,6 +857,9 @@ impl Editor {
             {
                 response.request_focus();
                 buffer.set_cursor(pos, ui.input(|i| i.modifiers.shift));
+                if self.navigable && ui.input(|i| i.modifiers.command) {
+                    self.definition = Some(pos);
+                }
             } else if response.dragged() {
                 buffer.set_cursor(pos, true);
                 self.scroll_to_cursor = true;
@@ -762,12 +881,23 @@ impl Editor {
                 escape: false,
             };
             ui.memory_mut(|m| m.set_focus_lock_filter(response.id, filter));
+            if self.navigable && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)) {
+                self.definition = Some(buffer.cursor());
+            }
             let before = (buffer.cursor(), buffer.revision());
             for event in ui.input(|i| i.events.clone()) {
                 handle_event(ui.ctx(), buffer, event, page_rows);
             }
             self.scroll_to_cursor |= before != (buffer.cursor(), buffer.revision());
         }
+        let hovered = response
+            .hover_pos()
+            .filter(|_| !response.dragged())
+            .map(|pointer| place(ui, buffer, pointer))
+            .filter(|(_, _, inside)| *inside)
+            .map(|(_, under, _)| under);
+        self.track_hover(ui, hovered, buffer.revision());
+        let found = self.find.as_ref().map_or(&[][..], |find| &find.found);
 
         let row_count = rows.map_or(buffer.lines().len(), |rows| rows.lines.len());
         let first_row =
@@ -855,12 +985,42 @@ impl Editor {
                 );
                 painter.rect_filled(place, 2.0, ui.visuals().warn_fg_color.gamma_multiply(0.35));
             }
+            let line_chars = text.chars().count();
+            for diagnostic in diagnostics
+                .iter()
+                .filter(|diagnostic| (diagnostic.start.line..=diagnostic.end.line).contains(&line))
+            {
+                let from = if diagnostic.start.line == line {
+                    diagnostic.start.col.min(line_chars)
+                } else {
+                    0
+                };
+                let to = if diagnostic.end.line == line {
+                    diagnostic.end.col.min(line_chars)
+                } else {
+                    line_chars
+                };
+                let left = x_at(&galley, from);
+                let right = if to > from {
+                    x_at(&galley, to)
+                } else {
+                    left + style.digit_width
+                };
+                squiggle(
+                    painter,
+                    left,
+                    right,
+                    row_top(row + 1) - 1.5,
+                    severity_color(ui, diagnostic.severity),
+                );
+            }
             painter.galley(
                 egui::pos2(code_left, row_top(row) + 1.0),
                 galley,
                 style.text_color,
             );
         }
+        self.hover_ui(&response, &diagnostics);
 
         let cursor = buffer.cursor();
         let Some(cursor_row) = row_of(cursor.line) else {
@@ -903,6 +1063,26 @@ impl Editor {
         }
         response
     }
+}
+
+fn severity_color(ui: &egui::Ui, severity: Severity) -> Color32 {
+    match severity {
+        Severity::Error => ui.visuals().error_fg_color,
+        Severity::Warning => ui.visuals().warn_fg_color,
+        Severity::Information => theme::palette(ui.visuals().dark_mode).accent,
+    }
+}
+
+fn squiggle(painter: &egui::Painter, left: f32, right: f32, y: f32, color: Color32) {
+    let mut points = Vec::new();
+    let mut x = left;
+    while x < right {
+        let up = points.len() % 2 == 1;
+        points.push(egui::pos2(x, if up { y - 2.0 } else { y }));
+        x += 2.0;
+    }
+    points.push(egui::pos2(right, y - 1.0));
+    painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, color)));
 }
 
 fn handle_event(ctx: &egui::Context, buffer: &mut Buffer, event: Event, page_rows: isize) {

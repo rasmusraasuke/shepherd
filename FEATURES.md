@@ -95,6 +95,29 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
 - **Syntax highlighting.** Kotlin, Java, Rust, JavaScript, TypeScript, Python, Go, JSON,
   shell scripts, TOML, YAML, HTML and CSS are highlighted, in colors close to IntelliJ's.
   Only what changed is parsed again while typing; files over 2 MB are left plain.
+- **Language servers.** Opening a file of a language with a language server starts the
+  server in the project directory: `kotlin-lsp` for Kotlin, which imports Gradle projects by
+  itself, `jdtls` for Java, `rust-analyzer` for Rust, `typescript-language-server` for
+  TypeScript and JavaScript, `pyright-langserver` for Python and `gopls` for Go. A server on
+  the PATH is used when it runs; a rustup placeholder without its component does not.
+  Otherwise Shepherd installs the server itself, without asking, into
+  `~/Library/Application Support/Shepherd/language-servers`: JetBrains' Kotlin server with
+  its own Java, the rust-analyzer release from GitHub, the TypeScript and Python servers with
+  npm, using Node from the PATH or, when it is missing or older than 20, its own copy of the
+  latest Node LTS, and gopls with `go install` when Go is there. Downloads are checked
+  against the SHA-256 sums the sources publish. An installed server is checked for a newer
+  version at most once a day, and is kept when there is no network. Java's `jdtls` has to be
+  on the PATH. `"download_language_servers": false` in `settings.json` turns the downloads
+  off. The server is told about every edit as it is typed. A quiet line above the file says
+  what is going on: looking for the server, downloading it with how many MB are done,
+  importing the project, or why the server stopped, from the last line of its error output.
+- **Problems in the code.** Errors, warnings and notes from the language server are
+  underlined with a wavy line in red, yellow or blue. Resting the pointer on code shows the
+  problems there and what the server knows about it, such as its type and documentation.
+- **Go to the definition.** Cmd+B, or a click with Cmd held, opens the definition of what is
+  under the cursor, in its file, with the cursor on its name. With Cmd held the pointer turns
+  into a hand over the code. Files outside the project, such as library sources, open read
+  only.
 
 | Key                           | Action                                  |
 |-------------------------------|-----------------------------------------|
@@ -105,6 +128,7 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
 | Cmd+Z / Cmd+Shift+Z           | Undo / redo                             |
 | Cmd+F                         | Find and replace                        |
 | Cmd+Shift+B                   | Annotate with Git Blame                 |
+| Cmd+B / Cmd+click             | Go to the definition                    |
 | Shift Shift / Cmd+Shift+F     | Search in files                         |
 | Ctrl Ctrl                     | Quick chat with an agent                |
 | Cmd+S                         | Save now                                |
@@ -395,6 +419,7 @@ Work that is already committed is reviewed in the same view as work in the worki
   | `shepherd ctl review-state` | Which changed lines are reviewed (staged), by file |
   | `shepherd ctl hunks` | The uncommitted changes of every file, in numbered hunks of numbered lines |
   | `shepherd ctl stage <path>[:<pick>,…]…` | Stages only what is picked and unstages the rest; a pick is a hunk `2`, a line `2.3` or lines `2.3-5`, a path alone the whole file |
+  | `shepherd ctl diagnostics [<path>]` | The problems the language servers found, in all files or in one |
   | `shepherd ctl terminals` | The terminals and what their programs are doing |
   | `shepherd ctl terminal <id>` | What a terminal or Agent tab shows |
   | `shepherd ctl open <path>[:<line>[-<line>]]` | Opens a file, selecting the lines |

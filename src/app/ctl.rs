@@ -18,6 +18,7 @@ shepherd ctl: ask the editor what the user sees, or have it show something.
   shepherd ctl stage <path>[:<pick>,<pick>...]...
                                   Stage only what is picked and unstage the rest; a pick is <hunk>,
                                   <hunk>.<line> or <hunk>.<first>-<last>, a path alone is the whole file
+  shepherd ctl diagnostics [<path>] The problems language servers found, in all files or in one
   shepherd ctl terminals            The terminals and what their programs are doing
   shepherd ctl terminal <id>        What a terminal shows
   shepherd ctl open <path>[:<line>[-<line>]]
@@ -56,6 +57,7 @@ impl App {
             (Some("review-state"), None) => Ok(self.review_state()),
             (Some("hunks"), None) => Ok(content.review.hunks_text()),
             (Some("stage"), Some(_)) => self.content.review.stage_only(&args[1..]),
+            (Some("diagnostics"), path) => Ok(content.open_files.diagnostics(path)),
             (Some("terminals"), None) => Ok(self.terminals()),
             (Some("terminal"), Some(id)) => id
                 .parse()
@@ -168,6 +170,15 @@ impl App {
                 "Review comments: {comments}{}",
                 if comments > 0 {
                     " (`shepherd ctl comments` shows them)"
+                } else {
+                    ""
+                }
+            ),
+            format!(
+                "Problems found by language servers: {}{}",
+                self.content.open_files.problem_count(),
+                if self.content.open_files.problem_count() > 0 {
+                    " (`shepherd ctl diagnostics` shows them)"
                 } else {
                     ""
                 }

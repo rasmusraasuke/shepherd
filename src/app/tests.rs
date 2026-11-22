@@ -1397,3 +1397,119 @@ fn saves_the_layout_when_it_changed() {
     let restored = Workspace::load(&harness.state().layout_path);
     assert_eq!(restored.windows[0].tabs().len(), 2);
 }
+
+fn run_until(harness: &mut Harness<'static, App>, done: impl Fn(&Harness<'static, App>) -> bool) {
+    let start = Instant::now();
+    while !done(harness) {
+        assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+        harness.run();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn shows_what_the_language_server_knows_about_the_code() {
+    use serde_json::json;
+
+    let (mut harness, dir) = harness("language-server");
+    let (server, mut peer) = crate::lsp::tests::connect(dir.path());
+    harness
+        .state_mut()
+        .content
+        .open_files
+        .connect_language_server("Rust", server);
+    harness.state_mut().action = Some(Action::Open(Tab::File("src/main.rs".to_string()), 0));
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Starting the Rust language server…")
+            .is_some()
+    );
+    peer.answer_initialize();
+    run_until(&mut harness, |harness| {
+        harness
+            .query_by_label("Starting the Rust language server…")
+            .is_none()
+    });
+    assert_eq!(peer.next()["method"], "initialized");
+    let opened = peer.next();
+    assert_eq!(opened["method"], "textDocument/didOpen");
+    let uri = opened["params"]["textDocument"]["uri"].clone();
+
+    let range = |line: u32, from: u32, to: u32| json!({"start": {"line": line, "character": from}, "end": {"line": line, "character": to}});
+    peer.send(json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
+        "uri": uri, "diagnostics": [{"range": range(0, 0, 12), "severity": 1, "message": "Something is off"}],
+    }}));
+    run_until(&mut harness, |harness| {
+        harness.state().content.open_files.problem_count() == 1
+    });
+    assert_eq!(
+        harness
+            .state_mut()
+            .answer(&["diagnostics".to_string()], &egui::Context::default()),
+        Ok("src/main.rs:1:1: error: Something is off".to_string())
+    );
+
+    let editor = harness.get_by_label("Editor").rect();
+    let digit = harness.ctx.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                "0".into(),
+                egui::FontId::monospace(13.0),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x
+    });
+    let on_main = egui::pos2(editor.left() + digit * 13.0, editor.top() + 8.0);
+    harness.event(egui::Event::PointerMoved(on_main));
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Something is off").is_some());
+    let hover = peer.next();
+    assert_eq!(hover["method"], "textDocument/hover");
+    assert_eq!(hover["params"]["position"]["line"], 0);
+    peer.send(json!({"jsonrpc": "2.0", "id": hover["id"], "result": {"contents": "fn main()"}}));
+    run_until(&mut harness, |harness| {
+        harness.query_by_label("fn main()").is_some()
+    });
+
+    for pressed in [true, false] {
+        harness.event_modifiers(
+            egui::Event::PointerButton {
+                pos: on_main,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::COMMAND,
+            },
+            Modifiers::COMMAND,
+        );
+        harness.run();
+    }
+    let definition = peer.next();
+    assert_eq!(definition["method"], "textDocument/definition");
+    assert_eq!(definition["params"]["position"]["line"], 0);
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
+    let definition = std::iter::repeat_with(|| peer.next())
+        .find(|message| message["method"] != "textDocument/hover")
+        .unwrap();
+    assert_eq!(definition["method"], "textDocument/definition");
+    peer.send(json!({"jsonrpc": "2.0", "id": definition["id"], "result": {
+        "uri": crate::lsp::uri(&dir.path().join("README.md")), "range": range(0, 2, 8),
+    }}));
+    run_until(&mut harness, |harness| {
+        harness
+            .state()
+            .workspace
+            .windows
+            .iter()
+            .flat_map(|window| window.tabs())
+            .any(|tab| *tab == Tab::File("README.md".to_string()))
+    });
+    let selection = harness.state().content.open_files.selection().unwrap();
+    assert_eq!(
+        (selection.path.as_str(), selection.start),
+        ("README.md", Pos::new(0, 2))
+    );
+}

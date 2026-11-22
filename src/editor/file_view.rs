@@ -9,6 +9,9 @@ use crate::editor::Editor;
 use crate::editor::buffer::{Buffer, Pos};
 use crate::editor::highlight::Highlighter;
 use crate::git::{Commit, Hunk, Repo};
+use crate::lsp::install::Installer;
+use crate::lsp::{Event, Lsp};
+use crate::panels::search::Reveal;
 use crate::review::line_diff;
 
 const MAX_SIZE: u64 = 20 * 1024 * 1024;
@@ -22,6 +25,8 @@ pub struct OpenFiles {
     files: HashMap<String, OpenFile>,
     last_active: Option<String>,
     commit_to_open: Option<String>,
+    lsp: Lsp,
+    reveal: Option<Reveal>,
 }
 
 pub struct Selection {
@@ -50,24 +55,90 @@ impl OpenFiles {
         let repo = Repo::open(&root).ok();
         let head = repo.as_ref().map(Repo::head).unwrap_or_default();
         Self {
+            lsp: Lsp::new(root.clone()),
             root,
             repo,
             head,
             files: HashMap::new(),
             last_active: None,
             commit_to_open: None,
+            reveal: None,
+        }
+    }
+
+    pub fn start_language_servers(&mut self, ctx: egui::Context, installer: Installer) {
+        self.lsp.enable(ctx, installer);
+    }
+
+    #[cfg(test)]
+    pub fn connect_language_server(&mut self, language: &'static str, server: crate::lsp::Server) {
+        self.lsp.connect(language, server);
+    }
+
+    pub fn stop_language_servers(&mut self) {
+        self.lsp.shutdown();
+    }
+
+    pub fn diagnostics(&self, path: Option<&str>) -> String {
+        self.lsp.report(path)
+    }
+
+    pub fn problem_count(&self) -> usize {
+        self.lsp.problem_count()
+    }
+
+    pub fn take_reveal(&mut self) -> Option<Reveal> {
+        self.reveal.take()
+    }
+
+    pub fn poll_language_servers(&mut self) {
+        for (path, file) in &self.files {
+            if let Ok(buffer) = &file.buffer {
+                self.lsp.sync(path, buffer);
+            }
+        }
+        for event in self.lsp.poll() {
+            match event {
+                Event::Hover { path, pos, text } => {
+                    if let Some(file) = self.files.get_mut(&path) {
+                        file.editor.set_hover_text(pos, text);
+                    }
+                }
+                Event::Definition { path, start, .. } => {
+                    self.reveal = Some(Reveal {
+                        path,
+                        start,
+                        end: start,
+                        focus: true,
+                    });
+                }
+            }
+        }
+        for (path, file) in &mut self.files {
+            file.editor
+                .set_language_server(self.lsp.has_server(path), self.lsp.diagnostics(path));
+            if let Some(pos) = file.editor.take_hover_request() {
+                self.lsp.hover(path, pos);
+            }
+            if let Some(pos) = file.editor.take_definition_request() {
+                self.lsp.definition(path, pos);
+            }
         }
     }
 
     fn file(&mut self, path: &str) -> &mut OpenFile {
         let root = self.root.clone();
+        let outside = Path::new(path).is_absolute();
         let committed = self
             .repo
             .as_ref()
+            .filter(|_| !outside)
             .map(|repo| repo.content_at("HEAD", path).unwrap_or_default());
-        self.files
-            .entry(path.to_string())
-            .or_insert_with(|| OpenFile::open(root.join(path), committed))
+        self.files.entry(path.to_string()).or_insert_with(|| {
+            let mut file = OpenFile::open(root.join(path), committed);
+            file.editor.set_read_only(outside);
+            file
+        })
     }
 
     pub fn text(
@@ -189,7 +260,7 @@ impl OpenFiles {
 
     pub fn save_edited(&mut self, ctx: &egui::Context) {
         let repo = self.repo.as_ref();
-        for file in self.files.values_mut() {
+        for (path, file) in &mut self.files {
             let Ok(buffer) = &file.buffer else { continue };
             if !buffer.is_dirty() {
                 continue;
@@ -199,21 +270,30 @@ impl OpenFiles {
             }
             match SAVE_DELAY.checked_sub(file.edited.1.elapsed()) {
                 Some(left) => ctx.request_repaint_after(left),
-                None => file.save(repo),
+                None => {
+                    if file.save(repo) {
+                        self.lsp.saved(path);
+                    }
+                }
             }
         }
     }
 
     pub fn save_all(&mut self) {
         let repo = self.repo.as_ref();
-        for file in self.files.values_mut() {
-            file.save(repo);
+        for (path, file) in &mut self.files {
+            if file.save(repo) {
+                self.lsp.saved(path);
+            }
         }
     }
 
     pub fn close(&mut self, path: &str) {
         if let Some(mut file) = self.files.remove(path) {
-            file.save(self.repo.as_ref());
+            if file.save(self.repo.as_ref()) {
+                self.lsp.saved(path);
+            }
+            self.lsp.close(path);
         }
     }
 
@@ -226,8 +306,12 @@ impl OpenFiles {
         {
             self.toggle_blame(path);
         }
+        let status = self.lsp.status(path);
         let file = self.file(path);
         file.update_changes();
+        if let Some(status) = status {
+            ui.weak(status);
+        }
         if let Some(error) = &file.save_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
@@ -316,10 +400,12 @@ impl OpenFile {
         self.changes_for = Some(revision);
     }
 
-    fn save(&mut self, repo: Option<&Repo>) {
-        let Ok(buffer) = &mut self.buffer else { return };
+    fn save(&mut self, repo: Option<&Repo>) -> bool {
+        let Ok(buffer) = &mut self.buffer else {
+            return false;
+        };
         if !buffer.is_dirty() {
-            return;
+            return false;
         }
         self.edited = (buffer.revision(), Instant::now());
         match fs::write(&self.path, buffer.text()) {
@@ -328,8 +414,12 @@ impl OpenFile {
                 self.save_error = None;
                 self.modified = modified(&self.path);
                 self.refresh_blame(repo);
+                true
             }
-            Err(e) => self.save_error = Some(format!("Cannot save file: {e}")),
+            Err(e) => {
+                self.save_error = Some(format!("Cannot save file: {e}"));
+                false
+            }
         }
     }
 
@@ -474,6 +564,20 @@ mod tests {
         assert!(files.blame_on("a.txt"));
         files.toggle_blame("a.txt");
         assert!(!files.blame_on("a.txt"));
+    }
+
+    #[test]
+    fn keeps_files_outside_the_project_unmarked() {
+        let (repo, dir) = crate::git::tests::temp_repo("outside", &[("a.txt", "one\n")]);
+        crate::git::tests::commit_all(&repo);
+        let outside = TempDir::new("outside-file");
+        let path = outside.write("Lib.kt", "class Lib\n");
+        let mut files = OpenFiles::new(dir.path().to_path_buf());
+        let file = files.file(&path.to_string_lossy());
+        file.update_changes();
+        assert!(file.committed.is_none());
+        assert!(file.changes.is_empty());
+        assert_eq!(file.buffer.as_ref().unwrap().text(), "class Lib\n");
     }
 
     #[test]

@@ -24,8 +24,10 @@ around that loop.
 
 ## Where we are
 
-Milestones 1 to 12 are done and FEATURES.md describes what they brought. Next is milestone
-13: comfortable Kotlin editing.
+Milestones 1 to 12 are done and FEATURES.md describes what they brought. Milestone 13 has
+begun: language servers start on their own for the files opened, show their diagnostics and
+hover information, go to definitions, and give their diagnostics to agents through
+`shepherd ctl diagnostics`; the servers are installed on their own when they are missing. What is left of it is below.
 
 ## Milestones
 
@@ -33,12 +35,10 @@ Milestones 1 to 12 are done and FEATURES.md describes what they brought. Next is
 
 The step that lets IntelliJ be closed for good.
 
-- Language server support: completion, go to definition, find usages, hover, diagnostics,
-  rename, formatting, quick fixes, imports
-- Kotlin language server set up automatically for Gradle projects
+- Language server support: completion, find usages, rename, formatting, quick fixes, imports
+- Files changed on disk but not open (for example by an agent) reported to the servers
 - The same intelligence inside the review: go to definition and find usages from a diff line,
   diagnostics shown on changed lines
-- Diagnostics given to agents through `shepherd ctl`
 - Structural editing helpers from the syntax tree: selection by syntax node, outline,
   folding, sensible indentation
 - Other languages come for free where a language server exists

@@ -18,6 +18,7 @@ use crate::control::{self, Control};
 use crate::editor::file_view::OpenFiles;
 use crate::git::watcher::{Snapshot, Watcher};
 use crate::git::{CommitRange, Repo};
+use crate::lsp::install::Installer;
 use crate::panels::file_tree::FileTree;
 use crate::panels::flow::{self, Flow};
 use crate::panels::history::{History, Outcome as HistoryOutcome};
@@ -185,6 +186,18 @@ impl App {
             error: None,
             root: repo.root.clone(),
         };
+        if cfg!(not(test)) {
+            content.open_files.start_language_servers(
+                ctx.clone(),
+                Installer::new(
+                    crate::dirs::config()
+                        .unwrap_or_default()
+                        .join("language-servers"),
+                    path.clone(),
+                    settings.download_language_servers,
+                ),
+            );
+        }
         content.terminals.set_system_fonts(settings.system_fonts);
         content.terminals.set_env("PATH", path.clone());
         if let Some(control) = &control {
@@ -581,8 +594,12 @@ impl App {
             self.content.open_files.reload(&path);
         }
         self.content.open_files.save_edited(&ctx);
+        self.content.open_files.poll_language_servers();
         if let Some(hash) = self.content.open_files.take_commit_to_open() {
             self.action = Some(Action::ShowCommit(hash));
+        }
+        if let Some(reveal) = self.content.open_files.take_reveal() {
+            self.action = Some(Action::Reveal(reveal));
         }
 
         if let Some(action) = self.action.take() {
@@ -624,6 +641,7 @@ impl eframe::App for App {
             std::process::exit(0);
         });
         self.content.open_files.save_all();
+        self.content.open_files.stop_language_servers();
         self.save_layout();
         self.content.terminals.shutdown();
         if let Some(control) = &self.control

@@ -5,10 +5,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::dirs;
 
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub system_fonts: bool,
+    #[serde(default = "yes")]
+    pub download_language_servers: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            system_fonts: false,
+            download_language_servers: true,
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Settings {
@@ -47,12 +62,30 @@ mod tests {
         let path = dir.path().join("settings.json");
         assert!(Settings::load_from(&path).is_none());
 
-        Settings { system_fonts: true }.save_to(&path).unwrap();
+        let settings = Settings {
+            system_fonts: true,
+            ..Settings::default()
+        };
+        settings.save_to(&path).unwrap();
 
         assert!(Settings::load_from(&path).unwrap().system_fonts);
-        assert_eq!(
-            Settings::load_from(&path).unwrap(),
-            Settings { system_fonts: true }
+        assert_eq!(Settings::load_from(&path).unwrap(), settings);
+    }
+
+    #[test]
+    fn downloads_language_servers_unless_told_not_to() {
+        let dir = TempDir::new("settings-download");
+        let path = dir.write("settings.json", "{\"system_fonts\": true}");
+        assert!(
+            Settings::load_from(&path)
+                .unwrap()
+                .download_language_servers
+        );
+        dir.write("settings.json", "{\"download_language_servers\": false}");
+        assert!(
+            !Settings::load_from(&path)
+                .unwrap()
+                .download_language_servers
         );
     }
 
