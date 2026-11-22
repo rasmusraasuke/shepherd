@@ -9,6 +9,7 @@ use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree}
 use tree_sitter_language::LanguageFn;
 
 use crate::editor::buffer::Buffer;
+use crate::ui::icons::FileType;
 
 const MAX_SIZE: usize = 2 * 1024 * 1024;
 
@@ -30,7 +31,7 @@ macro_rules! define {
     };
 }
 
-static DEFINITIONS: [Definition; 14] = [
+static DEFINITIONS: [Definition; 18] = [
     define!(
         &["kt", "kts"],
         tree_sitter_kotlin_ng::LANGUAGE,
@@ -105,6 +106,27 @@ static DEFINITIONS: [Definition; 14] = [
         tree_sitter_css::LANGUAGE,
         tree_sitter_css::HIGHLIGHTS_QUERY
     ),
+    define!(
+        &["dockerfile"],
+        tree_sitter_containerfile::LANGUAGE,
+        tree_sitter_containerfile::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["sql"],
+        tree_sitter_sequel::LANGUAGE,
+        tree_sitter_sequel::HIGHLIGHTS_QUERY
+    ),
+    define!(
+        &["xml", "svg"],
+        tree_sitter_xml::LANGUAGE_XML,
+        tree_sitter_xml::XML_HIGHLIGHT_QUERY
+    ),
+    define!(
+        &["svelte"],
+        tree_sitter_svelte_ng::LANGUAGE,
+        tree_sitter_html::HIGHLIGHTS_QUERY,
+        tree_sitter_svelte_ng::HIGHLIGHTS_QUERY
+    ),
 ];
 
 impl Definition {
@@ -159,10 +181,112 @@ pub fn color(name: &str, dark: bool) -> Option<Color32> {
 
 pub type Spans = Vec<(Range<usize>, &'static str)>;
 
+fn grammar_for(extension: &str) -> Option<&'static Grammar> {
+    DEFINITIONS
+        .iter()
+        .find(|definition| definition.extensions.contains(&extension))
+        .map(Definition::grammar)
+}
+
+struct Injection {
+    grammar: &'static Grammar,
+    tree: Tree,
+}
+
+fn injections(tree: &Tree, text: &str) -> Vec<Injection> {
+    let mut embedded = Vec::new();
+    let mut typescript = false;
+    let mut cursor = tree.walk();
+    let mut visiting = true;
+    while visiting {
+        let node = cursor.node();
+        if matches!(node.kind(), "raw_text" | "svelte_raw_text") {
+            let parent = node.parent();
+            let extension = match parent.map(|parent| parent.kind()) {
+                Some("script_element") => {
+                    let tag = parent.and_then(|parent| parent.child(0));
+                    let tag = tag.map_or("", |tag| &text[tag.byte_range()]);
+                    let script_typescript = ["\"ts\"", "'ts'", "\"typescript\"", "'typescript'"]
+                        .iter()
+                        .any(|lang| tag.contains(&format!("lang={lang}")));
+                    typescript |= script_typescript;
+                    if script_typescript { "ts" } else { "js" }
+                }
+                Some("style_element") => "css",
+                _ => "expression",
+            };
+            embedded.push((node.range(), extension));
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                visiting = false;
+                break;
+            }
+        }
+    }
+    let expression = if typescript { "ts" } else { "js" };
+    let mut parsers: Vec<(&str, Parser)> = Vec::new();
+    embedded
+        .into_iter()
+        .filter_map(|(range, extension)| {
+            let extension = if extension == "expression" {
+                expression
+            } else {
+                extension
+            };
+            let grammar = grammar_for(extension)?;
+            let at = match parsers.iter().position(|(known, _)| *known == extension) {
+                Some(at) => at,
+                None => {
+                    let mut parser = Parser::new();
+                    parser.set_language(&grammar.language).ok()?;
+                    parsers.push((extension, parser));
+                    parsers.len() - 1
+                }
+            };
+            let parser = &mut parsers[at].1;
+            parser.set_included_ranges(&[range]).ok()?;
+            let tree = parser.parse(text, None)?;
+            Some(Injection { grammar, tree })
+        })
+        .collect()
+}
+
+fn paint(
+    grammar: &'static Grammar,
+    tree: &Tree,
+    text: &str,
+    bytes: Range<usize>,
+    byte_names: &mut [Option<&'static str>],
+) {
+    let names = grammar.query.capture_names();
+    let mut painted = HashSet::new();
+    let mut cursor = QueryCursor::new();
+    cursor.set_byte_range(bytes.clone());
+    let mut captures = cursor.captures(&grammar.query, tree.root_node(), text.as_bytes());
+    while let Some((found, index)) = captures.next() {
+        let capture = found.captures()[*index];
+        if !painted.insert(capture.node.id()) {
+            continue;
+        }
+        let range = capture.node.byte_range();
+        let (from, to) = (
+            range.start.clamp(bytes.start, bytes.end),
+            range.end.clamp(bytes.start, bytes.end),
+        );
+        byte_names[from - bytes.start..to - bytes.start].fill(Some(names[capture.index as usize]));
+    }
+}
+
 pub struct Highlighter {
     grammar: &'static Grammar,
     parser: Parser,
     tree: Option<Tree>,
+    embeds: bool,
+    injections: Vec<Injection>,
     text: String,
     line_starts: Vec<usize>,
     found: Option<(Range<usize>, Vec<Spans>)>,
@@ -170,17 +294,15 @@ pub struct Highlighter {
 
 impl Highlighter {
     pub fn for_path(path: &Path) -> Option<Self> {
-        let extension = path.extension()?.to_str()?;
-        let definition = DEFINITIONS
-            .iter()
-            .find(|definition| definition.extensions.contains(&extension))?;
-        let grammar = definition.grammar();
+        let grammar = grammar_for(&FileType::extension(path.to_str()?))?;
         let mut parser = Parser::new();
         parser.set_language(&grammar.language).ok()?;
         Some(Self {
             grammar,
             parser,
             tree: None,
+            embeds: grammar.language.id_for_node_kind("script_element", true) != 0,
+            injections: Vec::new(),
             text: String::new(),
             line_starts: Vec::new(),
             found: None,
@@ -209,6 +331,10 @@ impl Highlighter {
             None
         } else {
             self.parser.parse(&self.text, self.tree.as_ref())
+        };
+        self.injections = match &self.tree {
+            Some(tree) if self.embeds => injections(tree, &self.text),
+            _ => Vec::new(),
         };
         self.found = None;
     }
@@ -248,21 +374,19 @@ impl Highlighter {
             .unwrap_or(self.text.len());
         let end = lines.end.checked_sub(1).map_or(start, line_end).max(start);
 
-        let names = self.grammar.query.capture_names();
         let mut byte_names: Vec<Option<&'static str>> = vec![None; end - start];
-        let mut painted = HashSet::new();
-        let mut cursor = QueryCursor::new();
-        cursor.set_byte_range(start..end);
-        let mut captures =
-            cursor.captures(&self.grammar.query, tree.root_node(), self.text.as_bytes());
-        while let Some((found, index)) = captures.next() {
-            let capture = found.captures()[*index];
-            if !painted.insert(capture.node.id()) {
-                continue;
+        paint(self.grammar, tree, &self.text, start..end, &mut byte_names);
+        for injection in &self.injections {
+            let range = injection.tree.root_node().byte_range();
+            if range.start < end && start < range.end {
+                paint(
+                    injection.grammar,
+                    &injection.tree,
+                    &self.text,
+                    start..end,
+                    &mut byte_names,
+                );
             }
-            let range = capture.node.byte_range();
-            let (from, to) = (range.start.clamp(start, end), range.end.clamp(start, end));
-            byte_names[from - start..to - start].fill(Some(names[capture.index as usize]));
         }
 
         lines
@@ -414,6 +538,59 @@ mod tests {
         assert!(names(&mut highlighter, &lines, 0).contains(&("const".to_string(), "keyword")));
         assert!(Highlighter::for_path(Path::new("notes.txt")).is_none());
         assert!(Highlighter::for_path(Path::new("Makefile")).is_none());
+    }
+
+    #[test]
+    fn highlights_docker_sql_xml_and_svelte_files() {
+        for (path, text, expected) in [
+            (
+                "Dockerfile",
+                "FROM rust:1 AS build # base",
+                ("FROM", "keyword"),
+            ),
+            (
+                "docker/Dockerfile.dev",
+                "RUN cargo build",
+                ("RUN", "keyword"),
+            ),
+            (
+                "db/init.sql",
+                "SELECT id FROM users;",
+                ("SELECT", "keyword"),
+            ),
+            ("logo.svg", "<svg width=\"1\"/>", ("svg", "tag")),
+            (
+                "App.svelte",
+                "{#if ok}<p>hi</p>{/if}",
+                ("if", "keyword.conditional"),
+            ),
+        ] {
+            let (mut highlighter, lines) = highlighted(path, text);
+            let found = names(&mut highlighter, &lines, 0);
+            assert!(
+                found.contains(&(expected.0.to_string(), expected.1)),
+                "{path}: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn highlights_the_code_inside_svelte_and_html_files() {
+        let text = "<script lang=\"ts\">\n  let count: number = 1\n</script>\n<p>{count.toFixed(2)}</p>\n<style>\n  p { color: red; }\n</style>";
+        let (mut highlighter, lines) = highlighted("App.svelte", text);
+        let found = |highlighter: &mut Highlighter, line| names(highlighter, &lines, line);
+        assert!(found(&mut highlighter, 1).contains(&("let".to_string(), "keyword")));
+        assert!(found(&mut highlighter, 1).contains(&("number".to_string(), "type.builtin")));
+        assert!(found(&mut highlighter, 3).contains(&("p".to_string(), "tag")));
+        assert!(found(&mut highlighter, 3).contains(&("2".to_string(), "number")));
+        assert!(found(&mut highlighter, 5).contains(&("color".to_string(), "property")));
+
+        let (mut highlighter, lines) = highlighted(
+            "index.html",
+            "<script>\nconst a = 1\n</script>\n<style>\np { color: red; }\n</style>",
+        );
+        assert!(names(&mut highlighter, &lines, 1).contains(&("const".to_string(), "keyword")));
+        assert!(names(&mut highlighter, &lines, 4).contains(&("color".to_string(), "property")));
     }
 
     #[test]

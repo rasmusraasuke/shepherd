@@ -30,6 +30,7 @@ use crate::panels::search::{ProjectSearch, Reveal};
 use crate::review::{self, Review};
 use crate::settings::Settings;
 use crate::terminal::{Prompt, Terminals};
+use crate::ui::icons::FileType;
 use crate::ui::theme;
 use crate::update;
 
@@ -84,6 +85,7 @@ struct Content {
     terminals: Terminals,
     flow: Flow,
     error: Option<String>,
+    opened_outside: Vec<PathBuf>,
 }
 
 enum Action {
@@ -131,6 +133,25 @@ impl Content {
     fn run(&mut self, op: flow::Op, ctx: &egui::Context) {
         self.open_files.save_all();
         self.flow.run(op, ctx);
+    }
+
+    fn open_outside(&mut self, path: &str) {
+        let path = self.root.join(path);
+        if cfg!(test) {
+            self.opened_outside.push(path);
+            return;
+        }
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        match std::process::Command::new(opener).arg(&path).spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(e) => self.error = Some(format!("Cannot open {}: {e}", path.display())),
+        }
     }
 
     fn commit_review(&mut self, range: &CommitRange, label: &str) -> &mut Review {
@@ -184,6 +205,7 @@ impl App {
             terminals: Terminals::new(repo.root.clone()),
             flow: Flow::new(repo.clone()),
             error: None,
+            opened_outside: Vec::new(),
             root: repo.root.clone(),
         };
         if cfg!(not(test)) {
@@ -323,6 +345,11 @@ impl App {
     }
     fn perform(&mut self, action: Action, ctx: &egui::Context) {
         match action {
+            Action::Open(Tab::File(path), _) | Action::Reveal(Reveal { path, .. })
+                if FileType::of(&path).opens_outside() =>
+            {
+                self.content.open_outside(&path)
+            }
             Action::Open(tab, window) => {
                 if let Tab::File(path) = &tab {
                     self.content.open_files.focus(path);

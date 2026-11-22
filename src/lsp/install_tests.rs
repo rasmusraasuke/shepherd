@@ -289,6 +289,36 @@ fn installs_node_servers_with_npm() {
 }
 
 #[test]
+fn installs_typescript_servers_with_a_typescript_they_can_use() {
+    let dir = TempDir::new("install-npm-typescript");
+    let installer = installer(&dir);
+    script(&dir, "bin/node", "echo v22.1.0");
+    script(&dir, "bin/npm", FAKE_NPM);
+    let servers = dir.path().join("servers");
+    for (name, server) in [
+        ("TypeScript", "typescript-language-server"),
+        ("Svelte", "svelte-language-server"),
+    ] {
+        let installed = servers.join(name.to_lowercase());
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(
+            installed.join("installed.json"),
+            json!({"version": "1.5.0", "command": [dir.path().join("bin/node")], "checked": 0})
+                .to_string(),
+        )
+        .unwrap();
+        installer.find(language(name), &progress()).unwrap();
+        let args = fs::read_to_string(installed.join("npm-args")).unwrap();
+        assert!(
+            args.ends_with(&format!(" {server}@latest typescript@6\n")),
+            "{args}"
+        );
+        let installed = fs::read_to_string(installed.join("installed.json")).unwrap();
+        assert!(installed.contains("\"1.5.0 typescript@6\""), "{installed}");
+    }
+}
+
+#[test]
 fn downloads_node_when_there_is_none_new_enough() {
     let dir = TempDir::new("install-node");
     let installer = installer(&dir);

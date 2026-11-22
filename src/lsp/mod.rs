@@ -69,8 +69,19 @@ pub const LANGUAGES: &[Language] = &[
         args: &["--stdio"],
         check: &["--version"],
         method: Method::Npm {
-            packages: &["typescript-language-server", "typescript"],
+            packages: &["typescript-language-server", "typescript@6"],
             entry: "node_modules/typescript-language-server/lib/cli.mjs",
+        },
+    },
+    Language {
+        name: "Svelte",
+        files: &[("svelte", "svelte")],
+        program: "svelteserver",
+        args: &["--stdio"],
+        check: &[],
+        method: Method::Npm {
+            packages: &["svelte-language-server", "typescript@6"],
+            entry: "node_modules/svelte-language-server/bin/server.js",
         },
     },
     Language {

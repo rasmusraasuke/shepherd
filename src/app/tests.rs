@@ -1515,3 +1515,24 @@ fn shows_what_the_language_server_knows_about_the_code() {
         ("README.md", Pos::new(0, 2))
     );
 }
+
+#[test]
+fn opens_pdf_files_in_another_app() {
+    let (mut harness, _dir) = harness("pdf");
+    let root = harness.state().content.root.clone();
+    let tabs = open_tabs(&harness);
+    harness.state_mut().action = Some(Action::Open(file("docs/Manual.pdf"), 0));
+    harness.run();
+    harness.state_mut().action = Some(Action::Reveal(Reveal {
+        path: "guide.PDF".to_string(),
+        start: Pos::default(),
+        end: Pos::default(),
+        focus: true,
+    }));
+    harness.run();
+    assert_eq!(
+        harness.state().content.opened_outside,
+        [root.join("docs/Manual.pdf"), root.join("guide.PDF")]
+    );
+    assert_eq!(open_tabs(&harness), tabs);
+}

@@ -314,18 +314,25 @@ impl Installer {
                 .env("PATH", &path_env)
                 .current_dir(dir))
         };
-        let version = npm(&["view", packages[0], "version"])?.trim().to_string();
+        let latest = npm(&["view", packages[0], "version"])?.trim().to_string();
+        let version = std::iter::once(latest.as_str())
+            .chain(packages[1..].iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ");
         if current == Some(version.as_str()) {
             return Ok(None);
         }
         progress.say(format!(
-            "Installing the {} language server {version} with npm…",
+            "Installing the {} language server {latest} with npm…",
             language.name
         ));
         let prefix = dir.to_string_lossy().into_owned();
         let latest: Vec<String> = packages
             .iter()
-            .map(|name| format!("{name}@latest"))
+            .map(|name| match name[1..].contains('@') {
+                true => name.to_string(),
+                false => format!("{name}@latest"),
+            })
             .collect();
         let mut args = vec![
             "install",

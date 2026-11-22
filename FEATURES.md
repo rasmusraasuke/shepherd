@@ -24,10 +24,12 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   keys in one place. Esc or a click outside closes it.
 - **Icons in the trees.** Folders show as folders, open or closed, and files by their type,
   in its own color: Kotlin, Java, Rust, JavaScript, TypeScript, Python, Go, JSON, YAML, TOML,
-  Markdown, HTML, XML, CSS and shell scripts. Any other file, plain text included, shows a
-  page with lines. The names of new files are green and of changed files blue, in *Files*
+  Markdown, HTML, XML, CSS, shell scripts, Dockerfiles and `.dockerignore`, SQL, git files
+  such as `.gitignore` and `.gitkeep`, SVG, Svelte and PDF. Any other file, plain text
+  included, shows a page with lines. The names of new files are green and of changed files blue, in *Files*
   as under *Changes*.
-- **Files.** Click a file in the tree to open it as a tab. A file that is already open is
+- **Files.** Click a file in the tree to open it as a tab. A PDF opens in the app the system
+  uses for PDFs instead. A file that is already open is
   brought to the front instead, in whichever window it is.
 - **Quick open.** Cmd+P (Ctrl+P outside macOS) finds a file by name: type a few characters,
   pick with the arrow keys, open with Enter. The file opens in the window the popup is in.
@@ -93,17 +95,21 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   the search, Esc or a click outside only closes it. Results follow
   changes on disk; binary and very large files are left out, and up to 2000 places are shown.
 - **Syntax highlighting.** Kotlin, Java, Rust, JavaScript, TypeScript, Python, Go, JSON,
-  shell scripts, TOML, YAML, HTML and CSS are highlighted, in colors close to IntelliJ's.
-  Only what changed is parsed again while typing; files over 2 MB are left plain.
+  shell scripts, TOML, YAML, HTML, CSS, XML and SVG, SQL, Svelte and Dockerfiles (also
+  `Dockerfile.dev`, `app.dockerfile` and `Containerfile`) are highlighted, in colors close to
+  IntelliJ's. The code inside HTML and Svelte files is highlighted in its own language:
+  `<script>` as JavaScript, or TypeScript with `lang="ts"`, `<style>` as CSS, and Svelte's
+  `{…}` expressions like the script of the file. Only what changed is parsed again while typing; files over 2 MB are left plain.
 - **Language servers.** Opening a file of a language with a language server starts the
   server in the project directory: `kotlin-lsp` for Kotlin, which imports Gradle projects by
   itself, `jdtls` for Java, `rust-analyzer` for Rust, `typescript-language-server` for
-  TypeScript and JavaScript, `pyright-langserver` for Python and `gopls` for Go. A server on
+  TypeScript and JavaScript, `svelteserver` for Svelte, `pyright-langserver` for Python and
+  `gopls` for Go. A server on
   the PATH is used when it runs; a rustup placeholder without its component does not.
   Otherwise Shepherd installs the server itself, without asking, into
   `~/Library/Application Support/Shepherd/language-servers`: JetBrains' Kotlin server with
-  its own Java, the rust-analyzer release from GitHub, the TypeScript and Python servers with
-  npm, using Node from the PATH or, when it is missing or older than 20, its own copy of the
+  its own Java, the rust-analyzer release from GitHub, the TypeScript, Svelte and Python servers
+  with npm, with TypeScript 6 because TypeScript 7 has no `tsserver` for them, using Node from the PATH or, when it is missing or older than 20, its own copy of the
   latest Node LTS, and gopls with `go install` when Go is there. Downloads are checked
   against the SHA-256 sums the sources publish. An installed server is checked for a newer
   version at most once a day, and is kept when there is no network. Java's `jdtls` has to be

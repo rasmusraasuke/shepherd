@@ -387,10 +387,10 @@ fn status_ui(ui: &egui::Ui, view: egui::Rect, status: &str) {
     painter.galley(rect.min + margin, galley, ui.visuals().weak_text_color());
     ui.interact(
         rect,
-        ui.id().with("language-server-status"),
+        ui.scope_id().with("language-server-status"),
         egui::Sense::hover(),
     )
-    .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, status));
+    .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, status));
 }
 
 impl OpenFile {

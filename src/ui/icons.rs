@@ -28,17 +28,28 @@ pub enum FileType {
     Xml,
     Css,
     Shell,
+    Docker,
+    Sql,
+    Git,
+    Svg,
+    Svelte,
+    Pdf,
     Text,
 }
 
 impl FileType {
+    pub fn extension(path: &str) -> String {
+        let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+        if name.starts_with("dockerfile") || name.starts_with("containerfile") {
+            return "dockerfile".to_string();
+        }
+        name.rsplit_once('.')
+            .map(|(_, extension)| extension.to_string())
+            .unwrap_or_default()
+    }
+
     pub fn of(path: &str) -> Self {
-        let name = path.rsplit('/').next().unwrap_or(path);
-        let extension = name
-            .rsplit_once('.')
-            .map(|(_, extension)| extension.to_ascii_lowercase())
-            .unwrap_or_default();
-        match extension.as_str() {
+        match Self::extension(path).as_str() {
             "kt" | "kts" => Self::Kotlin,
             "java" => Self::Java,
             "rs" => Self::Rust,
@@ -54,8 +65,18 @@ impl FileType {
             "xml" => Self::Xml,
             "css" | "scss" | "sass" | "less" => Self::Css,
             "sh" | "bash" | "zsh" | "fish" => Self::Shell,
+            "dockerfile" | "dockerignore" => Self::Docker,
+            "sql" => Self::Sql,
+            "gitignore" | "gitkeep" | "gitattributes" | "gitmodules" => Self::Git,
+            "svg" => Self::Svg,
+            "svelte" => Self::Svelte,
+            "pdf" => Self::Pdf,
             _ => Self::Text,
         }
+    }
+
+    pub fn opens_outside(self) -> bool {
+        self == Self::Pdf
     }
 
     fn color(self) -> Option<Color32> {
@@ -76,6 +97,12 @@ impl FileType {
             Self::Xml => rgb(230, 140, 40),
             Self::Css => rgb(86, 156, 214),
             Self::Shell => rgb(100, 180, 90),
+            Self::Docker => rgb(29, 99, 237),
+            Self::Sql => rgb(0, 150, 170),
+            Self::Git => rgb(240, 80, 50),
+            Self::Svg => rgb(84, 138, 247),
+            Self::Svelte => rgb(255, 62, 0),
+            Self::Pdf => rgb(220, 50, 50),
             Self::Text => return None,
         })
     }
@@ -126,7 +153,7 @@ pub fn paint(painter: &Painter, center: Pos2, size: f32, icon: Icon, color: Colo
     };
     let badge = |label: &str, foreground: Color32| {
         block((2.0, 2.0), (16.0, 16.0), color);
-        let font = FontId::proportional(7.5 * scale);
+        let font = FontId::proportional((15.0 / label.len() as f32).min(7.5) * scale);
         text(
             (15.0, 16.2),
             egui::Align2::RIGHT_BOTTOM,
@@ -303,6 +330,58 @@ pub fn paint(painter: &Painter, center: Pos2, size: f32, icon: Icon, color: Colo
                 line(&[(4.5, 7.0), (7.0, 9.0), (4.5, 11.0)]);
                 line(&[(8.5, 11.5), (12.5, 11.5)]);
             }
+            FileType::Docker => {
+                for (x, y) in [(3.0, 8.0), (6.5, 8.0), (10.0, 8.0), (6.5, 4.5), (10.0, 4.5)] {
+                    block((x, y), (x + 2.8, y + 2.8), color);
+                }
+                line(&[
+                    (1.5, 12.0),
+                    (16.5, 12.0),
+                    (14.5, 15.5),
+                    (4.0, 15.5),
+                    (1.5, 12.0),
+                ]);
+            }
+            FileType::Sql => {
+                let ellipse = |y: f32, from: f32, to: f32| {
+                    let points: Vec<(f32, f32)> = (0..=16)
+                        .map(|step| {
+                            let angle = from + (to - from) * step as f32 / 16.0;
+                            (9.0 + 6.5 * angle.cos(), y + 2.5 * angle.sin())
+                        })
+                        .collect();
+                    line(&points);
+                };
+                let pi = std::f32::consts::PI;
+                ellipse(4.0, 0.0, 2.0 * pi);
+                ellipse(9.0, 0.0, pi);
+                ellipse(14.0, 0.0, pi);
+                line(&[(2.5, 4.0), (2.5, 14.0)]);
+                line(&[(15.5, 4.0), (15.5, 14.0)]);
+            }
+            FileType::Git => {
+                line(&[(9.0, 1.5), (16.5, 9.0), (9.0, 16.5), (1.5, 9.0), (9.0, 1.5)]);
+                for (x, y) in [(7.0, 5.5), (7.0, 12.5), (11.5, 9.5)] {
+                    painter.circle_filled(at(x, y), 1.3 * scale, color);
+                }
+                line(&[(7.0, 5.5), (7.0, 12.5)]);
+                line(&[(7.0, 5.5), (11.5, 9.5)]);
+            }
+            FileType::Svg => {
+                painter.rect_stroke(
+                    Rect::from_min_max(at(2.0, 2.0), at(16.0, 16.0)),
+                    3.0 * scale,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+                painter.circle_stroke(at(6.8, 6.8), 1.8 * scale, stroke);
+                line(&[(2.0, 14.0), (9.5, 8.5), (16.0, 13.5)]);
+            }
+            FileType::Svelte => {
+                let font = FontId::proportional(15.0 * scale);
+                text((9.0, 9.0), egui::Align2::CENTER_CENTER, "S", font, color);
+            }
+            FileType::Pdf => badge("PDF", Color32::WHITE),
             FileType::Text => {
                 page();
                 for y in [8.0, 10.75, 13.5] {
@@ -326,7 +405,19 @@ mod tests {
         assert_eq!(FileType::of("package.json"), FileType::Json);
         assert_eq!(FileType::of("notes.txt"), FileType::Text);
         assert_eq!(FileType::of("LICENSE"), FileType::Text);
-        assert_eq!(FileType::of(".gitignore"), FileType::Text);
+        assert_eq!(FileType::of(".gitignore"), FileType::Git);
+        assert_eq!(FileType::of("logs/.gitkeep"), FileType::Git);
+        assert_eq!(FileType::of("Dockerfile"), FileType::Docker);
+        assert_eq!(FileType::of("docker/Dockerfile.dev"), FileType::Docker);
+        assert_eq!(FileType::of("app.dockerfile"), FileType::Docker);
+        assert_eq!(FileType::of("Containerfile"), FileType::Docker);
+        assert_eq!(FileType::of(".dockerignore"), FileType::Docker);
+        assert_eq!(FileType::of("db/V1__init.sql"), FileType::Sql);
+        assert_eq!(FileType::of("logo.svg"), FileType::Svg);
+        assert_eq!(FileType::of("src/App.svelte"), FileType::Svelte);
+        assert_eq!(FileType::of("docs/Manual.PDF"), FileType::Pdf);
+        assert!(FileType::Pdf.opens_outside());
+        assert!(!FileType::Svg.opens_outside());
         assert_eq!(FileType::of("archive.tar.gz"), FileType::Text);
     }
 }

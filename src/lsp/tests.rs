@@ -106,6 +106,10 @@ fn knows_the_language_of_a_file() {
         language_of("web/App.tsx").map(|(l, id)| (l.name, id)),
         Some(("TypeScript", "typescriptreact"))
     );
+    assert_eq!(
+        language_of("src/routes/+page.svelte").map(|(l, id)| (l.name, id)),
+        Some(("Svelte", "svelte"))
+    );
     assert!(language_of("README.md").is_none());
     assert!(language_of("Makefile").is_none());
 }
