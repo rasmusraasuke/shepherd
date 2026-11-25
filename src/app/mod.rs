@@ -13,7 +13,7 @@ use eframe::egui::{self, Key, Modifiers, ViewportBuilder, ViewportCommand, Viewp
 use egui_tiles::TileId;
 
 use crate::agents::{self, Agent, Model, Tuning};
-use crate::app::workspace::{Sidebar, Tab, Workspace};
+use crate::app::workspace::{Closing, Sidebar, Tab, Workspace};
 use crate::control::{self, Control};
 use crate::editor::file_view::OpenFiles;
 use crate::git::watcher::{Snapshot, Watcher};
@@ -127,9 +127,22 @@ enum Action {
     },
     Drop(Drag),
     CloseWindow(usize),
+    CloseTabs {
+        window: usize,
+        tile: TileId,
+        closing: Closing,
+    },
 }
 
 impl Content {
+    fn close(&mut self, tab: &Tab) {
+        match tab {
+            Tab::File(path) => self.open_files.close(path),
+            Tab::Terminal(id) | Tab::Agent { id, .. } => self.terminals.close(*id),
+            _ => {}
+        }
+    }
+
     fn run(&mut self, op: flow::Op, ctx: &egui::Context) {
         self.open_files.save_all();
         self.flow.run(op, ctx);
@@ -486,6 +499,15 @@ impl App {
                 self.focus(window, ctx);
             }
             Action::CloseWindow(index) => self.workspace.close_window(index),
+            Action::CloseTabs {
+                window,
+                tile,
+                closing,
+            } => {
+                for tab in self.workspace.close_tabs(window, tile, closing) {
+                    self.content.close(&tab);
+                }
+            }
         }
     }
     fn save_layout(&mut self) {

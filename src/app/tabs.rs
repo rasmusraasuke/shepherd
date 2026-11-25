@@ -2,7 +2,7 @@ use eframe::egui;
 use eframe::egui::containers::menu::MenuButton;
 use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 
-use super::workspace::Tab;
+use super::workspace::{Closing, Tab};
 use super::{Action, Content};
 use crate::agents::Agent;
 use crate::editor::buffer::Pos;
@@ -220,12 +220,8 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
     }
 
     fn on_tab_close(&mut self, tiles: &mut Tiles<Tab>, tile_id: TileId) -> bool {
-        match tiles.get_pane(&tile_id) {
-            Some(Tab::File(path)) => self.content.open_files.close(path),
-            Some(Tab::Terminal(id)) | Some(Tab::Agent { id, .. }) => {
-                self.content.terminals.close(*id)
-            }
-            _ => {}
+        if let Some(tab) = tiles.get_pane(&tile_id) {
+            self.content.close(tab);
         }
         true
     }
@@ -278,6 +274,26 @@ impl egui_tiles::Behavior<Tab> for TabBehavior<'_> {
                     format!("Move to window {}", to + 1)
                 };
                 move_to(ui, label, Some(to));
+            }
+            ui.separator();
+            let closings = [
+                ("Close others", Closing::Others),
+                (
+                    "Close others, keep agents and terminals",
+                    Closing::OthersButTerminals,
+                ),
+                ("Close all files", Closing::Files),
+                ("Close all", Closing::All),
+            ];
+            for (label, closing) in closings {
+                if ui.button(label).clicked() {
+                    *self.action = Some(Action::CloseTabs {
+                        window: self.window,
+                        tile: tile_id,
+                        closing,
+                    });
+                    ui.close();
+                }
             }
         });
         match tab.path() {

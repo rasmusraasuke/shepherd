@@ -69,6 +69,26 @@ impl Tab {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Closing {
+    All,
+    Files,
+    Others,
+    OthersButTerminals,
+}
+
+impl Closing {
+    fn closes(self, tab: &Tab, clicked: bool) -> bool {
+        let terminal = matches!(tab, Tab::Terminal(_) | Tab::Agent { .. });
+        match self {
+            Closing::All => true,
+            Closing::Files => matches!(tab, Tab::File(_)),
+            Closing::Others => !clicked,
+            Closing::OthersButTerminals => !clicked && !terminal,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub enum Sidebar {
     #[default]
@@ -260,6 +280,32 @@ impl Window {
             }
         }
         self.focused = Some(tile);
+    }
+
+    fn close(&mut self, tile: TileId, closing: Closing) -> Vec<Tab> {
+        let tiles = &self.tree.tiles;
+        let Some(Container::Tabs(tabs)) = tiles
+            .parent_of(tile)
+            .and_then(|parent| tiles.get_container(parent))
+        else {
+            return Vec::new();
+        };
+        let closed: Vec<TileId> = tabs
+            .children
+            .iter()
+            .copied()
+            .filter(|&child| {
+                matches!(tiles.get(child), Some(Tile::Pane(tab)) if closing.closes(tab, child == tile))
+            })
+            .collect();
+        let closed = closed
+            .into_iter()
+            .filter_map(|child| self.remove(child))
+            .collect();
+        if self.tree.make_active(|id, _| id == tile) {
+            self.focused = Some(tile);
+        }
+        closed
     }
 
     fn remove(&mut self, tile: TileId) -> Option<Tab> {
@@ -458,6 +504,10 @@ impl Workspace {
                 self.new_window(tab);
             }
         }
+    }
+
+    pub fn close_tabs(&mut self, window: usize, tile: TileId, closing: Closing) -> Vec<Tab> {
+        self.windows[window].close(tile, closing)
     }
 
     fn new_window(&mut self, tab: Tab) -> &mut Window {
@@ -929,5 +979,59 @@ mod tests {
             tabs(&workspace.windows[0]),
             ["Review: a.rs · 1234567", "Review: a.rs · abcdef1"]
         );
+    }
+
+    fn closing(closing: Closing, clicked: &Tab) -> (Vec<String>, Vec<String>) {
+        let mut workspace = Workspace::default();
+        for tab in [file("src/a.rs"), file("src/b.rs"), Tab::Terminal(1)] {
+            workspace.open(tab, 0);
+        }
+        workspace.open_agent(0, None, Agent::Claude, String::new(), Tuning::default());
+        let window = &mut workspace.windows[0];
+        let tabs_tile = window
+            .tree
+            .tiles
+            .parent_of(tile_of(window, &file("src/a.rs")));
+        let target = DropTarget {
+            tabs: tabs_tile.unwrap(),
+            side: Some(Side::Right),
+            rect: egui::Rect::ZERO,
+        };
+        window.add_at(target, file("src/beside.rs"));
+        let tile = tile_of(window, clicked);
+        let closed = workspace.close_tabs(0, tile, closing);
+        (
+            tabs(&workspace.windows[0]),
+            closed.iter().map(Tab::title).collect(),
+        )
+    }
+
+    #[test]
+    fn closes_tabs_of_the_clicked_group_from_its_tab_menu() {
+        let (left, closed) = closing(Closing::All, &file("src/a.rs"));
+        assert_eq!(left, ["beside.rs"]);
+        assert_eq!(closed.len(), 5);
+
+        let (left, _) = closing(Closing::Files, &Tab::Terminal(1));
+        assert_eq!(left, ["Claude Code", "Review", "Terminal", "beside.rs"]);
+
+        let (left, _) = closing(Closing::Others, &file("src/b.rs"));
+        assert_eq!(left, ["b.rs", "beside.rs"]);
+
+        let (left, closed) = closing(Closing::OthersButTerminals, &file("src/b.rs"));
+        assert_eq!(left, ["Claude Code", "Terminal", "b.rs", "beside.rs"]);
+        assert_eq!(closed, ["Review", "a.rs"]);
+    }
+
+    #[test]
+    fn keeps_the_clicked_tab_active_after_closing_the_others() {
+        let mut workspace = Workspace::default();
+        workspace.open(file("src/a.rs"), 0);
+        workspace.open(file("src/b.rs"), 0);
+        workspace.open(Tab::Terminal(1), 0);
+        let tile = tile_of(&workspace.windows[0], &file("src/a.rs"));
+        workspace.close_tabs(0, tile, Closing::OthersButTerminals);
+        assert!(is_active(&workspace.windows[0], &file("src/a.rs")));
+        assert_eq!(workspace.windows[0].focused, Some(tile));
     }
 }

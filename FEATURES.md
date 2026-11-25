@@ -9,6 +9,9 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
 - **Splits.** Drag a tab to the edge of another tab to place them side by side or below
   each other. Drag it onto another tab bar to move it there. Drag the line between splits
   to resize them. Ctrl+Tab cycles through the tabs under the pointer.
+- **Closing many tabs.** The menu behind a right-click on a tab closes several tabs of its
+  group at once: *Close others*, *Close others, keep agents and terminals*, *Close all
+  files* and *Close all*. Closed agents and terminals stop, closed files are saved.
 - **Windows.** Drag a tab out of its window to pop it out into a new window where it is
   dropped, or drop it on another window: on the middle or the titles of a group of tabs to
   join it, towards a side of the group to make a split there. The place it is going to

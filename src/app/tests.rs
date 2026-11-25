@@ -1588,3 +1588,35 @@ fn shows_what_images_look_like() {
             .is_some()
     });
 }
+
+#[test]
+fn closes_other_tabs_from_the_tab_menu_and_stops_their_terminals() {
+    let (mut harness, _dir) = harness("close-others");
+    harness.state_mut().content.terminals.run("/bin/cat", &[]);
+    harness.state_mut().action = Some(Action::Open(file("README.md"), 0));
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::T);
+    harness.run();
+    harness.state_mut().action = Some(Action::Open(file("src/main.rs"), 0));
+    harness.run();
+    assert!(harness.state().content.terminals.is_open(1));
+
+    harness.get_by_label("main.rs").click_secondary();
+    harness.run();
+    harness
+        .get_by_label("Close others, keep agents and terminals")
+        .click();
+    harness.run();
+    assert_eq!(
+        open_tabs(&harness),
+        [vec![Tab::Terminal(1), file("src/main.rs")]]
+    );
+    assert!(harness.state().content.terminals.is_open(1));
+
+    harness.get_by_label("main.rs").click_secondary();
+    harness.run();
+    harness.get_by_label("Close others").click();
+    harness.run();
+    assert_eq!(open_tabs(&harness), [vec![file("src/main.rs")]]);
+    assert!(!harness.state().content.terminals.is_open(1));
+}
