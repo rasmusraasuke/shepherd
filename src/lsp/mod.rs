@@ -169,6 +169,7 @@ pub enum Event {
 enum Request {
     Hover { path: String, pos: Pos },
     Definition,
+    Content { uri: String, range: Value },
 }
 
 struct Running {
@@ -199,6 +200,7 @@ impl Slot {
 }
 
 struct Document {
+    uri: String,
     language: &'static str,
     version: i64,
     revision: u64,
@@ -208,6 +210,7 @@ struct Document {
 pub struct Lsp {
     root: PathBuf,
     canonical_root: PathBuf,
+    sources: PathBuf,
     start: Option<(egui::Context, Installer)>,
     servers: HashMap<&'static str, Slot>,
     documents: HashMap<String, Document>,
@@ -219,6 +222,9 @@ impl Lsp {
         Self {
             canonical_root: root.canonicalize().unwrap_or_else(|_| root.clone()),
             root,
+            sources: crate::dirs::cache()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("sources"),
             start: None,
             servers: HashMap::new(),
             documents: HashMap::new(),
@@ -265,6 +271,9 @@ impl Lsp {
         let Some((language, id)) = language_of(path) else {
             return;
         };
+        if Path::new(path).starts_with(&self.sources) {
+            return;
+        }
         if self
             .documents
             .get(path)
@@ -308,6 +317,7 @@ impl Lsp {
                 self.documents.insert(
                     path.to_string(),
                     Document {
+                        uri,
                         language: language.name,
                         version: 1,
                         revision: buffer.revision(),
@@ -319,32 +329,31 @@ impl Lsp {
     }
 
     pub fn saved(&mut self, path: &str) {
-        let uri = uri(&self.root.join(path));
-        if let Some((running, _)) = self.running(path) {
-            running.server.notify(
-                "textDocument/didSave",
-                json!({"textDocument": {"uri": uri}}),
-            );
-        }
+        self.tell(path, "textDocument/didSave");
     }
 
     pub fn close(&mut self, path: &str) {
-        let uri = uri(&self.root.join(path));
-        if let Some((running, _)) = self.running(path) {
-            running.server.notify(
-                "textDocument/didClose",
-                json!({"textDocument": {"uri": uri}}),
-            );
-        }
+        self.tell(path, "textDocument/didClose");
         self.documents.remove(path);
     }
 
+    fn tell(&mut self, path: &str, method: &str) {
+        if let Some((running, document)) = self.running(path)
+            && document.uri.starts_with("file://")
+        {
+            let uri = document.uri.clone();
+            running
+                .server
+                .notify(method, json!({"textDocument": {"uri": uri}}));
+        }
+    }
+
     fn ask(&mut self, path: &str, pos: Pos, method: &str, request: Request) {
-        let uri = uri(&self.root.join(path));
         let Some((running, document)) = self.running(path) else {
             return;
         };
         let position = to_lsp(&document.lines, pos, running.server.encoding);
+        let uri = document.uri.clone();
         let id = running.server.request(
             method,
             json!({"textDocument": {"uri": uri}, "position": position}),
@@ -368,6 +377,7 @@ impl Lsp {
         let mut events = Vec::new();
         let mut published = Vec::new();
         let mut locations = Vec::new();
+        let mut contents = Vec::new();
         if let Some((ctx, installer)) = &self.start {
             for slot in self.servers.values_mut() {
                 let Slot::Finding { found, .. } = slot else {
@@ -391,7 +401,10 @@ impl Lsp {
                 };
             }
         }
-        for running in self.servers.values_mut().filter_map(Slot::running) {
+        for (language, slot) in &mut self.servers {
+            let Some(running) = slot.running() else {
+                continue;
+            };
             let messages = running.server.poll();
             let encoding = running.server.encoding;
             for message in messages {
@@ -402,8 +415,20 @@ impl Lsp {
                                 events.push(Event::Hover { path, pos, text });
                             }
                         }
-                        Some(Request::Definition) => {
-                            locations.extend(location(&result).map(|l| (l, encoding)))
+                        Some(Request::Definition) => match location(&result) {
+                            Some((uri, range)) if !uri.starts_with("file://") => {
+                                let id = running
+                                    .server
+                                    .request("workspace/textDocumentContent", json!({"uri": uri}));
+                                running.pending.insert(id, Request::Content { uri, range });
+                            }
+                            Some(location) => locations.push((location, encoding)),
+                            None => {}
+                        },
+                        Some(Request::Content { uri, range }) => {
+                            if let Some(text) = result["text"].as_str() {
+                                contents.push((*language, uri, range, text.to_string(), encoding));
+                            }
                         }
                         None => {}
                     },
@@ -433,18 +458,52 @@ impl Lsp {
                 self.diagnostics.insert(path, Arc::new(diagnostics));
             }
         }
+        for (language, uri, range, text, encoding) in contents {
+            if let Some(path) = self.keep_source(language, uri, &text) {
+                events.push(self.definition_event(path, &range, encoding));
+            }
+        }
         for ((uri, range), encoding) in locations {
-            let Some(path) = self.relative(&uri) else {
-                continue;
-            };
-            let lines = self.lines_of(&path);
-            events.push(Event::Definition {
-                start: from_lsp(&lines, &range["start"], encoding),
-                end: from_lsp(&lines, &range["end"], encoding),
-                path,
-            });
+            if let Some(path) = self.relative(&uri) {
+                events.push(self.definition_event(path, &range, encoding));
+            }
         }
         events
+    }
+
+    fn definition_event(&self, path: String, range: &Value, encoding: Encoding) -> Event {
+        let lines = self.lines_of(&path);
+        Event::Definition {
+            start: from_lsp(&lines, &range["start"], encoding),
+            end: from_lsp(&lines, &range["end"], encoding),
+            path,
+        }
+    }
+
+    fn keep_source(&mut self, language: &'static str, uri: String, text: &str) -> Option<String> {
+        let (scheme, rest) = uri.split_once(':')?;
+        let inner = path_of(&format!("file:///{}", rest.trim_start_matches('/')))?;
+        let file = inner
+            .components()
+            .filter_map(|part| match part {
+                std::path::Component::Normal(name) => Some(name),
+                _ => None,
+            })
+            .fold(self.sources.join(scheme), |path, name| path.join(name));
+        std::fs::create_dir_all(file.parent()?).ok()?;
+        std::fs::write(&file, text).ok()?;
+        let path = file.to_string_lossy().into_owned();
+        self.documents.insert(
+            path.clone(),
+            Document {
+                uri,
+                language,
+                version: 0,
+                revision: 0,
+                lines: text.lines().map(str::to_string).collect(),
+            },
+        );
+        Some(path)
     }
 
     pub fn diagnostics(&self, path: &str) -> Arc<Vec<Diagnostic>> {

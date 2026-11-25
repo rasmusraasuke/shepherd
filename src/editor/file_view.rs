@@ -131,14 +131,12 @@ impl OpenFiles {
     }
 
     fn file(&mut self, path: &str) -> &mut OpenFile {
-        let root = self.root.clone();
-        let outside = Path::new(path).is_absolute();
-        let committed = self
-            .repo
-            .as_ref()
-            .filter(|_| !outside)
-            .map(|repo| repo.content_at("HEAD", path).unwrap_or_default());
+        let (root, repo) = (&self.root, self.repo.as_ref());
         self.files.entry(path.to_string()).or_insert_with(|| {
+            let outside = Path::new(path).is_absolute();
+            let committed = repo
+                .filter(|repo| !outside && !repo.is_ignored(path))
+                .map(|repo| repo.content_at("HEAD", path).unwrap_or_default());
             let mut file = OpenFile::open(root.join(path), committed);
             file.editor.set_read_only(outside);
             file
@@ -208,7 +206,11 @@ impl OpenFiles {
         }
         self.head = head.to_string();
         let (root, repo) = (&self.root, self.repo.as_ref());
-        for file in self.files.values_mut() {
+        for file in self
+            .files
+            .values_mut()
+            .filter(|file| file.committed.is_some())
+        {
             file.committed = repo.map(|repo| {
                 let path = file
                     .path
@@ -643,6 +645,30 @@ mod tests {
         assert!(files.blame_on("a.txt"));
         files.toggle_blame("a.txt");
         assert!(!files.blame_on("a.txt"));
+    }
+
+    #[test]
+    fn keeps_ignored_files_unmarked_also_after_a_commit() {
+        let (repo, dir) = crate::git::tests::temp_repo(
+            "ignored",
+            &[
+                (".gitignore", "node_modules\n"),
+                ("node_modules/lib.ts", "x\n"),
+            ],
+        );
+        crate::git::tests::commit_all(&repo);
+        let outside = TempDir::new("ignored-outside");
+        let library = outside.write("Lib.kt", "class Lib\n");
+        let library = library.to_string_lossy();
+        let mut files = OpenFiles::new(dir.path().to_path_buf());
+        files.file("node_modules/lib.ts").update_changes();
+        files.file(&library);
+        files.set_head("other");
+        for path in ["node_modules/lib.ts", &library] {
+            let file = files.file(path);
+            assert!(file.committed.is_none());
+            assert!(file.changes.is_empty());
+        }
     }
 
     #[test]

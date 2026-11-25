@@ -158,6 +158,10 @@ impl Repo {
         git(&self.root, &["show", &format!("{revision}:{path}")]).ok()
     }
 
+    pub fn is_ignored(&self, path: &str) -> bool {
+        git(&self.root, &["check-ignore", "-q", "--", path]).is_ok()
+    }
+
     pub fn blame_lines(&self, path: &str) -> Result<Vec<Commit>, String> {
         let out = git(&self.root, &["blame", "--porcelain", "--", path])?;
         let mut known: HashMap<String, Commit> = HashMap::new();

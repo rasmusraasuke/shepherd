@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::{BufReader, PipeWriter};
 use std::time::{Duration, Instant};
 
@@ -75,6 +76,18 @@ fn poll_until(lsp: &mut Lsp, done: impl Fn(&Lsp) -> bool) -> Vec<Event> {
         events.extend(lsp.poll());
         if done(lsp) {
             return events;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn next_while_polling(lsp: &mut Lsp, peer: &mut Peer) -> Value {
+    let start = Instant::now();
+    loop {
+        lsp.poll();
+        if let Ok(message) = peer.messages.try_recv() {
+            return message;
         }
         assert!(start.elapsed() < Duration::from_secs(5), "timed out");
         std::thread::sleep(Duration::from_millis(5));
@@ -281,6 +294,50 @@ fn goes_to_a_definition_in_another_file() {
             end: Pos::new(0, 8),
         }]
     );
+}
+
+#[test]
+fn opens_a_definition_inside_a_library_archive() {
+    let dir = TempDir::new("lsp-library");
+    let (mut lsp, mut peer) = started(&dir);
+    lsp.sources = dir.path().join("sources");
+    lsp.sync("a.kt", &Buffer::new("val b = listOf(1)\n"));
+    peer.next();
+    lsp.definition("a.kt", Pos::new(0, 9));
+    let request = peer.next();
+    let library = "jar:///libs/stdlib-sources.jar!/kotlin/Collections.kt";
+    peer.send(json!({"jsonrpc": "2.0", "id": request["id"], "result": [{
+        "targetUri": library,
+        "targetSelectionRange": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 10}},
+    }]}));
+    let content = next_while_polling(&mut lsp, &mut peer);
+    assert_eq!(content["method"], "workspace/textDocumentContent");
+    assert_eq!(content["params"]["uri"], library);
+    peer.send(json!({"jsonrpc": "2.0", "id": content["id"], "result": {
+        "text": "package kotlin\nfun listOf() = 1\n",
+    }}));
+    let events = events_until(&mut lsp, 1);
+    let path = dir
+        .path()
+        .join("sources/jar/libs/stdlib-sources.jar!/kotlin/Collections.kt");
+    assert_eq!(
+        events,
+        [Event::Definition {
+            path: path.to_string_lossy().into_owned(),
+            start: Pos::new(1, 4),
+            end: Pos::new(1, 10),
+        }]
+    );
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "package kotlin\nfun listOf() = 1\n"
+    );
+    let path = path.to_string_lossy();
+    lsp.sync(&path, &Buffer::new("package kotlin\nfun listOf() = 1\n"));
+    lsp.hover(&path, Pos::new(1, 5));
+    let hover = peer.next();
+    assert_eq!(hover["method"], "textDocument/hover");
+    assert_eq!(hover["params"]["textDocument"]["uri"], library);
 }
 
 #[test]

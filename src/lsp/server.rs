@@ -271,7 +271,11 @@ fn initialize_params(root: &Path) -> Value {
         "capabilities": {
             "general": {"positionEncodings": ["utf-32", "utf-16"]},
             "window": {"workDoneProgress": true},
-            "workspace": {"configuration": true, "workspaceFolders": true},
+            "workspace": {
+                "configuration": true,
+                "workspaceFolders": true,
+                "textDocumentContent": {}
+            },
             "textDocument": {
                 "synchronization": {"didSave": true},
                 "hover": {"contentFormat": ["markdown", "plaintext"]},

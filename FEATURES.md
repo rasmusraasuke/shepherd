@@ -130,7 +130,10 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
 - **Go to the definition.** Cmd+B, or a click with Cmd held, opens the definition of what is
   under the cursor, in its file, with the cursor on its name. With Cmd held the pointer turns
   into a hand over the code. Files outside the project, such as library sources, open read
-  only.
+  only. Sources kept inside library archives, such as the Kotlin standard library in a Gradle
+  cache, are fetched from the language server and open read only too, with hover and go to
+  definition still working inside them. Files git ignores, such as those in `node_modules`,
+  are not marked as changed.
 
 | Key                           | Action                                  |
 |-------------------------------|-----------------------------------------|
