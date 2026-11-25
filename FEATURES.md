@@ -337,11 +337,13 @@ the background; what it complains about is shown above the commit message.
   message lands in it with `shepherd ctl commit-message`, to be read and changed before
   committing; *Cancel* stops waiting for it.
 - **Split into commits.** *Split*, next to *Draft*, has the same agent look at all the
-  uncommitted changes. When they serve one intent, it stages them all; when they mix work
-  that belongs in different commits, it picks one group that clearly belongs together and
-  stages only its hunks with `shepherd ctl stage`, or only some lines of a hunk when
-  the hunk itself mixes them. Either way it then writes the message for
-  what it staged. The result is reviewed, changed and committed like any other, and *Split*
+  uncommitted changes, with a few unchanged lines around every hunk, and reads the files
+  where it needs more. When they serve one intent, it stages them all; when they mix work
+  that belongs in different commits, it picks one group that is complete on its own, with
+  the callers, imports, tests and documentation of what it adds, preferring the one the
+  others build on, and stages only its hunks with `shepherd ctl stage`, or only some lines
+  of a hunk when the hunk itself mixes them. Either way it then writes the message for
+  what it staged, in the style of the recent commits, as *Draft* does too. The result is reviewed, changed and committed like any other, and *Split*
   again takes the next group.
 - **Sync and push.** Next to the branch menu in the title bar, *↓2* shows the commits there are to pull, as far as is known from
   the last fetch, and fetches and pulls, always merging and never rebasing. Uncommitted

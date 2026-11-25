@@ -13,18 +13,26 @@ use crate::ui::status::Item;
 use crate::ui::theme;
 
 const DRAFT: &str = "Write a commit message for the staged changes, which `git diff --cached` \
-shows, and put it into the editor with `shepherd ctl commit-message \"<message>\"`. Don't commit.";
+shows, in the style of the recent messages of `git log`, and put it into the editor with \
+`shepherd ctl commit-message \"<message>\"`. Don't commit.";
 
 const SPLIT: &str = "The uncommitted changes may mix work of different intents that belong in different \
 commits. See them with `shepherd ctl hunks`, which numbers the hunks of every file and the lines of \
-every hunk. If they all serve one intent, stage all of them. Otherwise choose one group of changes \
-that clearly belongs together and stage only that. Stage with \
+every hunk; the unnumbered lines around a hunk are unchanged code shown for context. Read the files \
+when you need more to understand what a change is for. \
+A commit is one intent that is complete on its own: a new function goes with its callers, its \
+imports and module declarations, its tests and its documentation, and a rename goes with every \
+place it touches. Changes to several files or areas for one feature are one commit, not several. \
+If all the changes serve one intent, stage all of them. Otherwise choose one group, preferring one \
+that the others build on so that every commit still builds, and stage only that group. Stage with \
 `shepherd ctl stage <path>[:<pick>,<pick>...] ...`, naming every file of the group: a pick is a hunk \
 `<hunk>`, or some of its lines `<hunk>.<line>` or `<hunk>.<first>-<last>` when a hunk mixes intents, \
 with both the removed and the added lines of a changed line; \
-without picks the whole file is staged and whatever is not named is unstaged. Check the result with \
-`git diff --cached`. Then write a commit message for the staged changes and put it into the editor \
-with `shepherd ctl commit-message \"<message>\"`. Don't commit.";
+without picks the whole file is staged and whatever is not named is unstaged. Check with \
+`git diff --cached` that the group is staged whole and nothing else is, and with `git diff` that \
+nothing it needs is left behind. Then write a commit message for the staged changes, in the style \
+of the recent messages of `git log`, and put it into the editor with \
+`shepherd ctl commit-message \"<message>\"`. Don't commit.";
 
 const DONE_SHOWN: f64 = 4.0;
 
