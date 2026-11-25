@@ -144,7 +144,7 @@ fn row(ui: &mut egui::Ui, item: &Item) -> bool {
     .inner
 }
 
-fn paint_icon(ui: &egui::Ui, rect: egui::Rect, kind: Kind) {
+pub fn paint_icon(ui: &egui::Ui, rect: egui::Rect, kind: Kind) {
     let painter = ui.painter();
     match kind {
         Kind::Busy => theme::spinner(ui, rect),

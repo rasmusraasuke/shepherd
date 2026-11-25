@@ -18,6 +18,7 @@ use crate::control::{self, Control};
 use crate::editor::file_view::OpenFiles;
 use crate::git::watcher::{Snapshot, Watcher};
 use crate::git::{CommitRange, Repo};
+use crate::github;
 use crate::lsp::install::Installer;
 use crate::panels::file_tree::FileTree;
 use crate::panels::flow::{self, Flow};
@@ -68,6 +69,7 @@ pub struct App {
     titled_branch: Option<String>,
     updates: update::Updates,
     build: update::Build,
+    checks: github::Checks,
     restarting: bool,
     projects: Projects,
 }
@@ -272,6 +274,7 @@ impl App {
             loading_models,
             updates,
             build: update::Build::watch(),
+            checks: github::Checks::new(repo.origin().as_deref().and_then(github::repository)),
             search_in: None,
             double_shift: DoubleTap::shift(),
             double_ctrl: DoubleTap::ctrl(),
@@ -340,6 +343,8 @@ impl App {
         match snapshot {
             Ok(snapshot) => {
                 content.error = None;
+                self.checks
+                    .set_commit(&snapshot.status.branch, &snapshot.head);
                 content
                     .review
                     .set_changes(&snapshot.changes, &self.workspace.collapsed_changes);
@@ -557,7 +562,9 @@ impl App {
         self.content.terminals.update(&ctx);
         if self.content.flow.finished(&ctx) {
             self.watcher.refresh_now();
+            self.checks.refresh();
         }
+        self.checks.poll(&ctx);
         let branch = &self.content.flow.status().branch;
         if self.titled_branch.as_ref() != Some(branch) {
             self.titled_branch = Some(branch.clone());

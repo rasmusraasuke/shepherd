@@ -4,6 +4,7 @@ mod control;
 mod dirs;
 mod editor;
 mod git;
+mod github;
 mod lsp;
 mod panels;
 mod projects;

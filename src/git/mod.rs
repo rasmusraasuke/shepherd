@@ -19,6 +19,8 @@ const LEFT: &str = "shepherd: changes left on ";
 
 const LEFT_PULL: &str = "shepherd: changes kept over a pull";
 
+pub const DETACHED: &str = "none (detached HEAD)";
+
 const DIFF: &[&str] = &[
     "diff",
     "--no-color",
@@ -126,10 +128,14 @@ impl Repo {
     }
 
     pub fn branch(&self) -> String {
-        git(&self.root, &["symbolic-ref", "--short", "-q", "HEAD"]).map_or_else(
-            |_| "none (detached HEAD)".to_string(),
-            |name| name.trim().to_string(),
-        )
+        git(&self.root, &["symbolic-ref", "--short", "-q", "HEAD"])
+            .map_or_else(|_| DETACHED.to_string(), |name| name.trim().to_string())
+    }
+
+    pub fn origin(&self) -> Option<String> {
+        git(&self.root, &["remote", "get-url", "origin"])
+            .ok()
+            .map(|url| url.trim().to_string())
     }
 
     pub fn head(&self) -> String {

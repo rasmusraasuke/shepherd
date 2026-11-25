@@ -55,7 +55,8 @@ impl App {
                         (project, op, ui.min_rect().right())
                     })
                     .inner;
-                self.status_ui(ui, bar, left);
+                let right = self.checks.ui(ui, bar);
+                self.status_ui(ui, bar, left, right);
                 if let Some(op) = op {
                     self.content.run(op, ui.ctx());
                 }
@@ -81,18 +82,16 @@ impl App {
         (items, first_is_git)
     }
 
-    fn status_ui(&mut self, ui: &mut egui::Ui, bar: egui::Rect, left: f32) {
+    fn status_ui(&mut self, ui: &mut egui::Ui, bar: egui::Rect, left: f32, right: f32) {
         let (items, first_is_git) = self.statuses(ui.ctx());
         let middle = egui::pos2(ui.ctx().content_rect().center().x, bar.center().y);
         let centered = egui::Rect::from_center_size(middle, egui::vec2(STATUS_WIDTH, bar.height()));
         let start = left + STATUS_GAP;
-        let area = if centered.left() >= start && centered.right() <= bar.right() {
+        let end = right - STATUS_GAP;
+        let area = if centered.left() >= start && centered.right() <= end {
             centered
         } else {
-            egui::Rect::from_x_y_ranges(
-                start..=(start + STATUS_WIDTH).min(bar.right() - STATUS_GAP),
-                bar.y_range(),
-            )
+            egui::Rect::from_x_y_ranges(start..=(start + STATUS_WIDTH).min(end), bar.y_range())
         };
         if status::ui(ui, &items, area) == Some(0) && first_is_git {
             self.content.flow.dismiss();

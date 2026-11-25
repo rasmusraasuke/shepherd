@@ -361,6 +361,21 @@ the background; what it complains about is shown above the commit message.
   fit on the other branch. With *Leave the changes on …* ticked they stay behind instead, in
   git's stash, and come back, reviewed marks included, when the branch is switched to
   again; until then the list says *(changes left there)*.
+- **GitHub Actions.** When `origin` is on GitHub, the right end of the title bar shows how
+  the workflows of the newest commit of the branch on GitHub went: a spinner with
+  *Running*, a ✓ with *Passed*, or a red dot with *Failed* as soon as one workflow failed.
+  On a narrow window only the sign shows. A click lists every workflow of that commit;
+  clicking one opens its run on GitHub. A rerun counts instead of the run it repeats. It is
+  checked every 15 seconds while something runs or a pushed commit has no runs yet, every
+  minute otherwise, and right after a push or a branch switch. Public repositories work
+  without logging in, checked every 2 or 5 minutes to stay within GitHub's limits.
+- **Logging in to GitHub.** For a private repository the title bar offers *Log in to
+  GitHub*. Shepherd then copies a short code, opens GitHub's device page to paste it in and
+  waits until it is approved there; the code is shown in the title bar meanwhile. The login
+  is kept in `github-token` next to `settings.json`, readable only by the user, and is
+  shared by every project; *Log out of GitHub* in the same popup forgets it. When an
+  organization hides a repository from Shepherd, *Ask for access* opens the page to ask
+  for its approval.
 
 ## Merge conflicts
 
