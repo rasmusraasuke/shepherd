@@ -380,7 +380,9 @@ the background; what it complains about is shown above the commit message.
 - **Fixing it with an agent.** *Send to agent* opens a new tab of the coding agent chosen
   for new agents (not the one that writes commit messages) and asks it to find out why the
   step failed and fix it, with the workflow, branch, commit, job, step, link and log in the
-  request. Agents can also ask on their own with `shepherd ctl ci`.
+  request. *Solve with agent* at the end of a failed workflow's line does the same with
+  every failed step of that workflow at once. Agents can also ask on their own with
+  `shepherd ctl ci`.
 - **Logging in to GitHub.** For a private repository the title bar offers *Log in to
   GitHub*. Shepherd then copies a short code, opens GitHub's device page to paste it in and
   waits until it is approved there; the code is shown in the title bar meanwhile. The login

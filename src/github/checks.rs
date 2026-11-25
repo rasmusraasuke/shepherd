@@ -164,15 +164,19 @@ impl Checks {
         }
     }
 
-    pub(super) fn prompt(&self, commit: &str, run: &Run, failure: &Failure) -> String {
+    pub(super) fn prompt(&self, commit: &str, run: &Run, failures: &[Failure]) -> String {
+        let failures: Vec<String> = failures
+            .iter()
+            .map(|failure| format!("In {}", failure.describe()))
+            .collect();
         format!(
-            "The GitHub Actions workflow \"{}\" failed on branch {} at commit {}, in {}\n\n\
+            "The GitHub Actions workflow \"{}\" failed on branch {} at commit {}.\n\n{}\n\n\
              Find out why, fix it and check the fix locally. \
              `shepherd ctl ci` shows how every workflow of that commit went.",
             run.name,
             self.branch,
             short(commit),
-            failure.describe()
+            failures.join("\n\n")
         )
     }
 
@@ -623,12 +627,21 @@ mod tests {
         let checks = reported(Found::Runs(summary.clone()), "abcdef1234");
         let run = &summary.runs[0];
         assert_eq!(
-            checks.prompt(&summary.commit, run, &run.failures[0]),
-            "The GitHub Actions workflow \"Workflow 1\" failed on branch main at commit abcdef1, \
-             in test › Warnings (https://github.com/o/r/actions/runs/1/job/7):\n\
+            checks.prompt(&summary.commit, run, &run.failures),
+            "The GitHub Actions workflow \"Workflow 1\" failed on branch main at commit abcdef1.\n\n\
+             In test › Warnings (https://github.com/o/r/actions/runs/1/job/7):\n\
              ```\nerror: unused\n```\n\n\
              Find out why, fix it and check the fix locally. \
              `shepherd ctl ci` shows how every workflow of that commit went."
+        );
+        let both = [failure(None), failure(Some("error: unused"))];
+        let prompt = checks.prompt(&summary.commit, run, &both);
+        assert!(
+            prompt.contains(
+                "In test › Warnings (https://github.com/o/r/actions/runs/1/job/7)\n\n\
+                 In test › Warnings (https://github.com/o/r/actions/runs/1/job/7):"
+            ),
+            "{prompt}"
         );
     }
 }

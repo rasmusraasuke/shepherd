@@ -249,11 +249,32 @@ impl Checks {
                         {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(&run.url));
                         }
+                        if !run.failures.is_empty() {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(theme::primary(ui, "Solve with agent"))
+                                        .on_hover_text(
+                                            "Start the coding agent on fixing every failed step",
+                                        )
+                                        .clicked()
+                                    {
+                                        prompt =
+                                            Some(self.prompt(&summary.commit, run, &run.failures));
+                                    }
+                                },
+                            );
+                        }
                     });
                     ui.indent(&run.url, |ui| {
                         for (index, failure) in run.failures.iter().enumerate() {
                             if failure_ui(ui, failure, index == 0, self.logged_in) {
-                                prompt = Some(self.prompt(&summary.commit, run, failure));
+                                prompt = Some(self.prompt(
+                                    &summary.commit,
+                                    run,
+                                    std::slice::from_ref(failure),
+                                ));
                             }
                         }
                     });
@@ -447,6 +468,31 @@ mod tests {
         );
         assert!(prompt.contains(log), "{prompt}");
         assert!(harness.query_by_label("Send to agent").is_none());
+    }
+
+    #[test]
+    fn solves_every_failure_of_a_workflow_with_an_agent() {
+        let linux = Failure {
+            job: "linux".to_string(),
+            ..failure(Some("error: linux"))
+        };
+        let mut harness = show(failed(vec![failure(Some("error: mac")), linux]));
+        open_popup(&mut harness);
+        harness.get_by_label("Solve with agent").click();
+        harness.run();
+        let prompt = harness.state_mut().take_prompt().unwrap();
+        assert!(prompt.contains("In test › Warnings"), "{prompt}");
+        assert!(prompt.contains("error: mac"), "{prompt}");
+        assert!(prompt.contains("In linux › Warnings"), "{prompt}");
+        assert!(prompt.contains("error: linux"), "{prompt}");
+        assert!(harness.query_by_label("Solve with agent").is_none());
+    }
+
+    #[test]
+    fn offers_to_solve_only_failed_workflows() {
+        let mut harness = show(failed(Vec::new()));
+        open_popup(&mut harness);
+        assert!(harness.query_by_label("Solve with agent").is_none());
     }
 
     #[test]
