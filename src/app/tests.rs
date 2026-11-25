@@ -1178,6 +1178,59 @@ fn opens_an_agent_from_the_plus_of_a_tab_bar_and_lists_it_apart_from_terminals()
 }
 
 #[test]
+fn sends_a_failed_github_action_to_a_new_coding_agent() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (mut harness, dir) = harness("ci-agent");
+    let program = dir.write("agent", "#!/bin/sh\necho \"args: $@\"\nsleep 5\n");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    harness
+        .state_mut()
+        .content
+        .terminals
+        .run_agents_with(&program);
+    harness.state_mut().agents = vec![Agent::Claude];
+    harness.state_mut().checks.prompt = Some("Fix the failed Warnings step".to_string());
+    harness.run();
+    let id = match open_tabs(&harness)[0].last() {
+        Some(Tab::Agent {
+            id,
+            agent: Agent::Claude,
+            ..
+        }) => *id,
+        tabs => panic!("no agent was opened: {tabs:?}"),
+    };
+    let start = Instant::now();
+    while !harness
+        .state()
+        .content
+        .terminals
+        .screen(id)
+        .is_some_and(|screen| {
+            screen
+                .replace('\n', "")
+                .ends_with("-- Fix the failed Warnings step")
+        })
+    {
+        assert!(start.elapsed() < Duration::from_secs(5));
+        harness.run();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+        ask(&mut harness, &["ci"]),
+        Ok("The origin of the repository is not on GitHub".to_string())
+    );
+    let context = ask(&mut harness, &["context"]).unwrap();
+    assert!(
+        context.contains(
+            "The origin of the repository is not on GitHub (`shepherd ctl ci` shows more)"
+        ),
+        "{context}"
+    );
+}
+
+#[test]
 fn runs_a_program_in_a_new_terminal_that_takes_the_keyboard() {
     let (mut harness, _dir) = harness("terminal-tab");
     harness.state_mut().content.terminals.run("/bin/cat", &[]);

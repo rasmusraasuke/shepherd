@@ -19,6 +19,7 @@ shepherd ctl: ask the editor what the user sees, or have it show something.
                                   Stage only what is picked and unstage the rest; a pick is <hunk>,
                                   <hunk>.<line> or <hunk>.<first>-<last>, a path alone is the whole file
   shepherd ctl diagnostics [<path>] The problems language servers found, in all files or in one
+  shepherd ctl ci                   How the GitHub Actions workflows of the branch went, with what failed
   shepherd ctl terminals            The terminals and what their programs are doing
   shepherd ctl terminal <id>        What a terminal shows
   shepherd ctl open <path>[:<line>[-<line>]]
@@ -58,6 +59,7 @@ impl App {
             (Some("hunks"), None) => Ok(content.review.hunks_text()),
             (Some("stage"), Some(_)) => self.content.review.stage_only(&args[1..]),
             (Some("diagnostics"), path) => Ok(content.open_files.diagnostics(path)),
+            (Some("ci"), None) => Ok(self.checks.report()),
             (Some("terminals"), None) => Ok(self.terminals()),
             (Some("terminal"), Some(id)) => id
                 .parse()
@@ -182,6 +184,10 @@ impl App {
                 } else {
                     ""
                 }
+            ),
+            format!(
+                "{} (`shepherd ctl ci` shows more)",
+                self.checks.report().lines().next().unwrap_or_default()
             ),
             self.terminals(),
             self.agents_state(),

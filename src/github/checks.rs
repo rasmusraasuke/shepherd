@@ -26,6 +26,20 @@ pub enum State {
     Failed,
 }
 
+impl State {
+    pub fn label(self) -> &'static str {
+        match self {
+            State::Passed => "Passed",
+            State::Running => "Running",
+            State::Failed => "Failed",
+        }
+    }
+}
+
+pub(super) fn short(commit: &str) -> &str {
+    &commit[..commit.len().min(7)]
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub name: String,
@@ -65,6 +79,7 @@ pub struct Checks {
     pub(super) logged_in: bool,
     pub(super) login: Option<Login>,
     pub(super) error: Option<String>,
+    pub(crate) prompt: Option<String>,
     head: String,
     fetching: Option<Receiver<Result<Fetched, String>>>,
     next: Instant,
@@ -79,6 +94,7 @@ impl Checks {
             logged_in: false,
             login: None,
             error: None,
+            prompt: None,
             head: String::new(),
             fetching: None,
             next: Instant::now(),
@@ -96,6 +112,68 @@ impl Checks {
             self.head = head.to_string();
             self.refresh();
         }
+    }
+
+    pub fn take_prompt(&mut self) -> Option<String> {
+        self.prompt.take()
+    }
+
+    pub fn report(&self) -> String {
+        let Some(repository) = &self.repository else {
+            return "The origin of the repository is not on GitHub".to_string();
+        };
+        match &self.found {
+            Found::Nothing => format!(
+                "No GitHub Actions runs of {repository} on branch {}",
+                self.branch
+            ),
+            Found::LogIn => format!(
+                "GitHub shows the runs of {repository} only after the user logs in to GitHub \
+                 from the title bar"
+            ),
+            Found::NoAccess => format!(
+                "GitHub does not show {repository} to Shepherd until an owner of its \
+                 organization approves Shepherd"
+            ),
+            Found::Runs(summary) => {
+                let mut lines = vec![format!(
+                    "GitHub Actions of {repository} on branch {} at commit {}: {}",
+                    self.branch,
+                    short(&summary.commit),
+                    summary.state.label()
+                )];
+                if summary.commit != self.head {
+                    lines.push(format!(
+                        "The local commit {} has no runs on GitHub yet",
+                        short(&self.head)
+                    ));
+                }
+                for run in &summary.runs {
+                    lines.push(format!(
+                        "- {}: {} ({})",
+                        run.name,
+                        run.state.label(),
+                        run.url
+                    ));
+                    for failure in &run.failures {
+                        lines.push(format!("  Failed in {}", failure.describe()));
+                    }
+                }
+                lines.join("\n")
+            }
+        }
+    }
+
+    pub(super) fn prompt(&self, commit: &str, run: &Run, failure: &Failure) -> String {
+        format!(
+            "The GitHub Actions workflow \"{}\" failed on branch {} at commit {}, in {}\n\n\
+             Find out why, fix it and check the fix locally. \
+             `shepherd ctl ci` shows how every workflow of that commit went.",
+            run.name,
+            self.branch,
+            short(commit),
+            failure.describe()
+        )
     }
 
     pub fn refresh(&mut self) {
@@ -485,6 +563,72 @@ mod tests {
         assert_eq!(
             logged_out.runs[0].failures,
             [failure(Some("error: unused"))]
+        );
+    }
+
+    fn reported(found: Found, head: &str) -> Checks {
+        let mut checks = Checks::new(Some("o/r".to_string()));
+        checks.set_commit("main", head);
+        checks.found = found;
+        checks
+    }
+
+    fn failed_summary() -> Summary {
+        let mut summary = summary(&runs(&[
+            run(1, "abcdef1234", "completed", Some("failure")),
+            run(2, "abcdef1234", "completed", Some("success")),
+        ]))
+        .unwrap()
+        .unwrap();
+        summary.runs[0].failures = vec![failure(Some("error: unused"))];
+        summary
+    }
+
+    #[test]
+    fn reports_how_the_workflows_went_with_what_failed() {
+        let checks = reported(Found::Runs(failed_summary()), "abcdef1234");
+        assert_eq!(
+            checks.report(),
+            "GitHub Actions of o/r on branch main at commit abcdef1: Failed\n\
+             - Workflow 1: Failed (https://github.com/o/r/actions/runs/1abcdef1234)\n  \
+             Failed in test › Warnings (https://github.com/o/r/actions/runs/1/job/7):\n\
+             ```\nerror: unused\n```\n\
+             - Workflow 2: Passed (https://github.com/o/r/actions/runs/2abcdef1234)"
+        );
+        let ahead = reported(Found::Runs(failed_summary()), "9999999999");
+        assert!(
+            ahead
+                .report()
+                .contains("The local commit 9999999 has no runs on GitHub yet")
+        );
+    }
+
+    #[test]
+    fn reports_why_there_is_nothing_to_show() {
+        assert_eq!(
+            Checks::new(None).report(),
+            "The origin of the repository is not on GitHub"
+        );
+        assert_eq!(
+            reported(Found::Nothing, "a").report(),
+            "No GitHub Actions runs of o/r on branch main"
+        );
+        assert!(reported(Found::LogIn, "a").report().contains("logs in"));
+        assert!(reported(Found::NoAccess, "a").report().contains("approves"));
+    }
+
+    #[test]
+    fn asks_the_agent_to_fix_the_failed_step() {
+        let summary = failed_summary();
+        let checks = reported(Found::Runs(summary.clone()), "abcdef1234");
+        let run = &summary.runs[0];
+        assert_eq!(
+            checks.prompt(&summary.commit, run, &run.failures[0]),
+            "The GitHub Actions workflow \"Workflow 1\" failed on branch main at commit abcdef1, \
+             in test › Warnings (https://github.com/o/r/actions/runs/1/job/7):\n\
+             ```\nerror: unused\n```\n\n\
+             Find out why, fix it and check the fix locally. \
+             `shepherd ctl ci` shows how every workflow of that commit went."
         );
     }
 }

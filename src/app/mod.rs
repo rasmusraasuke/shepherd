@@ -657,6 +657,14 @@ impl App {
         if let Some(reveal) = self.content.open_files.take_reveal() {
             self.action = Some(Action::Reveal(reveal));
         }
+        if let Some(text) = self.checks.take_prompt() {
+            self.action = Some(Action::Send {
+                agent: None,
+                text,
+                window: 0,
+                images: Vec::new(),
+            });
+        }
 
         if let Some(action) = self.action.take() {
             self.perform(action, &ctx);

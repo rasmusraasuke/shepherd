@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, RichText, Stroke};
 
 use super::CLIENT_ID;
-use super::checks::{Checks, Found, State};
+use super::checks::{Checks, Found, State, short};
 use super::failures::Failure;
 use crate::ui::status::{self, Kind};
 use crate::ui::theme;
@@ -93,14 +93,6 @@ fn paint_run(ui: &egui::Ui, rect: egui::Rect, state: State) {
                 .collect();
             painter.add(egui::Shape::line(points, Stroke::new(width, color)));
         }
-    }
-}
-
-fn label(state: State) -> &'static str {
-    match state {
-        State::Passed => "Passed",
-        State::Running => "Running",
-        State::Failed => "Failed",
     }
 }
 
@@ -200,7 +192,7 @@ impl Checks {
                 icon: Some(Icon::Run(summary.state)),
                 failed: summary.state == State::Failed,
                 compact: true,
-                ..Look::new(label(summary.state), None)
+                ..Look::new(summary.state.label(), None)
             }),
             Found::LogIn => Some(Look::new("Log in to GitHub", None)),
             Found::NoAccess => Some(Look::new("No access to GitHub Actions", Some(Kind::Error))),
@@ -236,13 +228,14 @@ impl Checks {
             }
             return;
         }
+        let mut prompt = None;
         match &self.found {
             Found::Nothing => {}
             Found::Runs(summary) => {
                 ui.weak(format!(
                     "GitHub Actions on {} at {}",
                     self.branch,
-                    &summary.commit[..summary.commit.len().min(7)]
+                    short(&summary.commit)
                 ));
                 for run in &summary.runs {
                     ui.horizontal(|ui| {
@@ -251,7 +244,7 @@ impl Checks {
                         paint_run(ui, icon, run.state);
                         if ui
                             .add(theme::quiet(run.name.as_str()))
-                            .on_hover_text(label(run.state))
+                            .on_hover_text(run.state.label())
                             .clicked()
                         {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(&run.url));
@@ -259,7 +252,9 @@ impl Checks {
                     });
                     ui.indent(&run.url, |ui| {
                         for (index, failure) in run.failures.iter().enumerate() {
-                            failure_ui(ui, failure, index == 0, self.logged_in);
+                            if failure_ui(ui, failure, index == 0, self.logged_in) {
+                                prompt = Some(self.prompt(&summary.commit, run, failure));
+                            }
                         }
                     });
                 }
@@ -279,6 +274,10 @@ impl Checks {
                 }
             }
         }
+        if prompt.is_some() {
+            self.prompt = prompt;
+            ui.close();
+        }
         ui.separator();
         if self.logged_in {
             if ui.add(theme::quiet("Log out of GitHub")).clicked() {
@@ -290,7 +289,7 @@ impl Checks {
     }
 }
 
-fn failure_ui(ui: &mut egui::Ui, failure: &Failure, open: bool, logged_in: bool) {
+fn failure_ui(ui: &mut egui::Ui, failure: &Failure, open: bool, logged_in: bool) -> bool {
     let title = RichText::new(failure.title()).color(ui.visuals().error_fg_color);
     egui::CollapsingHeader::new(title)
         .id_salt(&failure.url)
@@ -322,16 +321,19 @@ fn failure_ui(ui: &mut egui::Ui, failure: &Failure, open: bool, logged_in: bool)
                 }
             }
             ui.horizontal(|ui| {
-                if let Some(log) = &failure.log
-                    && ui.add(theme::quiet("Copy the log")).clicked()
-                {
-                    ui.ctx().copy_text(log.clone());
-                }
+                let send = ui
+                    .add(theme::primary(ui, "Send to agent"))
+                    .on_hover_text("Start the coding agent on fixing this")
+                    .clicked();
                 if ui.add(theme::quiet("Open on GitHub")).clicked() {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(&failure.url));
                 }
-            });
-        });
+                send
+            })
+            .inner
+        })
+        .body_returned
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -362,10 +364,16 @@ mod tests {
     }
 
     fn opened(harness: &Harness<'_, Checks>) -> Vec<String> {
-        output(harness, |command| match command {
-            egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
-            _ => None,
-        })
+        harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn run(name: &str, state: State, id: u64, failures: Vec<Failure>) -> Run {
@@ -405,19 +413,6 @@ mod tests {
         harness.run();
     }
 
-    fn output<T>(
-        harness: &Harness<'_, Checks>,
-        pick: impl Fn(&egui::OutputCommand) -> Option<T>,
-    ) -> Vec<T> {
-        harness
-            .output()
-            .platform_output
-            .commands
-            .iter()
-            .filter_map(pick)
-            .collect()
-    }
-
     #[test]
     fn shows_how_the_workflows_went_and_opens_one_on_github() {
         let mut harness = show(failed(Vec::new()));
@@ -431,25 +426,27 @@ mod tests {
     }
 
     #[test]
-    fn shows_the_failed_step_with_the_end_of_its_log() {
+    fn shows_the_failed_step_with_the_end_of_its_log_and_sends_it_to_an_agent() {
         let log = "error: unused variable: `x`\nProcess completed with exit code 101.";
         let mut harness = show(failed(vec![failure(Some(log))]));
         open_popup(&mut harness);
         harness.get_by_label("test › Warnings");
         harness.get_by_label(log);
-        harness.get_by_label("Copy the log").click();
-        harness.step();
-        let copied = output(&harness, |command| match command {
-            egui::OutputCommand::CopyText(text) => Some(text.clone()),
-            _ => None,
-        });
-        assert_eq!(copied, [log]);
         harness.get_by_label("Open on GitHub").click();
         harness.step();
         assert_eq!(
             opened(&harness),
             ["https://github.com/o/r/actions/runs/2/job/7"]
         );
+        harness.get_by_label("Send to agent").click();
+        harness.run();
+        let prompt = harness.state_mut().take_prompt().unwrap();
+        assert!(
+            prompt.starts_with("The GitHub Actions workflow \"Test\" failed on branch main"),
+            "{prompt}"
+        );
+        assert!(prompt.contains(log), "{prompt}");
+        assert!(harness.query_by_label("Send to agent").is_none());
     }
 
     #[test]
@@ -458,7 +455,7 @@ mod tests {
         open_popup(&mut harness);
         harness.get_by_label("test › Warnings");
         harness.get_by_label("Log in to GitHub to see what the step printed.");
-        assert!(harness.query_by_label("Copy the log").is_none());
+        harness.get_by_label("Send to agent");
     }
 
     #[test]

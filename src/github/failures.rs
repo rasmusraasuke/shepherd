@@ -25,6 +25,13 @@ impl Failure {
             None => self.job.clone(),
         }
     }
+
+    pub fn describe(&self) -> String {
+        match &self.log {
+            Some(log) => format!("{} ({}):\n```\n{log}\n```", self.title(), self.url),
+            None => format!("{} ({})", self.title(), self.url),
+        }
+    }
 }
 
 #[derive(Deserialize)]
