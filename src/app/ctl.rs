@@ -14,7 +14,7 @@ shepherd ctl: ask the editor what the user sees, or have it show something.
   shepherd ctl selection            The place and the text selected in the file edited last
   shepherd ctl comments             The user's review comments on the uncommitted changes
   shepherd ctl review-state         Which changed lines are reviewed, by file; reviewed means staged
-  shepherd ctl hunks                The uncommitted changes of every file, in numbered hunks of numbered lines
+  shepherd ctl hunks                The uncommitted changes of every file, in numbered hunks of numbered lines with unchanged ones around them
   shepherd ctl stage <path>[:<pick>,<pick>...]...
                                   Stage only what is picked and unstage the rest; a pick is <hunk>,
                                   <hunk>.<line> or <hunk>.<first>-<last>, a path alone is the whole file

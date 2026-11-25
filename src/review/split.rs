@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet};
 use crate::git::LineKind;
 
 use super::Review;
+use super::text::read_lines;
+
+const CONTEXT: usize = 3;
 
 impl Review {
     pub fn hunks_text(&self) -> String {
@@ -17,7 +20,17 @@ impl Review {
                 out.push_str(" (no lines, staged only as a whole)");
             }
             out.push('\n');
+            let content = read_lines(&self.repo.root, diff);
+            let context = |out: &mut String, from: usize, to: usize| {
+                let to = to.min(content.len());
+                for line in content.get(from..to).unwrap_or_default() {
+                    out.push_str(&format!("{:>4}  {line}\n", ""));
+                }
+            };
+            let mut shown = 0;
             for (number, hunk) in diff.hunks.iter().enumerate() {
+                let new = hunk.ranges().1;
+                let (start, end) = (new.start as usize - 1, new.end as usize - 1);
                 out.push_str(&format!(
                     "--- hunk {} @@ -{},{} +{},{} @@\n",
                     number + 1,
@@ -26,6 +39,7 @@ impl Review {
                     hunk.new_start,
                     hunk.new_count
                 ));
+                context(&mut out, start.saturating_sub(CONTEXT).max(shown), start);
                 for (number, line) in hunk.lines.iter().enumerate() {
                     let sign = match line.kind {
                         LineKind::Context => ' ',
@@ -34,6 +48,12 @@ impl Review {
                     };
                     out.push_str(&format!("{:>4} {sign}{}\n", number + 1, line.text));
                 }
+                let next = diff
+                    .hunks
+                    .get(number + 1)
+                    .map_or(usize::MAX, |next| next.ranges().1.start as usize - 1);
+                shown = (end + CONTEXT).min(next);
+                context(&mut out, end, shown);
             }
         }
         out

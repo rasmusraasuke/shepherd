@@ -1123,7 +1123,7 @@ fn lists_the_hunks_and_stages_only_the_ones_named() {
     let hunks = review.hunks_text();
     for part in [
         "=== a.txt\n--- hunk 1 @@ -1,1 +1,1 @@\n   1 -1\n   2 +one\n",
-        "--- hunk 2 @@ -9,1 +9,1 @@\n   1 -9\n   2 +nine\n",
+        "--- hunk 2 @@ -9,1 +9,1 @@\n",
         "=== b.txt\n--- hunk 1",
     ] {
         assert!(hunks.contains(part), "{part:?} not in:\n{hunks}");
@@ -1155,6 +1155,22 @@ fn lists_the_hunks_and_stages_only_the_ones_named() {
         Err("No changes in c.txt".to_string())
     );
     assert_eq!(review.progress(), (2, 6));
+}
+
+#[test]
+fn lists_the_hunks_with_unchanged_lines_around_them() {
+    let (review, _dir) = review(
+        "hunks-context",
+        &[TWO_FILES[0], ("c.txt", "1\n2\n3\n4\n", "1\n4\n")],
+    );
+    let hunks = review.hunks_text();
+    for part in [
+        "=== a.txt\n--- hunk 1 @@ -1,1 +1,1 @@\n   1 -1\n   2 +one\n      2\n      3\n      4\n\
+         --- hunk 2 @@ -9,1 +9,1 @@\n      6\n      7\n      8\n   1 -9\n   2 +nine\n      10\n",
+        "=== c.txt\n--- hunk 1 @@ -2,2 +1,0 @@\n      1\n   1 -2\n   2 -3\n      4\n",
+    ] {
+        assert!(hunks.contains(part), "{part:?} not in:\n{hunks}");
+    }
 }
 
 #[test]
