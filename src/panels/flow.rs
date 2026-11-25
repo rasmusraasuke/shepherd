@@ -9,6 +9,7 @@ use eframe::egui::{self, Key, Modifiers, PopupCloseBehavior, RichText};
 use crate::agents::{self, Agent, Choice, Model};
 use crate::git::{Changes, Operation, Repo, Status};
 use crate::review::{self, Agents};
+use crate::ui::status::Item;
 use crate::ui::theme;
 
 const DRAFT: &str = "Write a commit message for the staged changes, which `git diff --cached` \
@@ -183,7 +184,6 @@ impl Flow {
         choice: &mut Choice,
     ) -> Option<Outcome> {
         let op = self.operation_ui(ui);
-        self.progress_ui(ui);
         ui.add_space(4.0);
         let commit = egui::Panel::bottom("commit")
             .resizable(false)
@@ -284,27 +284,25 @@ impl Flow {
         self.sync_buttons(ui).or(op)
     }
 
-    fn progress_ui(&mut self, ui: &mut egui::Ui) {
+    pub fn activity(&mut self, ctx: &egui::Context) -> Option<Item> {
         if let Some(error) = &self.error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
+            return Some(Item::error(error.as_str()).dismissable());
         }
         if let Some((op, _)) = &self.running {
-            ui.horizontal(|ui| {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                theme::spinner(ui, rect);
-                ui.weak(op.label());
-            });
+            return Some(Item::busy(op.label()));
         }
-        if let Some((text, at)) = &self.done {
-            let left = DONE_SHOWN - (ui.input(|i| i.time) - at);
-            if left > 0.0 {
-                ui.request_repaint_after_secs(left as f32);
-                ui.weak(format!("✓ {text}"));
-            } else {
-                self.done = None;
-            }
+        let (text, at) = self.done.as_ref()?;
+        let left = DONE_SHOWN - (ctx.input(|i| i.time) - at);
+        if left <= 0.0 {
+            self.done = None;
+            return None;
         }
+        ctx.request_repaint_after_secs(left as f32);
+        Some(Item::done(text.as_str()))
+    }
+
+    pub fn dismiss(&mut self) {
+        self.error = None;
     }
 
     fn branches_ui(&mut self, ui: &mut egui::Ui) -> Option<Op> {
@@ -485,6 +483,7 @@ mod tests {
     use super::*;
     use crate::git::tests::{commit_all, conflict_repo, temp_repo, with_remote};
     use crate::testing::TempDir;
+    use crate::ui::status;
 
     struct Shown {
         flow: Flow,
@@ -500,26 +499,7 @@ mod tests {
             asked: None,
             choice: Choice::default(),
         };
-        let ui = |ui: &mut egui::Ui, shown: &mut Shown| {
-            let agents = Agents {
-                open: vec![(1, "Claude Code".to_string())],
-                new: Some("Claude Code".to_string()),
-            };
-            let found = [Agent::Claude];
-            let models = HashMap::new();
-            let branch = shown.flow.branch_ui(ui).map(Outcome::Run);
-            match branch.or(shown
-                .flow
-                .ui(ui, (1, 2), &agents, &found, &models, &mut shown.choice))
-            {
-                Some(Outcome::Run(op)) => shown.flow.run(op, ui.ctx()),
-                Some(asked) => shown.asked = Some(asked),
-                None => {}
-            }
-            if shown.flow.finished(ui.ctx()) {
-                refresh(&mut shown.flow);
-            }
-        };
+        let ui = |ui: &mut egui::Ui, shown: &mut Shown| render(ui, shown, (1, 2));
         let mut harness = Harness::builder()
             .with_size(egui::vec2(260.0, 500.0))
             .with_context_setup(|ctx| theme::apply(ctx, false))
@@ -527,6 +507,33 @@ mod tests {
         refresh(&mut harness.state_mut().flow);
         harness.run();
         (harness, dir)
+    }
+
+    fn render(ui: &mut egui::Ui, shown: &mut Shown, progress: (usize, usize)) {
+        let agents = Agents {
+            open: vec![(1, "Claude Code".to_string())],
+            new: Some("Claude Code".to_string()),
+        };
+        let found = [Agent::Claude];
+        let models = HashMap::new();
+        let items: Vec<Item> = shown.flow.activity(ui.ctx()).into_iter().collect();
+        let (area, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::hover());
+        if status::ui(ui, &items, area).is_some() {
+            shown.flow.dismiss();
+        }
+        let branch = shown.flow.branch_ui(ui).map(Outcome::Run);
+        match branch.or(shown
+            .flow
+            .ui(ui, progress, &agents, &found, &models, &mut shown.choice))
+        {
+            Some(Outcome::Run(op)) => shown.flow.run(op, ui.ctx()),
+            Some(asked) => shown.asked = Some(asked),
+            None => {}
+        }
+        if shown.flow.finished(ui.ctx()) {
+            refresh(&mut shown.flow);
+        }
     }
 
     fn refresh(flow: &mut Flow) {
@@ -562,26 +569,7 @@ mod tests {
             asked: None,
             choice: Choice::default(),
         };
-        let ui = |ui: &mut egui::Ui, shown: &mut Shown| {
-            let agents = Agents {
-                open: vec![(1, "Claude Code".to_string())],
-                new: Some("Claude Code".to_string()),
-            };
-            let found = [Agent::Claude];
-            let models = HashMap::new();
-            let branch = shown.flow.branch_ui(ui).map(Outcome::Run);
-            match branch.or(shown
-                .flow
-                .ui(ui, (0, 0), &agents, &found, &models, &mut shown.choice))
-            {
-                Some(Outcome::Run(op)) => shown.flow.run(op, ui.ctx()),
-                Some(asked) => shown.asked = Some(asked),
-                None => {}
-            }
-            if shown.flow.finished(ui.ctx()) {
-                refresh(&mut shown.flow);
-            }
-        };
+        let ui = |ui: &mut egui::Ui, shown: &mut Shown| render(ui, shown, (0, 0));
         let mut harness = Harness::builder()
             .with_size(egui::vec2(260.0, 500.0))
             .with_context_setup(|ctx| theme::apply(ctx, false))
@@ -607,7 +595,7 @@ mod tests {
                 .is_disabled()
         );
         harness.get_by_label("Continue").click();
-        wait_for(&mut harness, "✓ Continued", true);
+        wait_for(&mut harness, "Continued", true);
         assert_eq!(harness.state().flow.operation, None);
     }
 
@@ -711,7 +699,7 @@ mod tests {
         let _remote = with_remote(&repo, "flow-push-remote");
         harness.get_by_label("↑").click();
         wait_for(&mut harness, "Pushing…", true);
-        wait_for(&mut harness, "✓ Pushed", true);
+        wait_for(&mut harness, "Pushed", true);
         wait_for(&mut harness, "↑0", true);
         dir.write("a.txt", "changed\n");
         commit_all(&repo);

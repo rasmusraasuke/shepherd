@@ -57,9 +57,13 @@ fn lsp_with_peer(dir: &TempDir) -> (Lsp, Peer) {
     (lsp, peer)
 }
 
+fn status(lsp: &Lsp) -> Option<String> {
+    lsp.statuses().first().map(|item| item.text.clone())
+}
+
 fn ready(lsp: &mut Lsp, peer: &mut Peer) {
     peer.answer_initialize();
-    poll_until(lsp, |lsp| lsp.status("a.kt").is_none());
+    poll_until(lsp, |lsp| status(lsp).is_none());
     assert_eq!(peer.next()["method"], "initialized");
 }
 
@@ -168,7 +172,7 @@ fn opens_a_file_once_the_server_is_ready_and_sends_its_edits() {
     lsp.sync("a.kt", &buffer);
     lsp.sync("a.kt", &buffer);
     assert_eq!(
-        lsp.status("a.kt").unwrap(),
+        status(&lsp).unwrap(),
         "Starting the Kotlin language server…"
     );
 
@@ -377,21 +381,18 @@ fn shows_what_the_server_is_busy_with() {
     peer.send(progress(
         json!({"kind": "begin", "title": "Importing Gradle project"}),
     ));
-    poll_until(&mut lsp, |lsp| lsp.status("a.kt").is_some());
-    assert_eq!(
-        lsp.status("a.kt").unwrap(),
-        "Kotlin: Importing Gradle project"
-    );
+    poll_until(&mut lsp, |lsp| status(lsp).is_some());
+    assert_eq!(status(&lsp).unwrap(), "Kotlin: Importing Gradle project");
     peer.send(progress(json!({"kind": "report", "message": "3/10"})));
     poll_until(&mut lsp, |lsp| {
-        lsp.status("a.kt").is_some_and(|s| s.ends_with("3/10"))
+        status(lsp).is_some_and(|s| s.ends_with("3/10"))
     });
     assert_eq!(
-        lsp.status("a.kt").unwrap(),
+        status(&lsp).unwrap(),
         "Kotlin: Importing Gradle project 3/10"
     );
     peer.send(progress(json!({"kind": "end"})));
-    poll_until(&mut lsp, |lsp| lsp.status("a.kt").is_none());
+    poll_until(&mut lsp, |lsp| status(lsp).is_none());
 }
 
 #[test]
@@ -401,11 +402,8 @@ fn tells_when_the_server_stops() {
     lsp.sync("a.kt", &Buffer::new(""));
     assert!(lsp.has_server("a.kt"));
     drop(peer);
-    poll_until(&mut lsp, |lsp| lsp.status("a.kt").is_some());
-    assert_eq!(
-        lsp.status("a.kt").unwrap(),
-        "The Kotlin language server stopped"
-    );
+    poll_until(&mut lsp, |lsp| status(lsp).is_some());
+    assert_eq!(status(&lsp).unwrap(), "The Kotlin language server stopped");
     assert!(!lsp.has_server("a.kt"));
 }
 
@@ -417,11 +415,10 @@ fn tells_why_a_server_stopped() {
     let mut lsp = Lsp::new(dir.path().to_path_buf());
     lsp.connect("Kotlin", server);
     poll_until(&mut lsp, |lsp| {
-        lsp.status("a.kt")
-            .is_some_and(|status| status.contains("toolchain"))
+        status(lsp).is_some_and(|status| status.contains("toolchain"))
     });
     assert_eq!(
-        lsp.status("a.kt").unwrap(),
+        status(&lsp).unwrap(),
         "The Kotlin language server stopped: no such toolchain"
     );
 }
@@ -431,7 +428,7 @@ fn looks_for_a_server_away_from_the_editor() {
     let dir = TempDir::new("lsp-missing");
     let mut lsp = Lsp::new(dir.path().to_path_buf());
     lsp.sync("a.kt", &Buffer::new(""));
-    assert_eq!(lsp.status("a.kt"), None);
+    assert_eq!(status(&lsp), None);
     let installer = Installer::new(
         dir.path().join("servers"),
         dir.path().display().to_string(),
@@ -440,14 +437,13 @@ fn looks_for_a_server_away_from_the_editor() {
     lsp.enable(egui::Context::default(), installer);
     lsp.sync("a.kt", &Buffer::new(""));
     lsp.sync("notes.md", &Buffer::new(""));
-    assert!(lsp.status("a.kt").is_some());
-    assert_eq!(lsp.status("notes.md"), None);
+    assert!(status(&lsp).is_some());
+    assert_eq!(lsp.statuses().len(), 1);
     poll_until(&mut lsp, |lsp| {
-        lsp.status("a.kt")
-            .is_some_and(|status| status.starts_with("No Kotlin"))
+        status(lsp).is_some_and(|status| status.starts_with("No Kotlin"))
     });
     assert_eq!(
-        lsp.status("a.kt").unwrap(),
+        status(&lsp).unwrap(),
         "No Kotlin language server found: kotlin-lsp is not on the PATH and downloading \
          language servers is turned off"
     );

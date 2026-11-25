@@ -6,6 +6,7 @@ use crate::panels::file_tree::FileLook;
 use crate::panels::flow;
 use crate::review;
 use crate::ui::icons::{self, Icon};
+use crate::ui::status;
 use crate::ui::theme;
 use crate::update;
 
@@ -14,6 +15,10 @@ const TITLE_HEIGHT: f32 = 31.0;
 pub(super) const TITLE_INSET: i8 = if cfg!(target_os = "macos") { 76 } else { 8 };
 
 const ACTIVITY_ROW: f32 = 40.0;
+
+const STATUS_WIDTH: f32 = 480.0;
+
+const STATUS_GAP: f32 = 16.0;
 
 impl App {
     pub(super) fn title_bar(&mut self, ui: &mut egui::Ui) {
@@ -41,12 +46,16 @@ impl App {
                     let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
                     ui.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
                 }
-                let (project, op) = ui
+                let bar = ui.max_rect();
+                let (project, op, left) = ui
                     .horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
-                        (self.projects.ui(ui), self.content.flow.branch_ui(ui))
+                        let project = self.projects.ui(ui);
+                        let op = self.content.flow.branch_ui(ui);
+                        (project, op, ui.min_rect().right())
                     })
                     .inner;
+                self.status_ui(ui, bar, left);
                 if let Some(op) = op {
                     self.content.run(op, ui.ctx());
                 }
@@ -58,13 +67,49 @@ impl App {
             });
     }
 
+    fn statuses(&mut self, ctx: &egui::Context) -> (Vec<status::Item>, bool) {
+        let git = self.content.flow.activity(ctx);
+        let first_is_git = git.is_some();
+        let mut items: Vec<status::Item> = git.into_iter().collect();
+        if let update::Phase::Downloading(release) = self.updates.phase() {
+            items.push(status::Item::busy(format!(
+                "Downloading Shepherd {}…",
+                release.version()
+            )));
+        }
+        items.extend(self.content.open_files.statuses());
+        (items, first_is_git)
+    }
+
+    fn status_ui(&mut self, ui: &mut egui::Ui, bar: egui::Rect, left: f32) {
+        let (items, first_is_git) = self.statuses(ui.ctx());
+        let middle = egui::pos2(ui.ctx().content_rect().center().x, bar.center().y);
+        let centered = egui::Rect::from_center_size(middle, egui::vec2(STATUS_WIDTH, bar.height()));
+        let start = left + STATUS_GAP;
+        let area = if centered.left() >= start && centered.right() <= bar.right() {
+            centered
+        } else {
+            egui::Rect::from_x_y_ranges(
+                start..=(start + STATUS_WIDTH).min(bar.right() - STATUS_GAP),
+                bar.y_range(),
+            )
+        };
+        if status::ui(ui, &items, area) == Some(0) && first_is_git {
+            self.content.flow.dismiss();
+        }
+    }
+
     pub(super) fn update_bar(&mut self, ui: &mut egui::Ui) {
         let phase = self.updates.phase();
         let build = self.build.changed();
         if !build {
             ui.ctx().request_repaint_after(update::CHECK);
         }
-        if matches!(phase, update::Phase::Idle | update::Phase::Checking) && !build {
+        if matches!(
+            phase,
+            update::Phase::Idle | update::Phase::Checking | update::Phase::Downloading(_)
+        ) && !build
+        {
             return;
         }
         egui::Panel::bottom("update")
@@ -77,10 +122,6 @@ impl App {
             )
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| match &phase {
-                    update::Phase::Downloading(release) => {
-                        ui.spinner();
-                        ui.weak(format!("Downloading Shepherd {}…", release.version()));
-                    }
                     update::Phase::Ready(release) => {
                         let install = update::bundled().is_some();
                         ui.label(if install {
@@ -110,7 +151,9 @@ impl App {
                             self.updates.dismiss();
                         }
                     }
-                    update::Phase::Idle | update::Phase::Checking => {
+                    update::Phase::Idle
+                    | update::Phase::Checking
+                    | update::Phase::Downloading(_) => {
                         if build {
                             ui.label("A new build of Shepherd is on disk.");
                             if ui

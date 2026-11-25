@@ -56,6 +56,12 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   lights with the branch dropdown, and can be dragged and zoomed from it. Popped-out windows
   end their title with the current branch behind a
   ⎇ branch symbol, while the macOS menu bar shows just "Shepherd".
+- **What is going on, in one place.** The middle of the title bar shows what Shepherd is
+  busy with: git committing, pushing or syncing, a language server being found, downloaded,
+  started or indexing, and a new Shepherd being downloaded. When several things happen at
+  once it shows one, git first, with a *+2* badge for the rest; a click opens a popup that
+  lists all of them, where a git error can be dismissed. When the project and branch take
+  up the middle, it moves right of them.
 - **Projects.** Left of the branch dropdown, the name of the project folder opens a menu
   with *New Project…*, which creates a folder with a new git repository, and *Open…*, which
   picks a folder that is a git repository; both open it. Below them, *Recent Projects*
@@ -123,10 +129,10 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
   against the SHA-256 sums the sources publish. An installed server is checked for a newer
   version at most once a day, and is kept when there is no network. Java's `jdtls` has to be
   on the PATH. `"download_language_servers": false` in `settings.json` turns the downloads
-  off. The server is told about every edit as it is typed. A small label floating in the
-  bottom right corner of the file, which never moves the code, says what is going on:
-  looking for the server, downloading it with how many MB are done, importing the project,
-  or why the server stopped, from the last line of its error output.
+  off. The server is told about every edit as it is typed. The middle of the title bar says
+  what it is doing: looking for the server, downloading it with how many MB are done,
+  importing or indexing the project, or why the server stopped, from the last line of its
+  error output.
 - **Problems in the code.** Errors, warnings and notes from the language server are
   underlined with a wavy line in red, yellow or blue. Resting the pointer on code shows the
   problems there and what the server knows about it, such as its type and documentation.
@@ -344,9 +350,10 @@ the background; what it complains about is shown above the commit message.
   changes, sync asks to commit those first. *↑1* shows the commits there are to push
   and pushes them; a branch that isn't on a remote yet is pushed to `origin`. Hovering either
   says what it does.
-- **Progress of git.** Right below the branch, a spinner says what git is doing
-  (*Committing…*, *Pushing…*, *Syncing…*, *Switching…*), a ✓ line says what was done for a
-  few seconds afterwards, and an error from git stays there until the next action.
+- **Progress of git.** The middle of the title bar shows a spinner with what git is doing
+  (*Committing…*, *Pushing…*, *Syncing…*, *Switching…*), a ✓ with what was done for a
+  few seconds afterwards, and an error from git until the next action or until it is
+  dismissed.
 - **Branches.** The button with the name of the current branch lists the others; a click
   switches to one. Type a name into *New branch* and press Enter to start a branch from
   where you are, with the changes.

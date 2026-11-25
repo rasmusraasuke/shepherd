@@ -15,6 +15,7 @@ use eframe::egui;
 use serde_json::{Value, json};
 
 use crate::editor::buffer::{Buffer, Pos};
+use crate::ui::status::Item;
 use install::{Installer, Method, Progress};
 pub use server::{Encoding, Message, Server};
 
@@ -187,6 +188,33 @@ enum Slot {
 }
 
 impl Slot {
+    fn status(&self, name: &str) -> Option<Item> {
+        match self {
+            Slot::Failed(error) => Some(Item::error(error.as_str())),
+            Slot::Finding { progress, .. } => {
+                Some(Item::busy(progress.text().unwrap_or_else(|| {
+                    format!("Looking for the {name} language server…")
+                })))
+            }
+            Slot::Running(running) if running.server.stopped => {
+                Some(Item::error(match running.server.last_complaint() {
+                    Some(complaint) => format!(
+                        "The {name} language server stopped: {}",
+                        complaint.trim_end_matches('.')
+                    ),
+                    None => format!("The {name} language server stopped"),
+                }))
+            }
+            Slot::Running(running) if !running.server.is_ready() => {
+                Some(Item::busy(format!("Starting the {name} language server…")))
+            }
+            Slot::Running(running) => running
+                .server
+                .progress()
+                .map(|progress| Item::busy(format!("{name}: {progress}"))),
+        }
+    }
+
     fn running(&mut self) -> Option<&mut Running> {
         match self {
             Slot::Running(running) if !running.server.stopped => Some(running),
@@ -514,34 +542,16 @@ impl Lsp {
         self.diagnostics.values().map(|all| all.len()).sum()
     }
 
-    pub fn status(&self, path: &str) -> Option<String> {
-        let (language, _) = language_of(path)?;
-        self.start.as_ref()?;
-        match self.servers.get(language.name)? {
-            Slot::Failed(error) => Some(error.clone()),
-            Slot::Finding { progress, .. } => {
-                Some(progress.text().unwrap_or_else(|| {
-                    format!("Looking for the {} language server…", language.name)
-                }))
-            }
-            Slot::Running(running) if running.server.stopped => {
-                Some(match running.server.last_complaint() {
-                    Some(complaint) => format!(
-                        "The {} language server stopped: {}",
-                        language.name,
-                        complaint.trim_end_matches('.')
-                    ),
-                    None => format!("The {} language server stopped", language.name),
-                })
-            }
-            Slot::Running(running) if !running.server.is_ready() => {
-                Some(format!("Starting the {} language server…", language.name))
-            }
-            Slot::Running(running) => running
-                .server
-                .progress()
-                .map(|progress| format!("{}: {progress}", language.name)),
+    pub fn statuses(&self) -> Vec<Item> {
+        if self.start.is_none() {
+            return Vec::new();
         }
+        let mut names: Vec<&&'static str> = self.servers.keys().collect();
+        names.sort();
+        names
+            .into_iter()
+            .filter_map(|name| self.servers[*name].status(name))
+            .collect()
     }
 
     pub fn report(&self, only: Option<&str>) -> String {

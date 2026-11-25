@@ -357,12 +357,12 @@ fn resolves_a_conflict_in_the_review_and_continues_the_merge() {
     harness.get_by_label("Continue").click();
     for _ in 0..400 {
         harness.step();
-        if harness.query_by_label("✓ Continued").is_some() {
+        if harness.query_by_label("Continued").is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    harness.get_by_label("✓ Continued");
+    harness.get_by_label("Continued");
     assert_eq!(Repo::open(dir.path()).unwrap().status().behind, 0);
 }
 
@@ -1402,9 +1402,10 @@ fn run_until(harness: &mut Harness<'static, App>, done: impl Fn(&Harness<'static
     let start = Instant::now();
     while !done(harness) {
         assert!(start.elapsed() < Duration::from_secs(5), "timed out");
-        harness.run();
+        harness.step();
         std::thread::sleep(Duration::from_millis(5));
     }
+    harness.run();
 }
 
 #[test]
@@ -1419,12 +1420,16 @@ fn shows_what_the_language_server_knows_about_the_code() {
         .open_files
         .connect_language_server("Rust", server);
     harness.state_mut().action = Some(Action::Open(Tab::File("src/main.rs".to_string()), 0));
-    harness.run();
-    assert!(
-        harness
-            .query_by_label("Starting the Rust language server…")
-            .is_some()
-    );
+    harness.run_steps(4);
+    let status = harness
+        .get_by_label("Starting the Rust language server…")
+        .rect();
+    let branch = harness.state().content.flow.status().branch.clone();
+    let branch = harness
+        .get_by_role_and_label(egui::Role::Button, &branch)
+        .rect();
+    assert!(status.left() > branch.right());
+    assert!(status.top() >= branch.top() - 4.0 && status.bottom() <= branch.bottom() + 4.0);
     let editor_while_starting = harness.get_by_label("Editor").rect();
     peer.answer_initialize();
     run_until(&mut harness, |harness| {

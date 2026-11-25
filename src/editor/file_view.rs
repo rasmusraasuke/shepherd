@@ -87,6 +87,10 @@ impl OpenFiles {
         self.lsp.report(path)
     }
 
+    pub fn statuses(&self) -> Vec<crate::ui::status::Item> {
+        self.lsp.statuses()
+    }
+
     pub fn problem_count(&self) -> usize {
         self.lsp.problem_count()
     }
@@ -312,7 +316,6 @@ impl OpenFiles {
         {
             self.toggle_blame(path);
         }
-        let status = self.lsp.status(path);
         let view = ui.max_rect();
         let file = self.file(path);
         file.update_changes();
@@ -403,17 +406,17 @@ impl OpenFiles {
         if toggle {
             self.toggle_blame(path);
         }
-        if let Some(status) = status.or(label) {
-            status_ui(ui, view, &status);
+        if let Some(label) = label {
+            label_ui(ui, view, &label);
         }
         line
     }
 }
 
-fn status_ui(ui: &egui::Ui, view: egui::Rect, status: &str) {
+fn label_ui(ui: &egui::Ui, view: egui::Rect, label: &str) {
     let margin = egui::vec2(10.0, 8.0);
     let galley = ui.painter().layout(
-        status.to_string(),
+        label.to_string(),
         egui::TextStyle::Small.resolve(ui.style()),
         ui.visuals().weak_text_color(),
         (view.width() * 0.8).min(520.0),
@@ -431,10 +434,10 @@ fn status_ui(ui: &egui::Ui, view: egui::Rect, status: &str) {
     painter.galley(rect.min + margin, galley, ui.visuals().weak_text_color());
     ui.interact(
         rect,
-        ui.scope_id().with("language-server-status"),
+        ui.scope_id().with("corner-label"),
         egui::Sense::hover(),
     )
-    .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, status));
+    .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, label));
 }
 
 impl OpenFile {
