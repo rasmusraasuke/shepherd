@@ -365,18 +365,24 @@ the background; what it complains about is shown above the commit message.
   again; until then the list says *(changes left there)*.
 - **GitHub Actions.** When `origin` is on GitHub, the right end of the title bar shows how
   the workflows of the newest commit of the branch on GitHub went: a yellow spinner with
-  *Running*, a green ✓ with *Passed*, or a red ✗ with *Failed* as soon as one workflow
-  failed. On a narrow window only the sign shows. A click lists every workflow of that
-  commit; clicking one opens its run on GitHub. A rerun counts instead of the run it repeats.
+  *Running*, a green ✓ with *Passed*, or a red ✗ with *Failed* as soon as one job of a
+  workflow failed, even while other jobs still run, then *Failed, still running*. On a narrow
+  window only the sign shows. A click lists every workflow of that commit; clicking one opens
+  its run on GitHub. Under a workflow that runs or failed are its jobs, side by side ones
+  included, each with its sign; a running or failed job lists its steps, those done, the one
+  running, the failed one in red, and those waiting or skipped greyed. Clicking a job opens it
+  on GitHub. A rerun counts instead of the run it repeats.
   It is checked every 15 seconds while something runs or a pushed commit has no runs yet,
   every minute otherwise, and right after a push or a branch switch. Public repositories
   work without logging in, checked every 2 or 5 minutes to stay within GitHub's limits.
-- **What failed.** Under a failed workflow the popup names each failed job and the step in
-  it that failed, such as *test › Warnings*. The first one is unfolded and shows what that
-  step printed up to its error, the last 60 lines, scrolled to the end and selectable, with
+- **What failed.** Under the failed step of a failed job the popup shows what that step
+  printed up to its error; the first failure is unfolded and clicking a failed step folds
+  it in or out. The log shows the last 60 lines, scrolled to the end and selectable, with
   *Send to agent* and *Open on GitHub*. GitHub only gives the logs after logging in; before
-  that the popup asks for it. What failed is asked for once for each run and attempt, and
-  again after logging in.
+  that the popup asks for it. The jobs of a running workflow are asked for on every check;
+  once a run is over they are asked for once for each run and attempt, and again after
+  logging in. Each failed job's log is fetched once. Without logging in, checks while
+  workflows run slow down with how many run, to stay within GitHub's limits.
 - **Fixing it with an agent.** *Send to agent* opens a new tab of the coding agent chosen
   for new agents (not the one that writes commit messages) and asks it to find out why the
   step failed and fix it, with the workflow, branch, commit, job, step, link and log in the
@@ -475,7 +481,7 @@ Work that is already committed is reviewed in the same view as work in the worki
   | `shepherd ctl hunks` | The uncommitted changes of every file, in numbered hunks of numbered lines |
   | `shepherd ctl stage <path>[:<pick>,…]…` | Stages only what is picked and unstages the rest; a pick is a hunk `2`, a line `2.3` or lines `2.3-5`, a path alone the whole file |
   | `shepherd ctl diagnostics [<path>]` | The problems the language servers found, in all files or in one |
-  | `shepherd ctl ci` | How the GitHub Actions workflows of the branch went, with the failed jobs, steps and the end of their logs |
+  | `shepherd ctl ci` | How the GitHub Actions workflows of the branch went, with the jobs still running, the failed jobs, steps and the end of their logs |
   | `shepherd ctl terminals` | The terminals and what their programs are doing |
   | `shepherd ctl terminal <id>` | What a terminal or Agent tab shows |
   | `shepherd ctl open <path>[:<line>[-<line>]]` | Opens a file, selecting the lines |

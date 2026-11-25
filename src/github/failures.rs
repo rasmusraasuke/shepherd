@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use super::checks::{State, state};
 use super::get;
 
 const LOG_LINES: usize = 60;
@@ -34,6 +35,40 @@ impl Failure {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub name: String,
+    pub state: State,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Job {
+    pub name: String,
+    pub state: State,
+    pub url: String,
+    pub steps: Vec<Step>,
+    pub(super) id: u64,
+}
+
+impl Job {
+    pub fn current(&self) -> Option<&Step> {
+        self.steps.iter().find(|step| step.state == State::Running)
+    }
+
+    pub fn failure(&self) -> Option<Failure> {
+        (self.state == State::Failed).then(|| Failure {
+            job: self.name.clone(),
+            step: self
+                .steps
+                .iter()
+                .find(|step| step.state == State::Failed)
+                .map(|step| step.name.clone()),
+            url: self.url.clone(),
+            log: None,
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct ApiJobs {
     jobs: Vec<ApiJob>,
@@ -43,6 +78,7 @@ struct ApiJobs {
 struct ApiJob {
     id: u64,
     name: String,
+    status: Option<String>,
     conclusion: Option<String>,
     html_url: String,
     #[serde(default)]
@@ -52,57 +88,46 @@ struct ApiJob {
 #[derive(Deserialize)]
 struct ApiStep {
     name: String,
+    status: Option<String>,
     conclusion: Option<String>,
 }
 
-fn failed(conclusion: Option<&str>) -> bool {
-    matches!(conclusion, Some("failure" | "timed_out"))
-}
-
-pub fn fetch(repository: &str, run: u64, token: Option<&str>) -> Result<Vec<Failure>, String> {
+pub fn fetch(repository: &str, run: u64, token: Option<&str>) -> Result<Vec<Job>, String> {
     let response = get(
         &format!("/repos/{repository}/actions/runs/{run}/jobs"),
-        &[],
+        &[("per_page", "100")],
         token,
     )?;
     if response.status != 200 {
         return Err(format!("GitHub answered with {}", response.status));
     }
-    let jobs = failed_jobs(&response.body)?;
-    Ok(jobs
-        .into_iter()
-        .map(|(id, mut failure)| {
-            failure.log = token.and_then(|token| log(repository, id, token));
-            failure
-        })
-        .collect())
+    jobs(&response.body)
 }
 
-fn failed_jobs(json: &str) -> Result<Vec<(u64, Failure)>, String> {
+fn jobs(json: &str) -> Result<Vec<Job>, String> {
     let api: ApiJobs =
         serde_json::from_str(json).map_err(|e| format!("Cannot read the jobs: {e}"))?;
     Ok(api
         .jobs
         .into_iter()
-        .filter(|job| failed(job.conclusion.as_deref()))
-        .map(|job| {
-            let step = job
+        .map(|job| Job {
+            state: state(job.status.as_deref(), job.conclusion.as_deref()),
+            steps: job
                 .steps
                 .into_iter()
-                .find(|step| failed(step.conclusion.as_deref()))
-                .map(|step| step.name);
-            let failure = Failure {
-                job: job.name,
-                step,
-                url: job.html_url,
-                log: None,
-            };
-            (job.id, failure)
+                .map(|step| Step {
+                    state: state(step.status.as_deref(), step.conclusion.as_deref()),
+                    name: step.name,
+                })
+                .collect(),
+            name: job.name,
+            url: job.html_url,
+            id: job.id,
         })
         .collect())
 }
 
-fn log(repository: &str, job: u64, token: &str) -> Option<String> {
+pub fn log(repository: &str, job: u64, token: &str) -> Option<String> {
     let response = get(
         &format!("/repos/{repository}/actions/jobs/{job}/logs"),
         &[],
@@ -218,23 +243,45 @@ mod tests {
     }
 
     #[test]
-    fn names_the_failed_jobs_and_their_failed_steps() {
-        let json = r#"{"total_count":3,"jobs":[
-            {"id":1,"name":"test","conclusion":"failure","html_url":"https://github.com/o/r/actions/runs/9/job/1",
-             "steps":[{"name":"Set up job","conclusion":"success"},{"name":"Warnings","conclusion":"failure"},{"name":"Tests","conclusion":"skipped"}]},
-            {"id":2,"name":"linux","conclusion":"success","html_url":"https://github.com/o/r/actions/runs/9/job/2","steps":[]},
-            {"id":3,"name":"mac","conclusion":"timed_out","html_url":"https://github.com/o/r/actions/runs/9/job/3"}
+    fn reads_the_jobs_with_their_steps_and_what_failed() {
+        let json = r#"{"total_count":4,"jobs":[
+            {"id":1,"name":"test","status":"completed","conclusion":"failure","html_url":"https://github.com/o/r/actions/runs/9/job/1",
+             "steps":[{"name":"Set up job","status":"completed","conclusion":"success"},{"name":"Warnings","status":"completed","conclusion":"failure"},{"name":"Tests","status":"completed","conclusion":"skipped"}]},
+            {"id":2,"name":"linux","status":"in_progress","conclusion":null,"html_url":"https://github.com/o/r/actions/runs/9/job/2",
+             "steps":[{"name":"Build","status":"completed","conclusion":"success"},{"name":"Tests","status":"in_progress","conclusion":null},{"name":"Upload","status":"queued","conclusion":null}]},
+            {"id":3,"name":"mac","status":"completed","conclusion":"timed_out","html_url":"https://github.com/o/r/actions/runs/9/job/3"},
+            {"id":4,"name":"windows","status":"queued","conclusion":null,"html_url":"https://github.com/o/r/actions/runs/9/job/4"}
         ]}"#;
-        let failures = failed_jobs(json).unwrap();
+        let jobs = jobs(json).unwrap();
         assert_eq!(
-            failures
-                .iter()
-                .map(|(id, failure)| (*id, failure.title()))
+            jobs.iter()
+                .map(|job| (job.id, job.name.as_str(), job.state))
                 .collect::<Vec<_>>(),
-            vec![(1, "test › Warnings".to_string()), (3, "mac".to_string())]
+            vec![
+                (1, "test", State::Failed),
+                (2, "linux", State::Running),
+                (3, "mac", State::Failed),
+                (4, "windows", State::Waiting)
+            ]
         );
         assert_eq!(
-            failures[0].1.url,
+            jobs[1]
+                .steps
+                .iter()
+                .map(|step| step.state)
+                .collect::<Vec<_>>(),
+            vec![State::Passed, State::Running, State::Waiting]
+        );
+        assert_eq!(jobs[1].current().unwrap().name, "Tests");
+        assert_eq!(jobs[0].steps[2].state, State::Skipped);
+        assert_eq!(
+            jobs.iter()
+                .filter_map(|job| job.failure().map(|failure| failure.title()))
+                .collect::<Vec<_>>(),
+            vec!["test › Warnings".to_string(), "mac".to_string()]
+        );
+        assert_eq!(
+            jobs[0].failure().unwrap().url,
             "https://github.com/o/r/actions/runs/9/job/1"
         );
     }

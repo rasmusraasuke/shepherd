@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use serde::Deserialize;
 
-use super::failures::{self, Failure};
+use super::failures::{self, Failure, Job};
 use super::login::{Event, Login};
 use super::{forget_token, get, token};
 use crate::git::DETACHED;
@@ -24,6 +24,8 @@ pub enum State {
     Passed,
     Running,
     Failed,
+    Waiting,
+    Skipped,
 }
 
 impl State {
@@ -32,7 +34,19 @@ impl State {
             State::Passed => "Passed",
             State::Running => "Running",
             State::Failed => "Failed",
+            State::Waiting => "Waiting",
+            State::Skipped => "Skipped",
         }
+    }
+}
+
+pub(super) fn state(status: Option<&str>, conclusion: Option<&str>) -> State {
+    match (status, conclusion) {
+        (Some("completed"), Some("success" | "neutral")) => State::Passed,
+        (Some("completed"), Some("skipped" | "cancelled")) => State::Skipped,
+        (Some("completed"), _) => State::Failed,
+        (Some("in_progress"), _) => State::Running,
+        _ => State::Waiting,
     }
 }
 
@@ -45,7 +59,9 @@ pub struct Run {
     pub name: String,
     pub state: State,
     pub url: String,
+    pub jobs: Vec<Job>,
     pub failures: Vec<Failure>,
+    pub finished: bool,
     pub(super) id: u64,
     pub(super) attempt: u32,
     pub(super) with_logs: bool,
@@ -56,6 +72,51 @@ pub struct Summary {
     pub state: State,
     pub commit: String,
     pub runs: Vec<Run>,
+}
+
+impl Summary {
+    fn new(commit: String, runs: Vec<Run>) -> Self {
+        let mut summary = Self {
+            state: State::Passed,
+            commit,
+            runs,
+        };
+        summary.settle();
+        summary
+    }
+
+    fn settle(&mut self) {
+        let any = |states: &[State]| self.runs.iter().any(|run| states.contains(&run.state));
+        self.state = if any(&[State::Failed]) {
+            State::Failed
+        } else if any(&[State::Running, State::Waiting]) {
+            State::Running
+        } else {
+            State::Passed
+        };
+    }
+
+    pub fn running(&self) -> usize {
+        self.runs.iter().filter(|run| !run.finished).count()
+    }
+
+    pub fn label(&self) -> &'static str {
+        if self.state == State::Failed && self.running() > 0 {
+            "Failed, still running"
+        } else {
+            self.state.label()
+        }
+    }
+}
+
+impl Run {
+    pub fn label(&self) -> &'static str {
+        if self.state == State::Failed && !self.finished {
+            "Failed, still running"
+        } else {
+            self.state.label()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -140,7 +201,7 @@ impl Checks {
                     "GitHub Actions of {repository} on branch {} at commit {}: {}",
                     self.branch,
                     short(&summary.commit),
-                    summary.state.label()
+                    summary.label()
                 )];
                 if summary.commit != self.head {
                     lines.push(format!(
@@ -149,12 +210,15 @@ impl Checks {
                     ));
                 }
                 for run in &summary.runs {
-                    lines.push(format!(
-                        "- {}: {} ({})",
-                        run.name,
-                        run.state.label(),
-                        run.url
-                    ));
+                    lines.push(format!("- {}: {} ({})", run.name, run.label(), run.url));
+                    for job in run.jobs.iter().filter(|job| job.state == State::Running) {
+                        match job.current() {
+                            Some(step) => {
+                                lines.push(format!("  Running {} › {}", job.name, step.name))
+                            }
+                            None => lines.push(format!("  Running {}", job.name)),
+                        }
+                    }
                     for failure in &run.failures {
                         lines.push(format!("  Failed in {}", failure.describe()));
                     }
@@ -223,14 +287,17 @@ impl Checks {
     }
 
     fn interval(&self) -> Duration {
-        let watching = match &self.found {
-            Found::Runs(summary) => summary.state == State::Running || summary.commit != self.head,
-            _ => false,
+        let (watching, running) = match &self.found {
+            Found::Runs(summary) => (
+                summary.running() > 0 || summary.commit != self.head,
+                summary.running(),
+            ),
+            _ => (false, 0),
         };
         match (self.logged_in, watching) {
             (true, true) => WATCHING,
             (true, false) => RESTING,
-            (false, true) => WATCHING_ANONYMOUSLY,
+            (false, true) => WATCHING_ANONYMOUSLY * (1 + running as u32),
             (false, false) => RESTING_ANONYMOUSLY,
         }
     }
@@ -278,9 +345,17 @@ fn fetch(repository: &str, branch: &str, known: &[Run]) -> Result<Fetched, Strin
     let found = match response.status {
         200 => match summary(&response.body)? {
             Some(mut summary) => {
-                explain(&mut summary, known, logged_in, |run| {
-                    failures::fetch(repository, run, token.as_deref())
-                });
+                explain(
+                    &mut summary,
+                    known,
+                    logged_in,
+                    |run| failures::fetch(repository, run, token.as_deref()),
+                    |job| {
+                        token
+                            .as_deref()
+                            .and_then(|token| failures::log(repository, job, token))
+                    },
+                );
                 Found::Runs(summary)
             }
             None => Found::Nothing,
@@ -303,30 +378,52 @@ fn explain(
     summary: &mut Summary,
     known: &[Run],
     logged_in: bool,
-    fetch: impl Fn(u64) -> Result<Vec<Failure>, String>,
+    jobs: impl Fn(u64) -> Result<Vec<Job>, String>,
+    log: impl Fn(u64) -> Option<String>,
 ) {
     for run in summary
         .runs
         .iter_mut()
-        .filter(|run| run.state == State::Failed)
+        .filter(|run| matches!(run.state, State::Failed | State::Running | State::Waiting))
     {
         let seen = known.iter().find(|seen| {
             seen.id == run.id && seen.attempt == run.attempt && (seen.with_logs || !logged_in)
         });
-        match seen {
-            Some(seen) => {
-                run.failures = seen.failures.clone();
-                run.with_logs = seen.with_logs;
-            }
-            None => match fetch(run.id) {
-                Ok(failures) => {
-                    run.failures = failures;
-                    run.with_logs = logged_in;
+        if let Some(seen) = seen.filter(|seen| seen.finished && run.finished) {
+            run.jobs = seen.jobs.clone();
+            run.failures = seen.failures.clone();
+            run.with_logs = seen.with_logs;
+            continue;
+        }
+        match jobs(run.id) {
+            Ok(jobs) => {
+                run.failures = jobs
+                    .iter()
+                    .filter_map(|job| {
+                        let mut failure = job.failure()?;
+                        let earlier = seen.and_then(|seen| {
+                            seen.failures
+                                .iter()
+                                .find(|earlier| earlier.url == failure.url)
+                        });
+                        failure.log = match earlier {
+                            Some(earlier) => earlier.log.clone(),
+                            None if logged_in => log(job.id),
+                            None => None,
+                        };
+                        Some(failure)
+                    })
+                    .collect();
+                if jobs.iter().any(|job| job.state == State::Failed) {
+                    run.state = State::Failed;
                 }
-                Err(error) => eprintln!("cannot find what failed in GitHub Actions: {error}"),
-            },
+                run.jobs = jobs;
+                run.with_logs = logged_in;
+            }
+            Err(error) => eprintln!("cannot find how GitHub Actions went: {error}"),
         }
     }
+    summary.settle();
 }
 
 #[derive(Deserialize)]
@@ -354,9 +451,8 @@ fn first_attempt() -> u32 {
 impl ApiRun {
     fn state(&self) -> State {
         match (self.status.as_deref(), self.conclusion.as_deref()) {
-            (Some("completed"), Some("success" | "skipped" | "neutral")) => State::Passed,
-            (Some("completed"), _) => State::Failed,
-            _ => State::Running,
+            (Some("completed"), Some("cancelled")) => State::Failed,
+            (status, conclusion) => state(status, conclusion),
         }
     }
 }
@@ -376,25 +472,15 @@ fn summary(json: &str) -> Result<Option<Summary>, String> {
             name: run.name.clone().unwrap_or_else(|| "Workflow".to_string()),
             state: run.state(),
             url: run.html_url.clone(),
+            jobs: Vec::new(),
             failures: Vec::new(),
+            finished: run.status.as_deref() == Some("completed"),
             id: run.id,
             attempt: run.run_attempt,
             with_logs: false,
         })
         .collect();
-    let any = |state| runs.iter().any(|run| run.state == state);
-    let state = if any(State::Failed) {
-        State::Failed
-    } else if any(State::Running) {
-        State::Running
-    } else {
-        State::Passed
-    };
-    Ok(Some(Summary {
-        state,
-        commit,
-        runs,
-    }))
+    Ok(Some(Summary::new(commit, runs)))
 }
 
 #[cfg(test)]
@@ -492,20 +578,20 @@ mod tests {
     fn watches_closely_while_runs_go_or_the_pushed_commit_has_none_yet() {
         let mut checks = Checks::new(Some("o/r".to_string()));
         checks.set_commit("main", "a");
-        let summary = |state| {
-            Found::Runs(Summary {
-                state,
-                commit: "a".to_string(),
-                runs: Vec::new(),
-            })
-        };
-        checks.found = summary(State::Passed);
+        let summary = |list: &[String]| Found::Runs(summary(&runs(list)).unwrap().unwrap());
+        let passed = [run(1, "a", "completed", Some("success"))];
+        let running = [
+            run(1, "a", "in_progress", None),
+            run(2, "a", "queued", None),
+        ];
+        checks.found = summary(&passed);
         assert_eq!(checks.interval(), RESTING_ANONYMOUSLY);
+        checks.found = summary(&running);
+        assert_eq!(checks.interval(), WATCHING_ANONYMOUSLY * 3);
         checks.logged_in = true;
-        assert_eq!(checks.interval(), RESTING);
-        checks.found = summary(State::Running);
         assert_eq!(checks.interval(), WATCHING);
-        checks.found = summary(State::Passed);
+        checks.found = summary(&passed);
+        assert_eq!(checks.interval(), RESTING);
         checks.set_commit("main", "b");
         assert_eq!(checks.interval(), WATCHING);
     }
@@ -530,44 +616,130 @@ mod tests {
         }
     }
 
-    fn explained(known: &[Run], logged_in: bool) -> (Summary, Vec<u64>) {
-        let mut summary = summary(&runs(&[
-            run(1, "a", "completed", Some("failure")),
-            run(2, "a", "completed", Some("success")),
-        ]))
-        .unwrap()
-        .unwrap();
-        let asked = std::cell::RefCell::new(Vec::new());
-        explain(&mut summary, known, logged_in, |run| {
-            asked.borrow_mut().push(run);
-            Ok(vec![failure(logged_in.then_some("error: unused"))])
+    fn step(name: &str, state: State) -> failures::Step {
+        failures::Step {
+            name: name.to_string(),
+            state,
+        }
+    }
+
+    fn job(id: u64, name: &str, state: State) -> Job {
+        Job {
+            name: name.to_string(),
+            state,
+            url: format!("https://github.com/o/r/actions/runs/1/job/{id}"),
+            steps: vec![step("Build", State::Passed), step("Warnings", state)],
+            id,
+        }
+    }
+
+    struct Asked {
+        jobs: Vec<u64>,
+        logs: Vec<u64>,
+    }
+
+    fn explained_with(
+        list: &[String],
+        known: &[Run],
+        logged_in: bool,
+        found: Vec<Job>,
+    ) -> (Summary, Asked) {
+        let mut summary = summary(&runs(list)).unwrap().unwrap();
+        let asked = std::cell::RefCell::new(Asked {
+            jobs: Vec::new(),
+            logs: Vec::new(),
         });
+        explain(
+            &mut summary,
+            known,
+            logged_in,
+            |run| {
+                asked.borrow_mut().jobs.push(run);
+                Ok(found.clone())
+            },
+            |job| {
+                asked.borrow_mut().logs.push(job);
+                Some("error: unused".to_string())
+            },
+        );
         (summary, asked.into_inner())
+    }
+
+    fn explained(known: &[Run], logged_in: bool) -> (Summary, Asked) {
+        explained_with(
+            &[
+                run(1, "a", "completed", Some("failure")),
+                run(2, "a", "completed", Some("success")),
+            ],
+            known,
+            logged_in,
+            vec![job(7, "test", State::Failed)],
+        )
     }
 
     #[test]
     fn asks_what_failed_once_for_each_failed_run() {
         let (first, asked) = explained(&[], false);
-        assert_eq!(asked, [1]);
+        assert_eq!(asked.jobs, [1]);
+        assert!(asked.logs.is_empty());
         assert_eq!(first.runs[0].failures, [failure(None)]);
+        assert_eq!(first.runs[0].jobs, [job(7, "test", State::Failed)]);
         assert!(first.runs[1].failures.is_empty());
+        assert!(first.runs[1].jobs.is_empty());
         let (again, asked) = explained(&first.runs, false);
-        assert!(asked.is_empty());
+        assert!(asked.jobs.is_empty());
         assert_eq!(again.runs[0].failures, [failure(None)]);
+        assert_eq!(again.runs[0].jobs, first.runs[0].jobs);
     }
 
     #[test]
     fn asks_again_for_the_logs_after_logging_in() {
         let (anonymous, _) = explained(&[], false);
         let (logged_in, asked) = explained(&anonymous.runs, true);
-        assert_eq!(asked, [1]);
+        assert_eq!(asked.jobs, [1]);
+        assert_eq!(asked.logs, [7]);
         assert_eq!(logged_in.runs[0].failures, [failure(Some("error: unused"))]);
         let (logged_out, asked) = explained(&logged_in.runs, false);
-        assert!(asked.is_empty());
+        assert!(asked.jobs.is_empty());
         assert_eq!(
             logged_out.runs[0].failures,
             [failure(Some("error: unused"))]
         );
+    }
+
+    #[test]
+    fn fails_as_soon_as_a_job_of_a_running_workflow_failed() {
+        let list = [
+            run(1, "a", "in_progress", None),
+            run(2, "a", "completed", Some("success")),
+        ];
+        let (running, asked) = explained_with(
+            &list,
+            &[],
+            true,
+            vec![
+                job(7, "test", State::Running),
+                job(8, "lint", State::Passed),
+            ],
+        );
+        assert_eq!(asked.jobs, [1]);
+        assert_eq!(running.state, State::Running);
+        assert!(running.runs[0].failures.is_empty());
+        let found = vec![
+            job(7, "test", State::Failed),
+            job(9, "linux", State::Running),
+        ];
+        let (failed, asked) = explained_with(&list, &running.runs, true, found.clone());
+        assert_eq!(asked.logs, [7]);
+        assert_eq!(failed.state, State::Failed);
+        assert_eq!(failed.label(), "Failed, still running");
+        assert_eq!(failed.runs[0].state, State::Failed);
+        assert_eq!(failed.runs[0].failures, [failure(Some("error: unused"))]);
+        assert_eq!(failed.runs[0].jobs, found);
+        let (again, asked) = explained_with(&list, &failed.runs, true, found);
+        assert_eq!(asked.jobs, [1]);
+        assert!(asked.logs.is_empty());
+        assert_eq!(again.runs[0].failures, [failure(Some("error: unused"))]);
     }
 
     fn reported(found: Found, head: &str) -> Checks {
@@ -586,6 +758,21 @@ mod tests {
         .unwrap();
         summary.runs[0].failures = vec![failure(Some("error: unused"))];
         summary
+    }
+
+    #[test]
+    fn reports_what_still_runs() {
+        let mut summary = summary(&runs(&[run(1, "abcdef1234", "in_progress", None)]))
+            .unwrap()
+            .unwrap();
+        summary.runs[0].jobs = vec![
+            job(7, "test", State::Running),
+            job(8, "lint", State::Passed),
+        ];
+        let report = reported(Found::Runs(summary), "abcdef1234").report();
+        assert!(report.contains("- Workflow 1: Running"), "{report}");
+        assert!(report.contains("  Running test › Warnings"), "{report}");
+        assert!(!report.contains("lint"), "{report}");
     }
 
     #[test]

@@ -17,7 +17,10 @@ impl egui::Plugin for Pointer {
             .into_iter()
             .filter_map(|id| ctx.read_response(id))
             .any(|response| {
-                response.enabled() && response.sense.senses_click() && !response.sense.senses_drag()
+                response.enabled()
+                    && response.sense.senses_click()
+                    && !response.sense.senses_drag()
+                    && response.id != response.layer_id.id.with("move")
             });
         if clickable {
             ctx.set_cursor_icon(CursorIcon::PointingHand);
@@ -75,6 +78,25 @@ mod tests {
                 ui.checkbox(&mut checked, "Check");
             }),
             CursorIcon::PointingHand
+        );
+    }
+
+    #[test]
+    fn leaves_the_empty_space_of_a_popup_alone() {
+        let mut harness = Harness::builder()
+            .with_context_setup(|ctx| ctx.add_plugin(Pointer))
+            .build_ui(|ui| {
+                let response = ui.button("Open");
+                egui::Popup::menu(&response)
+                    .open(true)
+                    .show(|ui| ui.add(egui::Label::new("Inside").selectable(false)));
+            });
+        harness.run();
+        harness.get_by_label("Inside").hover();
+        harness.run();
+        assert_eq!(
+            harness.output().platform_output.cursor_icon,
+            CursorIcon::Default
         );
     }
 

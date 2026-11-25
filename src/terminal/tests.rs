@@ -371,6 +371,79 @@ fn mouse_clicks_go_to_programs_that_asked_for_them() {
     });
 }
 
+#[test]
+fn mouse_clicks_on_a_popup_over_the_terminal_stay_on_the_popup() {
+    let script = format!(
+        "printf '\\033[?1000h\\033[?1006h'; {}",
+        SHOW_INPUT.replace("COUNT", "18")
+    );
+    let dir = TempDir::new("terminal-mouse-popup");
+    let mut terminals = Terminals::new(dir.path().to_path_buf());
+    terminals.image_dir = dir.path().join("images");
+    terminals.run("/bin/sh", &["-c", &script]);
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(600.0, 400.0))
+        .with_max_steps(8)
+        .build_ui_state(
+            |ui, terminals: &mut Terminals| {
+                terminals.ui(ui, 1);
+                egui::Area::new(egui::Id::unique("popup"))
+                    .fixed_pos(egui::pos2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.allocate_exact_size(Vec2::new(40.0, 20.0), egui::Sense::hover());
+                    });
+            },
+            terminals,
+        );
+    let start = Instant::now();
+    while !harness.state().terminals[&1]
+        .as_ref()
+        .unwrap()
+        .term
+        .lock()
+        .mode()
+        .contains(TermMode::SGR_MOUSE)
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the program didn't ask for the mouse"
+        );
+        harness.run();
+    }
+    let terminal = harness.get_by_role(egui::Role::Terminal).rect().min;
+    let covered = terminal + Vec2::splat(PADDING + 2.0);
+    let free = covered + Vec2::new(0.0, 40.0);
+    for cell in [covered, free] {
+        harness.event(Event::PointerMoved(cell));
+        harness.run();
+        for pressed in [true, false] {
+            harness.event(Event::PointerButton {
+                pos: cell,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        harness.run();
+    }
+    let screen = |harness: &Harness<'_, Terminals>| {
+        harness
+            .state()
+            .screen(1)
+            .unwrap()
+            .split_whitespace()
+            .collect::<String>()
+    };
+    wait(&mut harness, "the click beside the popup", |harness| {
+        screen(harness).contains("033[<0;1;")
+    });
+    assert!(
+        !screen(&harness).contains("033[<0;1;1M"),
+        "{}",
+        screen(&harness)
+    );
+}
+
 fn picture() -> Arc<egui::ColorImage> {
     Arc::new(egui::ColorImage::new([1, 1], vec![egui::Color32::WHITE]))
 }

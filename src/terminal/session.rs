@@ -341,6 +341,9 @@ impl Terminal {
             )
         };
         let mode = *term.mode();
+        let over = |pos: egui::Pos2| {
+            rect.contains(pos) && ui.ctx().layer_id_at(pos) == Some(ui.layer_id())
+        };
         let mouse_reports =
             mode.intersects(TermMode::MOUSE_MODE) && !ui.input(|i| i.modifiers.shift);
         if mouse_reports {
@@ -352,7 +355,7 @@ impl Terminal {
                         button,
                         pressed,
                         modifiers,
-                    } if rect.contains(pos) || (!pressed && self.mouse_button.is_some()) => {
+                    } if over(pos) || (!pressed && self.mouse_button.is_some()) => {
                         let button = match button {
                             egui::PointerButton::Primary => 0,
                             egui::PointerButton::Middle => 1,
@@ -364,9 +367,7 @@ impl Terminal {
                         self.mouse_cell = Some((column, row));
                         input.extend(mouse_bytes(button, modifiers, (column, row), pressed, mode));
                     }
-                    Event::PointerMoved(pos)
-                        if rect.contains(pos) || self.mouse_button.is_some() =>
-                    {
+                    Event::PointerMoved(pos) if over(pos) || self.mouse_button.is_some() => {
                         let (column, row, _) = screen_cell(pos);
                         let moved = self.mouse_cell != Some((column, row));
                         let wanted = mode.contains(TermMode::MOUSE_MOTION)
