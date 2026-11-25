@@ -510,7 +510,7 @@ mod tests {
         harness.get_by_label("Forget notes").click();
         harness.run();
         assert!(harness.query_by_label("notes").is_none());
-        assert_eq!(projects::load(&store), [shop.root.clone()]);
+        assert_eq!(projects::load(&store), std::slice::from_ref(&shop.root));
     }
 
     #[test]
