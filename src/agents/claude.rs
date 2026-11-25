@@ -128,7 +128,12 @@ pub(super) fn claude_background(message: &str, guide: Option<&Path>, tuning: &Tu
         text("--permission-mode"),
         text("dontAsk"),
         text("--allowedTools"),
+        text("Read"),
+        text("Grep"),
+        text("Glob"),
         text("Bash(git diff:*)"),
+        text("Bash(git log:*)"),
+        text("Bash(git show:*)"),
         text("Bash(shepherd ctl:*)"),
     ];
     args.extend(claude_tuning(tuning));
