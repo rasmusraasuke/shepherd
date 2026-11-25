@@ -358,7 +358,8 @@ fn downloads_node_when_there_is_none_new_enough() {
 #[test]
 fn installs_gopls_with_go() {
     let dir = TempDir::new("install-go");
-    let installer = installer(&dir);
+    let mut installer = installer(&dir);
+    installer.path_env = dir.path().join("bin").display().to_string();
     assert_eq!(
         installer.find(language("Go"), &progress()).unwrap_err(),
         "Cannot install the Go language server: Go is needed to install it, and go is not on \
@@ -367,9 +368,9 @@ fn installs_gopls_with_go() {
     script(
         &dir,
         "bin/go",
-        r#"mkdir -p "$GOBIN"
+        r#"/bin/mkdir -p "$GOBIN"
 printf '#!/bin/sh\n' > "$GOBIN/gopls"
-chmod +x "$GOBIN/gopls"
+/bin/chmod +x "$GOBIN/gopls"
 echo "$@" > "$GOBIN/../go-args""#,
     );
     let found = installer.find(language("Go"), &progress()).unwrap();
