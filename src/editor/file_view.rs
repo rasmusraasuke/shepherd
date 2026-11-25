@@ -105,7 +105,7 @@ impl OpenFiles {
             match event {
                 Event::Hover { path, pos, text } => {
                     if let Some(file) = self.files.get_mut(&path) {
-                        file.editor.set_hover_text(pos, text);
+                        file.editor.set_hover_text(pos, Path::new(&path), &text);
                     }
                 }
                 Event::Definition { path, start, .. } => {

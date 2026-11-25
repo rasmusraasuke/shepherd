@@ -294,7 +294,26 @@ pub struct Highlighter {
 
 impl Highlighter {
     pub fn for_path(path: &Path) -> Option<Self> {
-        let grammar = grammar_for(&FileType::extension(path.to_str()?))?;
+        Self::for_extension(&FileType::extension(path.to_str()?))
+    }
+
+    fn for_language(language: &str) -> Option<Self> {
+        let language = language.to_ascii_lowercase();
+        let extension = match language.as_str() {
+            "kotlin" => "kt",
+            "rust" => "rs",
+            "javascript" => "js",
+            "typescript" => "ts",
+            "python" => "py",
+            "golang" => "go",
+            "shell" | "shellscript" => "sh",
+            other => other,
+        };
+        Self::for_extension(extension)
+    }
+
+    fn for_extension(extension: &str) -> Option<Self> {
+        let grammar = grammar_for(extension)?;
         let mut parser = Parser::new();
         parser.set_language(&grammar.language).ok()?;
         Some(Self {
@@ -340,11 +359,24 @@ impl Highlighter {
     }
 
     pub fn spans_of(path: &Path, lines: &[String]) -> Vec<Spans> {
-        let Some(mut highlighter) = Self::for_path(path) else {
+        Self::spans_with(Self::for_path(path), lines)
+    }
+
+    fn spans_with(highlighter: Option<Self>, lines: &[String]) -> Vec<Spans> {
+        let Some(mut highlighter) = highlighter else {
             return vec![Vec::new(); lines.len()];
         };
         highlighter.update(&mut Buffer::new(&lines.join("\n")));
         highlighter.find(0..lines.len())
+    }
+
+    pub fn spans_in(language: &str, path: &Path, lines: &[String]) -> Vec<Spans> {
+        let highlighter = if language.is_empty() {
+            Self::for_path(path)
+        } else {
+            Self::for_language(language)
+        };
+        Self::spans_with(highlighter, lines)
     }
 
     pub fn spans(&mut self, lines: Range<usize>) -> &[Spans] {

@@ -670,14 +670,15 @@ fn hover_text(contents: &Value) -> Option<String> {
             .filter_map(hover_text)
             .collect::<Vec<_>>()
             .join("\n\n"),
-        Value::Object(_) => contents["value"].as_str()?.to_string(),
+        Value::Object(_) => {
+            let value = contents["value"].as_str()?;
+            match contents["language"].as_str() {
+                Some(language) => format!("```{language}\n{value}\n```"),
+                None => value.to_string(),
+            }
+        }
         _ => return None,
     };
-    let text = text
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("```"))
-        .collect::<Vec<_>>()
-        .join("\n");
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
 }

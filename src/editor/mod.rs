@@ -3,6 +3,7 @@ pub mod code;
 pub mod file_view;
 pub mod highlight;
 pub mod image_view;
+pub mod markdown;
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -17,6 +18,7 @@ use eframe::egui::{
 use buffer::{Buffer, Move, Pos};
 use code::CodeStyle;
 use highlight::Highlighter;
+use markdown::Block;
 
 use crate::git::{Commit, Hunk, LineKind, commit_times};
 use crate::lsp::{Diagnostic, Severity};
@@ -50,7 +52,9 @@ struct Hover {
     since: f64,
     ready: bool,
     asked: bool,
-    text: Option<String>,
+    text: Option<Vec<Block>>,
+    anchor: Option<egui::Pos2>,
+    rect: Option<egui::Rect>,
 }
 
 struct OpenChange {
@@ -311,6 +315,135 @@ fn change_layout(ui: &egui::Ui, hunk: &Hunk, max_width: f32) -> DiffLayout {
     }
 }
 
+fn hover_blocks(ui: &mut egui::Ui, blocks: &[Block]) {
+    let mut left = HOVER_LINES;
+    for block in blocks {
+        if left == 0 {
+            ui.weak("…");
+            return;
+        }
+        match block {
+            Block::Rule => {
+                ui.separator();
+            }
+            Block::Text(runs) => {
+                left -= 1;
+                text_ui(ui, runs);
+            }
+            Block::Code(lines) => {
+                let shown = lines.len().min(left);
+                left -= shown;
+                ui.label(code_job(ui, &lines[..shown]));
+                if shown < lines.len() {
+                    ui.weak("…");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn text_ui(ui: &mut egui::Ui, runs: &[(String, markdown::Style)]) {
+    let job = text_job(ui, runs);
+    let (pos, galley, response) = egui::Label::new(job).selectable(true).layout_in_ui(ui);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, galley.text()));
+    let pointer = ui.input(|i| i.pointer.latest_pos());
+    let link = pointer
+        .filter(|_| response.contains_pointer())
+        .and_then(|pointer| {
+            let local = pointer - pos;
+            let cursor = galley.cursor_from_pos(local);
+            let before = galley.pos_from_cursor(cursor).min.x > local.x;
+            let at = if before {
+                cursor.index.0.saturating_sub(1)
+            } else {
+                cursor.index.0
+            };
+            markdown::link_at(runs, at)
+        });
+    egui::text_selection::LabelSelectionState::label_text_selection(
+        ui,
+        &response,
+        pos,
+        galley,
+        ui.visuals().text_color(),
+        egui::Stroke::NONE,
+    );
+    if let Some(url) = link {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        if response.clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+    }
+}
+
+fn text_job(ui: &egui::Ui, runs: &[(String, markdown::Style)]) -> egui::text::LayoutJob {
+    let visuals = ui.visuals();
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let code = egui::TextStyle::Monospace.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    for (text, style) in runs {
+        let mut font = if style.code {
+            code.clone()
+        } else {
+            body.clone()
+        };
+        if style.heading {
+            font.size *= 1.15;
+        }
+        let color = if style.link.is_some() {
+            visuals.hyperlink_color
+        } else if style.strong || style.heading {
+            visuals.strong_text_color()
+        } else {
+            visuals.text_color()
+        };
+        job.append(
+            text,
+            0.0,
+            egui::TextFormat {
+                italics: style.emphasis,
+                background: if style.code {
+                    visuals.code_bg_color
+                } else {
+                    Color32::TRANSPARENT
+                },
+                ..egui::TextFormat::simple(font, color)
+            },
+        );
+    }
+    job
+}
+
+fn code_job(ui: &egui::Ui, lines: &[(String, highlight::Spans)]) -> egui::text::LayoutJob {
+    let style = CodeStyle::new(ui);
+    let dark = ui.visuals().dark_mode;
+    let mut job = egui::text::LayoutJob::default();
+    for (at, (line, spans)) in lines.iter().enumerate() {
+        if at > 0 {
+            job.append(
+                "\n",
+                0.0,
+                egui::TextFormat::simple(style.font.clone(), style.text_color),
+            );
+        }
+        let line_job = highlight::layout_job(
+            line,
+            spans,
+            &[],
+            Color32::TRANSPARENT,
+            &style.font,
+            style.text_color,
+            dark,
+        );
+        for section in line_job.sections {
+            let range = section.byte_range.start.0..section.byte_range.end.0;
+            job.append(&line_job.text[range], 0.0, section.format);
+        }
+    }
+    job
+}
+
 fn change_tooltip(
     ui: &mut egui::Ui,
     path: &str,
@@ -461,9 +594,9 @@ impl Editor {
         Some(hover.pos)
     }
 
-    pub fn set_hover_text(&mut self, pos: Pos, text: String) {
+    pub fn set_hover_text(&mut self, pos: Pos, path: &Path, text: &str) {
         if let Some(hover) = self.hover.as_mut().filter(|hover| hover.pos == pos) {
-            hover.text = Some(text);
+            hover.text = Some(markdown::parse(path, text));
         }
     }
 
@@ -719,7 +852,28 @@ impl Editor {
     }
 
     fn track_hover(&mut self, ui: &egui::Ui, hovered: Option<Pos>, revision: u64) {
-        let now = ui.input(|i| i.time);
+        let (now, pointer, direction, selecting_from) = ui.input(|i| {
+            (
+                i.time,
+                i.pointer.hover_pos(),
+                i.pointer.direction(),
+                i.pointer
+                    .press_origin()
+                    .filter(|_| i.pointer.primary_down()),
+            )
+        });
+        let popup = self.hover.as_ref().and_then(|hover| hover.rect);
+        let towards_popup = popup.is_some_and(|rect| {
+            selecting_from.is_some_and(|origin| rect.contains(origin))
+                || pointer.is_some_and(|pointer| {
+                    rect.contains(pointer)
+                        || (direction != Vec2::ZERO
+                            && rect.intersects_ray(pointer, direction.normalized()))
+                })
+        });
+        if towards_popup {
+            return;
+        }
         match hovered {
             Some(pos)
                 if self
@@ -734,6 +888,8 @@ impl Editor {
                     ready: false,
                     asked: false,
                     text: None,
+                    anchor: None,
+                    rect: None,
                 })
             }
             None => self.hover = None,
@@ -751,8 +907,8 @@ impl Editor {
         }
     }
 
-    fn hover_ui(&self, response: &egui::Response, diagnostics: &[Diagnostic]) {
-        let Some(hover) = self.hover.as_ref().filter(|hover| hover.ready) else {
+    fn hover_ui(&mut self, response: &egui::Response, diagnostics: &[Diagnostic]) {
+        let Some(hover) = self.hover.as_mut().filter(|hover| hover.ready) else {
             return;
         };
         let found: Vec<&Diagnostic> = diagnostics
@@ -762,24 +918,36 @@ impl Editor {
         if found.is_empty() && hover.text.is_none() {
             return;
         }
-        egui::Tooltip::for_widget(response)
-            .at_pointer()
-            .width(560.0)
-            .show(|ui| {
-                for diagnostic in &found {
-                    ui.colored_label(severity_color(ui, diagnostic.severity), &diagnostic.message);
-                }
-                if let Some(text) = &hover.text {
-                    if !found.is_empty() {
-                        ui.separator();
+        let ctx = &response.ctx;
+        let Some(anchor) = hover
+            .anchor
+            .or_else(|| ctx.input(|i| i.pointer.hover_pos()))
+        else {
+            return;
+        };
+        hover.anchor = Some(anchor);
+        let shown = egui::Area::new(response.id.with("hover"))
+            .order(egui::Order::Tooltip)
+            .sense(Sense::hover())
+            .fixed_pos(anchor + egui::vec2(0.0, 16.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(560.0);
+                    for diagnostic in &found {
+                        ui.colored_label(
+                            severity_color(ui, diagnostic.severity),
+                            &diagnostic.message,
+                        );
                     }
-                    let mut lines: Vec<&str> = text.lines().take(HOVER_LINES).collect();
-                    if text.lines().nth(HOVER_LINES).is_some() {
-                        lines.push("…");
+                    if let Some(text) = &hover.text {
+                        if !found.is_empty() {
+                            ui.separator();
+                        }
+                        hover_blocks(ui, text);
                     }
-                    ui.label(egui::RichText::new(lines.join("\n")).monospace());
-                }
+                });
             });
+        hover.rect = Some(shown.response.rect);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1156,6 +1324,7 @@ fn handle_key(buffer: &mut Buffer, key: Key, modifiers: Modifiers, page_rows: is
 mod tests {
     use super::*;
     use crate::review::line_diff;
+    use egui_kittest::kittest::Queryable as _;
 
     #[test]
     fn marks_new_changed_and_deleted_lines() {
@@ -1190,5 +1359,140 @@ mod tests {
         let marks = markers(&added, 2);
         assert_eq!(marks.get(&0).map(|(marker, _)| *marker), Some(Marker::New));
         assert_eq!(marks.get(&1).map(|(marker, _)| *marker), Some(Marker::New));
+    }
+
+    fn harness_with_hover() -> (egui_kittest::Harness<'static, (Editor, Buffer)>, egui::Rect) {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_context_setup(|ctx| ctx.add_plugin(crate::ui::cursor::Pointer))
+            .build_ui_state(
+                |ui, (editor, buffer): &mut (Editor, Buffer)| {
+                    editor.ui(
+                        ui,
+                        "a.kt",
+                        buffer,
+                        None,
+                        None,
+                        &[],
+                        false,
+                        &mut false,
+                        &mut None,
+                    );
+                },
+                (Editor::default(), Buffer::new("val x = 1\n")),
+            );
+        harness.set_size(Vec2::new(800.0, 400.0));
+        harness.run_ok();
+        let mut asked = None;
+        for x in (0..400).step_by(10) {
+            harness.hover_at(egui::pos2(x as f32, 10.0));
+            harness.run_steps(4);
+            asked = harness.state_mut().0.take_hover_request();
+            if asked.is_some() {
+                break;
+            }
+        }
+        let pos = asked.expect("a hover request");
+        harness.state_mut().0.set_hover_text(
+            pos,
+            Path::new("a.kt"),
+            "```kotlin\nval x: Int\n```\n\nSee the [documentation](https://example.com/docs)",
+        );
+        harness.run_steps(2);
+        let text = harness
+            .get_by_label_contains("See the documentation")
+            .rect();
+        (harness, text)
+    }
+
+    fn press(
+        harness: &mut egui_kittest::Harness<'static, (Editor, Buffer)>,
+        pos: egui::Pos2,
+        pressed: bool,
+    ) {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+
+    #[test]
+    fn opens_a_link_in_the_hover_after_moving_onto_it() {
+        let (mut harness, text) = harness_with_hover();
+        harness.hover_at(egui::pos2(text.left() + 4.0, text.center().y));
+        harness.run_steps(2);
+        assert_eq!(
+            harness.output().platform_output.cursor_icon,
+            egui::CursorIcon::Text
+        );
+        let link = egui::pos2(text.right() - 8.0, text.center().y);
+        harness.hover_at(link);
+        harness.run_steps(2);
+        assert!(
+            harness
+                .query_by_label_contains("See the documentation")
+                .is_some()
+        );
+        assert_eq!(
+            harness.output().platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
+        press(&mut harness, link, true);
+        press(&mut harness, link, false);
+        let opened: Vec<&str> = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::OpenUrl(open) => Some(open.url.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opened, ["https://example.com/docs"]);
+    }
+
+    #[test]
+    fn selects_and_copies_text_in_the_hover() {
+        let (mut harness, text) = harness_with_hover();
+        let start = egui::pos2(text.left() + 1.0, text.center().y);
+        let end = egui::pos2(text.left() + 40.0, text.center().y);
+        harness.hover_at(start);
+        harness.run_steps(2);
+        press(&mut harness, start, true);
+        for x in [10.0, 25.0, 40.0] {
+            harness.hover_at(egui::pos2(text.left() + x, text.center().y));
+            harness.step();
+        }
+        press(&mut harness, end, false);
+        harness.event(egui::Event::Copy);
+        harness.step();
+        assert!(
+            harness
+                .query_by_label_contains("See the documentation")
+                .is_some()
+        );
+        let copied: Vec<&str> = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(copied.len(), 1);
+        assert!("See the documentation".starts_with(copied[0]) && copied[0].len() > 3);
+        assert!(
+            harness
+                .output()
+                .platform_output
+                .commands
+                .iter()
+                .all(|command| !matches!(command, egui::OutputCommand::OpenUrl(_)))
+        );
     }
 }

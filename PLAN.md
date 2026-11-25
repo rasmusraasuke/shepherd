@@ -26,7 +26,7 @@ around that loop.
 
 Milestones 1 to 12 are done and FEATURES.md describes what they brought. Milestone 13 has
 begun: language servers start on their own for the files opened, show their diagnostics and
-hover information, go to definitions, and give their diagnostics to agents through
+hover information with its code highlighted, go to definitions, and give their diagnostics to agents through
 `shepherd ctl diagnostics`; the servers are installed on their own when they are missing. What is left of it is below.
 
 ## Milestones

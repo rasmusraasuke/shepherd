@@ -252,7 +252,7 @@ fn asks_for_hover_text_at_a_place() {
         [Event::Hover {
             path: "a.kt".to_string(),
             pos: Pos::new(0, 3),
-            text: "fun main(): Unit\n\nRuns it".to_string(),
+            text: "```kotlin\nfun main(): Unit\n```\n\nRuns it".to_string(),
         }]
     );
 }
