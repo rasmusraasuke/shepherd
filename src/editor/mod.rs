@@ -2,6 +2,7 @@ pub mod buffer;
 pub mod code;
 pub mod file_view;
 pub mod highlight;
+pub mod image_view;
 
 use std::collections::HashMap;
 use std::ops::Range;

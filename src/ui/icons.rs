@@ -32,6 +32,7 @@ pub enum FileType {
     Sql,
     Git,
     Svg,
+    Image,
     Svelte,
     Pdf,
     Text,
@@ -69,6 +70,7 @@ impl FileType {
             "sql" => Self::Sql,
             "gitignore" | "gitkeep" | "gitattributes" | "gitmodules" => Self::Git,
             "svg" => Self::Svg,
+            "png" | "jpg" | "jpeg" | "gif" | "webp" => Self::Image,
             "svelte" => Self::Svelte,
             "pdf" => Self::Pdf,
             _ => Self::Text,
@@ -100,7 +102,7 @@ impl FileType {
             Self::Docker => rgb(29, 99, 237),
             Self::Sql => rgb(0, 150, 170),
             Self::Git => rgb(240, 80, 50),
-            Self::Svg => rgb(84, 138, 247),
+            Self::Svg | Self::Image => rgb(84, 138, 247),
             Self::Svelte => rgb(255, 62, 0),
             Self::Pdf => rgb(220, 50, 50),
             Self::Text => return None,
@@ -367,7 +369,7 @@ pub fn paint(painter: &Painter, center: Pos2, size: f32, icon: Icon, color: Colo
                 line(&[(7.0, 5.5), (7.0, 12.5)]);
                 line(&[(7.0, 5.5), (11.5, 9.5)]);
             }
-            FileType::Svg => {
+            FileType::Svg | FileType::Image => {
                 painter.rect_stroke(
                     Rect::from_min_max(at(2.0, 2.0), at(16.0, 16.0)),
                     3.0 * scale,
@@ -414,6 +416,8 @@ mod tests {
         assert_eq!(FileType::of(".dockerignore"), FileType::Docker);
         assert_eq!(FileType::of("db/V1__init.sql"), FileType::Sql);
         assert_eq!(FileType::of("logo.svg"), FileType::Svg);
+        assert_eq!(FileType::of("assets/photo.JPEG"), FileType::Image);
+        assert_eq!(FileType::of("icon.png"), FileType::Image);
         assert_eq!(FileType::of("src/App.svelte"), FileType::Svelte);
         assert_eq!(FileType::of("docs/Manual.PDF"), FileType::Pdf);
         assert!(FileType::Pdf.opens_outside());

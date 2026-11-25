@@ -25,11 +25,17 @@ Everything Shepherd does today. [README.md](README.md) has the short tour.
 - **Icons in the trees.** Folders show as folders, open or closed, and files by their type,
   in its own color: Kotlin, Java, Rust, JavaScript, TypeScript, Python, Go, JSON, YAML, TOML,
   Markdown, HTML, XML, CSS, shell scripts, Dockerfiles and `.dockerignore`, SQL, git files
-  such as `.gitignore` and `.gitkeep`, SVG, Svelte and PDF. Any other file, plain text
-  included, shows a page with lines. The names of new files are green and of changed files blue, in *Files*
-  as under *Changes*.
+  such as `.gitignore` and `.gitkeep`, SVG and other images, Svelte and PDF. Any other file,
+  plain text included, shows a page with lines. The names of new files are green and of
+  changed files blue, in *Files* as under *Changes*.
 - **Files.** Click a file in the tree to open it as a tab. A PDF opens in the app the system
-  uses for PDFs instead. A file that is already open is
+  uses for PDFs instead.
+- **Images.** PNG, JPEG, GIF and WebP files show as pictures, fitted to the tab without
+  being enlarged, on a checkerboard that shows what is transparent, with their size in pixels
+  in the corner. An SVG opens as code with the picture beside it, drawn sharp at any size
+  and redrawn as the code is edited; while the code cannot be drawn the last picture stays
+  and the corner says what is wrong. Pictures are decoded away from the editor, very large
+  ones are scaled down for the screen, and a picture changed on disk is shown again. A file that is already open is
   brought to the front instead, in whichever window it is.
 - **Quick open.** Cmd+P (Ctrl+P outside macOS) finds a file by name: type a few characters,
   pick with the arrow keys, open with Enter. The file opens in the window the popup is in.

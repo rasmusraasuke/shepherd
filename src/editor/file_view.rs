@@ -8,11 +8,13 @@ use eframe::egui::{self, Key, Modifiers};
 use crate::editor::Editor;
 use crate::editor::buffer::{Buffer, Pos};
 use crate::editor::highlight::Highlighter;
+use crate::editor::image_view::{ImageView, Source};
 use crate::git::{Commit, Hunk, Repo};
 use crate::lsp::install::Installer;
 use crate::lsp::{Event, Lsp};
 use crate::panels::search::Reveal;
 use crate::review::line_diff;
+use crate::ui::icons::FileType;
 
 const MAX_SIZE: u64 = 20 * 1024 * 1024;
 
@@ -38,6 +40,8 @@ pub struct Selection {
 
 struct OpenFile {
     path: PathBuf,
+    kind: FileType,
+    preview: Option<ImageView>,
     modified: Option<SystemTime>,
     buffer: Result<Buffer, String>,
     highlighter: Option<Highlighter>,
@@ -324,23 +328,49 @@ impl OpenFiles {
         let blame_on = file.blame.is_some();
         let mut toggle = false;
         let mut open_commit = None;
+        let mut label = None;
+        let (code, picture) = ui
+            .available_rect_before_wrap()
+            .split_left_right_at_fraction(0.5);
         let line = match &mut file.buffer {
             Ok(buffer) => {
                 let review = file.editor.is_active()
                     && ui.input_mut(|i| {
                         i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::R)
                     });
-                file.editor.ui(
-                    ui,
-                    path,
-                    buffer,
-                    file.highlighter.as_mut(),
-                    annotations,
-                    &file.changes,
-                    blame_on,
-                    &mut toggle,
-                    &mut open_commit,
-                );
+                let mut show = |ui: &mut egui::Ui| {
+                    file.editor.ui(
+                        ui,
+                        path,
+                        buffer,
+                        file.highlighter.as_mut(),
+                        annotations,
+                        &file.changes,
+                        blame_on,
+                        &mut toggle,
+                        &mut open_commit,
+                    )
+                };
+                match &mut file.preview {
+                    Some(preview) => {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(code), show);
+                        ui.painter().vline(
+                            picture.left(),
+                            picture.y_range(),
+                            ui.visuals().widgets.noninteractive.bg_stroke,
+                        );
+                        let dir = file.path.parent().map(Path::to_path_buf);
+                        label = ui
+                            .scope_builder(egui::UiBuilder::new().max_rect(picture), |ui| {
+                                preview.ui(ui, buffer.revision(), || Source::Svg {
+                                    text: buffer.text(),
+                                    dir,
+                                })
+                            })
+                            .inner;
+                    }
+                    None => show(ui),
+                }
                 let line = review.then(|| buffer.cursor().line);
                 if review {
                     ui.memory_mut(|m| m.focused().map(|id| m.surrender_focus(id)));
@@ -349,6 +379,18 @@ impl OpenFiles {
                     self.last_active = Some(path.to_string());
                 }
                 line
+            }
+            Err(_) if file.kind == FileType::Image => {
+                let key = file
+                    .modified
+                    .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map_or(0, |time| time.as_nanos() as u64);
+                let path = file.path.clone();
+                label = file
+                    .preview
+                    .as_mut()
+                    .and_then(|preview| preview.ui(ui, key, || Source::File(path)));
+                None
             }
             Err(message) => {
                 ui.centered_and_justified(|ui| ui.weak(message.as_str()));
@@ -359,7 +401,7 @@ impl OpenFiles {
         if toggle {
             self.toggle_blame(path);
         }
-        if let Some(status) = status {
+        if let Some(status) = status.or(label) {
             status_ui(ui, view, &status);
         }
         line
@@ -395,9 +437,15 @@ fn status_ui(ui: &egui::Ui, view: egui::Rect, status: &str) {
 
 impl OpenFile {
     fn open(path: PathBuf, committed: Option<String>) -> Self {
-        let buffer = read(&path).map(|text| Buffer::new(&text));
+        let kind = FileType::of(&path.to_string_lossy());
+        let buffer = match kind {
+            FileType::Image => Err("An image has no text".to_string()),
+            _ => read(&path).map(|text| Buffer::new(&text)),
+        };
         let highlighter = Highlighter::for_path(&path);
         Self {
+            kind,
+            preview: matches!(kind, FileType::Svg | FileType::Image).then(ImageView::default),
             modified: modified(&path),
             buffer,
             highlighter,
@@ -457,6 +505,9 @@ impl OpenFile {
             return;
         }
         self.modified = on_disk;
+        if self.kind == FileType::Image {
+            return;
+        }
         let mut reloaded = false;
         match (&mut self.buffer, read(&self.path)) {
             (Ok(buffer), Ok(text)) if buffer.text() == text => {}

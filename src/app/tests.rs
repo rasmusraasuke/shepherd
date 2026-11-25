@@ -1536,3 +1536,55 @@ fn opens_pdf_files_in_another_app() {
     );
     assert_eq!(open_tabs(&harness), tabs);
 }
+
+#[test]
+fn shows_what_images_look_like() {
+    let (mut harness, dir) = harness("images");
+    dir.write("pixel.png", crate::editor::image_view::tests::png(2, 1));
+    dir.write(
+        "logo.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="12"/>"#,
+    );
+    harness.state_mut().action = Some(Action::Open(file("pixel.png"), 0));
+    run_until(&mut harness, |harness| {
+        harness.query_by_label("2 × 1 px").is_some()
+    });
+    let path = dir.write("pixel.png", crate::editor::image_view::tests::png(4, 3));
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    harness.state_mut().content.open_files.reload_changed();
+    run_until(&mut harness, |harness| {
+        harness.query_by_label("4 × 3 px").is_some()
+    });
+
+    harness.state_mut().action = Some(Action::Open(file("logo.svg"), 0));
+    run_until(&mut harness, |harness| {
+        harness.query_by_label("24 × 12 px").is_some()
+    });
+    let svg = |harness: &mut Harness<'static, App>, text: &str| {
+        let (buffer, _) = harness
+            .state_mut()
+            .content
+            .open_files
+            .text("logo.svg", false)
+            .unwrap();
+        buffer.set_text(text);
+    };
+    svg(
+        &mut harness,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="12"/>"#,
+    );
+    run_until(&mut harness, |harness| {
+        harness.query_by_label("48 × 12 px").is_some()
+    });
+    svg(&mut harness, "<svg");
+    run_until(&mut harness, |harness| {
+        harness
+            .query_by_label_contains("Cannot show the SVG")
+            .is_some()
+    });
+}
