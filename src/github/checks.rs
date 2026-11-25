@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use serde::Deserialize;
 
+use super::failures::{self, Failure};
 use super::login::{Event, Login};
 use super::{forget_token, get, token};
 use crate::git::DETACHED;
@@ -30,6 +31,10 @@ pub struct Run {
     pub name: String,
     pub state: State,
     pub url: String,
+    pub failures: Vec<Failure>,
+    pub(super) id: u64,
+    pub(super) attempt: u32,
+    pub(super) with_logs: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -123,9 +128,13 @@ impl Checks {
         }
         let (sender, receiver) = mpsc::channel();
         let branch = self.branch.clone();
+        let known = match &self.found {
+            Found::Runs(summary) => summary.runs.clone(),
+            _ => Vec::new(),
+        };
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let _ = sender.send(fetch(&repository, &branch));
+            let _ = sender.send(fetch(&repository, &branch, &known));
             ctx.request_repaint();
         });
         self.fetching = Some(receiver);
@@ -176,16 +185,24 @@ impl Checks {
     }
 }
 
-fn fetch(repository: &str, branch: &str) -> Result<Fetched, String> {
+fn fetch(repository: &str, branch: &str, known: &[Run]) -> Result<Fetched, String> {
     let token = token();
+    let logged_in = token.is_some();
     let response = get(
         &format!("/repos/{repository}/actions/runs"),
         &[("branch", branch), ("per_page", "30")],
         token.as_deref(),
     )?;
-    let logged_in = token.is_some();
     let found = match response.status {
-        200 => summary(&response.body)?.map_or(Found::Nothing, Found::Runs),
+        200 => match summary(&response.body)? {
+            Some(mut summary) => {
+                explain(&mut summary, known, logged_in, |run| {
+                    failures::fetch(repository, run, token.as_deref())
+                });
+                Found::Runs(summary)
+            }
+            None => Found::Nothing,
+        },
         401 if logged_in => {
             forget_token();
             return Ok(Fetched {
@@ -200,6 +217,36 @@ fn fetch(repository: &str, branch: &str) -> Result<Fetched, String> {
     Ok(Fetched { found, logged_in })
 }
 
+fn explain(
+    summary: &mut Summary,
+    known: &[Run],
+    logged_in: bool,
+    fetch: impl Fn(u64) -> Result<Vec<Failure>, String>,
+) {
+    for run in summary
+        .runs
+        .iter_mut()
+        .filter(|run| run.state == State::Failed)
+    {
+        let seen = known.iter().find(|seen| {
+            seen.id == run.id && seen.attempt == run.attempt && (seen.with_logs || !logged_in)
+        });
+        match seen {
+            Some(seen) => {
+                run.failures = seen.failures.clone();
+                run.with_logs = seen.with_logs;
+            }
+            None => match fetch(run.id) {
+                Ok(failures) => {
+                    run.failures = failures;
+                    run.with_logs = logged_in;
+                }
+                Err(error) => eprintln!("cannot find what failed in GitHub Actions: {error}"),
+            },
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ApiRuns {
     workflow_runs: Vec<ApiRun>,
@@ -207,12 +254,19 @@ struct ApiRuns {
 
 #[derive(Deserialize)]
 struct ApiRun {
+    id: u64,
+    #[serde(default = "first_attempt")]
+    run_attempt: u32,
     name: Option<String>,
     workflow_id: u64,
     head_sha: String,
     status: Option<String>,
     conclusion: Option<String>,
     html_url: String,
+}
+
+fn first_attempt() -> u32 {
+    1
 }
 
 impl ApiRun {
@@ -240,6 +294,10 @@ fn summary(json: &str) -> Result<Option<Summary>, String> {
             name: run.name.clone().unwrap_or_else(|| "Workflow".to_string()),
             state: run.state(),
             url: run.html_url.clone(),
+            failures: Vec::new(),
+            id: run.id,
+            attempt: run.run_attempt,
+            with_logs: false,
         })
         .collect();
     let any = |state| runs.iter().any(|run| run.state == state);
@@ -264,7 +322,7 @@ mod tests {
     fn run(id: u64, sha: &str, status: &str, conclusion: Option<&str>) -> String {
         let conclusion = conclusion.map_or("null".to_string(), |c| format!("\"{c}\""));
         format!(
-            r#"{{"name":"Workflow {id}","workflow_id":{id},"head_sha":"{sha}","status":"{status}","conclusion":{conclusion},"html_url":"https://github.com/o/r/actions/runs/{id}{sha}"}}"#
+            r#"{{"id":{id},"name":"Workflow {id}","workflow_id":{id},"head_sha":"{sha}","status":"{status}","conclusion":{conclusion},"html_url":"https://github.com/o/r/actions/runs/{id}{sha}"}}"#
         )
     }
 
@@ -379,5 +437,54 @@ mod tests {
         assert_eq!(checks.found, Found::LogIn);
         checks.set_commit("feature", "b");
         assert_eq!(checks.found, Found::Nothing);
+    }
+
+    fn failure(log: Option<&str>) -> Failure {
+        Failure {
+            job: "test".to_string(),
+            step: Some("Warnings".to_string()),
+            url: "https://github.com/o/r/actions/runs/1/job/7".to_string(),
+            log: log.map(str::to_string),
+        }
+    }
+
+    fn explained(known: &[Run], logged_in: bool) -> (Summary, Vec<u64>) {
+        let mut summary = summary(&runs(&[
+            run(1, "a", "completed", Some("failure")),
+            run(2, "a", "completed", Some("success")),
+        ]))
+        .unwrap()
+        .unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        explain(&mut summary, known, logged_in, |run| {
+            asked.borrow_mut().push(run);
+            Ok(vec![failure(logged_in.then_some("error: unused"))])
+        });
+        (summary, asked.into_inner())
+    }
+
+    #[test]
+    fn asks_what_failed_once_for_each_failed_run() {
+        let (first, asked) = explained(&[], false);
+        assert_eq!(asked, [1]);
+        assert_eq!(first.runs[0].failures, [failure(None)]);
+        assert!(first.runs[1].failures.is_empty());
+        let (again, asked) = explained(&first.runs, false);
+        assert!(asked.is_empty());
+        assert_eq!(again.runs[0].failures, [failure(None)]);
+    }
+
+    #[test]
+    fn asks_again_for_the_logs_after_logging_in() {
+        let (anonymous, _) = explained(&[], false);
+        let (logged_in, asked) = explained(&anonymous.runs, true);
+        assert_eq!(asked, [1]);
+        assert_eq!(logged_in.runs[0].failures, [failure(Some("error: unused"))]);
+        let (logged_out, asked) = explained(&logged_in.runs, false);
+        assert!(asked.is_empty());
+        assert_eq!(
+            logged_out.runs[0].failures,
+            [failure(Some("error: unused"))]
+        );
     }
 }

@@ -1,4 +1,5 @@
 mod checks;
+mod failures;
 mod login;
 mod view;
 
@@ -81,7 +82,12 @@ fn get(path: &str, query: &[(&str, &str)], token: Option<&str>) -> Result<Respon
     if let Some(token) = token {
         headers.push_str(&format!("Authorization: Bearer {token}\n"));
     }
-    let mut args = vec!["--get".to_string(), "-H".to_string(), "@-".to_string()];
+    let mut args = vec![
+        "-L".to_string(),
+        "--get".to_string(),
+        "-H".to_string(),
+        "@-".to_string(),
+    ];
     for (name, value) in query {
         args.push("--data-urlencode".to_string());
         args.push(format!("{name}={value}"));

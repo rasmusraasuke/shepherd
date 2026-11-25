@@ -362,10 +362,16 @@ the background; what it complains about is shown above the commit message.
   git's stash, and come back, reviewed marks included, when the branch is switched to
   again; until then the list says *(changes left there)*.
 - **GitHub Actions.** When `origin` is on GitHub, the right end of the title bar shows how
-  the workflows of the newest commit of the branch on GitHub went: a spinner with
-  *Running*, a ✓ with *Passed*, or a red dot with *Failed* as soon as one workflow failed.
-  On a narrow window only the sign shows. A click lists every workflow of that commit;
-  clicking one opens its run on GitHub. A rerun counts instead of the run it repeats. It is
+  the workflows of the newest commit of the branch on GitHub went: a yellow spinner with
+  *Running*, a green ✓ with *Passed*, or a red ✗ with *Failed* as soon as one workflow
+  failed. On a narrow window only the sign shows. A click lists every workflow of that
+  commit; clicking one opens its run on GitHub. A rerun counts instead of the run it repeats.
+- **What failed.** Under a failed workflow the popup names each failed job and the step in
+  it that failed, such as *test › Warnings*. The first one is unfolded and shows what that
+  step printed up to its error, the last 60 lines, scrolled to the end and selectable, with
+  *Copy the log* and *Open on GitHub*. GitHub only gives the logs after logging in; before
+  that the popup asks for it. What failed is asked for once for each run and attempt, and
+  again after logging in. It is
   checked every 15 seconds while something runs or a pushed commit has no runs yet, every
   minute otherwise, and right after a push or a branch switch. Public repositories work
   without logging in, checked every 2 or 5 minutes to stay within GitHub's limits.

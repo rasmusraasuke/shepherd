@@ -1,21 +1,30 @@
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Color32, RichText, Stroke};
 
 use super::CLIENT_ID;
 use super::checks::{Checks, Found, State};
+use super::failures::Failure;
 use crate::ui::status::{self, Kind};
 use crate::ui::theme;
 
 const HEIGHT: f32 = 22.0;
-const ICON: f32 = 12.0;
+const ICON: f32 = 14.0;
 const GAP: f32 = 6.0;
 const PADDING: f32 = 8.0;
 const MARGIN: f32 = 8.0;
 const POPUP_WIDTH: f32 = 320.0;
+const LOG_WIDTH: f32 = 640.0;
+const LOG_HEIGHT: f32 = 220.0;
 const COMPACT: f32 = 760.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Icon {
+    Status(Kind),
+    Run(State),
+}
 
 struct Look {
     text: String,
-    kind: Option<Kind>,
+    icon: Option<Icon>,
     failed: bool,
     compact: bool,
 }
@@ -24,18 +33,66 @@ impl Look {
     fn new(text: impl Into<String>, kind: Option<Kind>) -> Self {
         Self {
             text: text.into(),
-            kind,
+            icon: kind.map(Icon::Status),
             failed: matches!(kind, Some(Kind::Error)),
             compact: false,
         }
     }
 }
 
-fn kind(state: State) -> Kind {
+fn paint(ui: &egui::Ui, rect: egui::Rect, icon: Icon) {
+    match icon {
+        Icon::Status(kind) => status::paint_icon(ui, rect, kind),
+        Icon::Run(state) => paint_run(ui, rect, state),
+    }
+}
+
+fn color(state: State, dark: bool) -> Color32 {
+    match (state, dark) {
+        (State::Passed, false) => Color32::from_rgb(31, 136, 61),
+        (State::Passed, true) => Color32::from_rgb(35, 134, 54),
+        (State::Failed, false) => Color32::from_rgb(207, 34, 46),
+        (State::Failed, true) => Color32::from_rgb(218, 54, 51),
+        (State::Running, false) => Color32::from_rgb(191, 135, 0),
+        (State::Running, true) => Color32::from_rgb(210, 153, 34),
+    }
+}
+
+fn paint_run(ui: &egui::Ui, rect: egui::Rect, state: State) {
+    let painter = ui.painter();
+    let color = color(state, ui.visuals().dark_mode);
+    let center = rect.center();
+    let radius = rect.width().min(rect.height()) / 2.0;
+    let at = |x: f32, y: f32| center + egui::vec2(x, y) * radius;
+    let mark = Stroke::new(radius * 0.25, Color32::WHITE);
     match state {
-        State::Passed => Kind::Done,
-        State::Running => Kind::Busy,
-        State::Failed => Kind::Error,
+        State::Passed => {
+            painter.circle_filled(center, radius, color);
+            painter.line(vec![at(-0.45, 0.0), at(-0.12, 0.33), at(0.45, -0.25)], mark);
+        }
+        State::Failed => {
+            painter.circle_filled(center, radius, color);
+            painter.line_segment([at(-0.33, -0.33), at(0.33, 0.33)], mark);
+            painter.line_segment([at(0.33, -0.33), at(-0.33, 0.33)], mark);
+        }
+        State::Running => {
+            ui.request_repaint();
+            let width = radius * 0.3;
+            let radius = radius - width / 2.0;
+            painter.circle_stroke(
+                center,
+                radius,
+                Stroke::new(width, color.gamma_multiply(0.35)),
+            );
+            let start = ui.input(|i| i.time) as f32 * std::f32::consts::TAU;
+            let points = (0..=12)
+                .map(|i| {
+                    let angle = start + i as f32 / 12.0 * std::f32::consts::FRAC_PI_2;
+                    center + radius * egui::vec2(angle.cos(), angle.sin())
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, Stroke::new(width, color)));
+        }
     }
 }
 
@@ -62,7 +119,7 @@ impl Checks {
             let font = egui::TextStyle::Body.resolve(ui.style());
             ui.painter().layout_no_wrap(look.text.clone(), font, color)
         });
-        let icon_width = look.kind.map_or(0.0, |_| ICON);
+        let icon_width = look.icon.map_or(0.0, |_| ICON);
         let text_width = galley.as_ref().map_or(0.0, |galley| galley.size().x);
         let gap = if icon_width > 0.0 && text_width > 0.0 {
             GAP
@@ -80,9 +137,10 @@ impl Checks {
             egui::Sense::click(),
         );
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &look.text));
+        let popup_width = self.popup_width(ui.ctx());
         let popup = egui::Popup::menu(&response)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .width(POPUP_WIDTH);
+            .width(popup_width);
         if !popup.is_open() {
             response
                 .clone()
@@ -93,12 +151,12 @@ impl Checks {
                 .rect_filled(rect, 5.0, theme::palette(ui.visuals().dark_mode).hover);
         }
         let mut x = rect.left() + PADDING;
-        if let Some(kind) = look.kind {
-            let icon = egui::Rect::from_min_size(
+        if let Some(icon) = look.icon {
+            let area = egui::Rect::from_min_size(
                 egui::pos2(x, rect.center().y - ICON / 2.0),
                 egui::vec2(ICON, ICON),
             );
-            status::paint_icon(ui, icon, kind);
+            paint(ui, area, icon);
             x += ICON + gap;
         }
         if let Some(galley) = galley {
@@ -106,10 +164,22 @@ impl Checks {
             ui.painter().galley(at, galley, color);
         }
         popup.show(|ui| {
-            ui.set_max_width(POPUP_WIDTH);
+            ui.set_max_width(popup_width);
             self.popup_ui(ui);
         });
         rect.left()
+    }
+
+    fn popup_width(&self, ctx: &egui::Context) -> f32 {
+        let failed = match &self.found {
+            Found::Runs(summary) => summary.runs.iter().any(|run| !run.failures.is_empty()),
+            _ => false,
+        };
+        if failed {
+            (ctx.content_rect().width() - 2.0 * MARGIN).clamp(POPUP_WIDTH, LOG_WIDTH)
+        } else {
+            POPUP_WIDTH
+        }
     }
 
     fn look(&self) -> Option<Look> {
@@ -127,8 +197,10 @@ impl Checks {
         match &self.found {
             Found::Nothing => None,
             Found::Runs(summary) => Some(Look {
+                icon: Some(Icon::Run(summary.state)),
+                failed: summary.state == State::Failed,
                 compact: true,
-                ..Look::new(label(summary.state), Some(kind(summary.state)))
+                ..Look::new(label(summary.state), None)
             }),
             Found::LogIn => Some(Look::new("Log in to GitHub", None)),
             Found::NoAccess => Some(Look::new("No access to GitHub Actions", Some(Kind::Error))),
@@ -176,13 +248,18 @@ impl Checks {
                     ui.horizontal(|ui| {
                         let (icon, _) =
                             ui.allocate_exact_size(egui::vec2(ICON, ICON), egui::Sense::hover());
-                        status::paint_icon(ui, icon, kind(run.state));
+                        paint_run(ui, icon, run.state);
                         if ui
                             .add(theme::quiet(run.name.as_str()))
                             .on_hover_text(label(run.state))
                             .clicked()
                         {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(&run.url));
+                        }
+                    });
+                    ui.indent(&run.url, |ui| {
+                        for (index, failure) in run.failures.iter().enumerate() {
+                            failure_ui(ui, failure, index == 0, self.logged_in);
                         }
                     });
                 }
@@ -213,6 +290,50 @@ impl Checks {
     }
 }
 
+fn failure_ui(ui: &mut egui::Ui, failure: &Failure, open: bool, logged_in: bool) {
+    let title = RichText::new(failure.title()).color(ui.visuals().error_fg_color);
+    egui::CollapsingHeader::new(title)
+        .id_salt(&failure.url)
+        .default_open(open)
+        .show(ui, |ui| {
+            match &failure.log {
+                Some(log) => {
+                    egui::Frame::new()
+                        .fill(ui.visuals().extreme_bg_color)
+                        .corner_radius(4)
+                        .inner_margin(6)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::both()
+                                .max_height(LOG_HEIGHT)
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::Label::new(RichText::new(log).monospace().size(11.0))
+                                            .extend(),
+                                    );
+                                });
+                        });
+                }
+                None if logged_in => {
+                    ui.weak("GitHub has no log of what the step printed.");
+                }
+                None => {
+                    ui.weak("Log in to GitHub to see what the step printed.");
+                }
+            }
+            ui.horizontal(|ui| {
+                if let Some(log) = &failure.log
+                    && ui.add(theme::quiet("Copy the log")).clicked()
+                {
+                    ui.ctx().copy_text(log.clone());
+                }
+                if ui.add(theme::quiet("Open on GitHub")).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(&failure.url));
+                }
+            });
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use egui_kittest::Harness;
@@ -241,38 +362,66 @@ mod tests {
     }
 
     fn opened(harness: &Harness<'_, Checks>) -> Vec<String> {
+        output(harness, |command| match command {
+            egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+            _ => None,
+        })
+    }
+
+    fn run(name: &str, state: State, id: u64, failures: Vec<Failure>) -> Run {
+        Run {
+            name: name.to_string(),
+            state,
+            url: format!("https://github.com/o/r/actions/runs/{id}"),
+            failures,
+            id,
+            attempt: 1,
+            with_logs: false,
+        }
+    }
+
+    fn failure(log: Option<&str>) -> Failure {
+        Failure {
+            job: "test".to_string(),
+            step: Some("Warnings".to_string()),
+            url: "https://github.com/o/r/actions/runs/2/job/7".to_string(),
+            log: log.map(str::to_string),
+        }
+    }
+
+    fn failed(failures: Vec<Failure>) -> Found {
+        Found::Runs(Summary {
+            state: State::Failed,
+            commit: "abcdef1234".to_string(),
+            runs: vec![
+                run("Build", State::Passed, 1, Vec::new()),
+                run("Test", State::Failed, 2, failures),
+            ],
+        })
+    }
+
+    fn open_popup(harness: &mut Harness<'_, Checks>) {
+        harness.get_by_label("Failed").click();
+        harness.run();
+    }
+
+    fn output<T>(
+        harness: &Harness<'_, Checks>,
+        pick: impl Fn(&egui::OutputCommand) -> Option<T>,
+    ) -> Vec<T> {
         harness
             .output()
             .platform_output
             .commands
             .iter()
-            .filter_map(|command| match command {
-                egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
-                _ => None,
-            })
+            .filter_map(pick)
             .collect()
     }
 
     #[test]
     fn shows_how_the_workflows_went_and_opens_one_on_github() {
-        let mut harness = show(Found::Runs(Summary {
-            state: State::Failed,
-            commit: "abcdef1234".to_string(),
-            runs: vec![
-                Run {
-                    name: "Build".to_string(),
-                    state: State::Passed,
-                    url: "https://github.com/o/r/actions/runs/1".to_string(),
-                },
-                Run {
-                    name: "Test".to_string(),
-                    state: State::Failed,
-                    url: "https://github.com/o/r/actions/runs/2".to_string(),
-                },
-            ],
-        }));
-        harness.get_by_label("Failed").click();
-        harness.run();
+        let mut harness = show(failed(Vec::new()));
+        open_popup(&mut harness);
         harness.get_by_label("GitHub Actions on main at abcdef1");
         harness.get_by_label("Build");
         harness.get_by_label("Log in to GitHub");
@@ -282,11 +431,61 @@ mod tests {
     }
 
     #[test]
+    fn shows_the_failed_step_with_the_end_of_its_log() {
+        let log = "error: unused variable: `x`\nProcess completed with exit code 101.";
+        let mut harness = show(failed(vec![failure(Some(log))]));
+        open_popup(&mut harness);
+        harness.get_by_label("test › Warnings");
+        harness.get_by_label(log);
+        harness.get_by_label("Copy the log").click();
+        harness.step();
+        let copied = output(&harness, |command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        });
+        assert_eq!(copied, [log]);
+        harness.get_by_label("Open on GitHub").click();
+        harness.step();
+        assert_eq!(
+            opened(&harness),
+            ["https://github.com/o/r/actions/runs/2/job/7"]
+        );
+    }
+
+    #[test]
+    fn asks_to_log_in_to_see_the_log() {
+        let mut harness = show(failed(vec![failure(None)]));
+        open_popup(&mut harness);
+        harness.get_by_label("test › Warnings");
+        harness.get_by_label("Log in to GitHub to see what the step printed.");
+        assert!(harness.query_by_label("Copy the log").is_none());
+    }
+
+    #[test]
     fn asks_to_log_in_when_github_hides_the_repository() {
         let mut harness = show(Found::LogIn);
         harness.get_by_label("Log in to GitHub").click();
         harness.run_steps(2);
         harness.get_by_label("Log in to see GitHub Actions of private repositories.");
+    }
+
+    #[test]
+    fn shows_runs_with_the_icons_of_github() {
+        let mut checks = Checks::new(Some("o/r".to_string()));
+        for (state, failed) in [
+            (State::Running, false),
+            (State::Passed, false),
+            (State::Failed, true),
+        ] {
+            checks.found = Found::Runs(Summary {
+                state,
+                commit: "abcdef1234".to_string(),
+                runs: Vec::new(),
+            });
+            let look = checks.look().unwrap();
+            assert_eq!(look.icon, Some(Icon::Run(state)));
+            assert_eq!(look.failed, failed);
+        }
     }
 
     #[test]
